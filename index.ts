@@ -638,6 +638,7 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 
 			const queryOptions: NonNullable<Parameters<typeof query>[0]["options"]> = {
 				cwd,
+				model: model.id,
 				tools: sdkTools,
 				permissionMode: "dontAsk",
 				includePartialMessages: true,
