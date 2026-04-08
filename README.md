@@ -16,6 +16,32 @@ This extension registers a custom provider that routes LLM calls through the **C
 
 ## Setup
 
+### Harness-first local workflow
+
+For local harness management, use `run.sh` from this repo:
+
+```bash
+cd ~/repos/gh/claude-agent-sdk-pi
+./run.sh setup ~/repos/gh/agent-config
+```
+
+What it does:
+- runs `npm install`
+- copies `anthropic` OAuth credentials in `~/.pi/agent/auth.json` to the `claude-agent-sdk` alias (if present)
+- installs this local repo path into the target project's `.pi/settings.json`
+- runs a smoke test with `pi -e <repo> ...`
+
+Other commands:
+
+```bash
+./run.sh sync-auth
+./run.sh install ~/repos/gh/agent-config
+./run.sh smoke ~/repos/gh/agent-config
+./run.sh remove ~/repos/gh/agent-config
+```
+
+### Standard package install
+
 1) Install the extension globally (npm is the preferred source now):
 
 ```
