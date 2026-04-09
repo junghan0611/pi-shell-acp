@@ -43,6 +43,11 @@ const GLOBAL_SETTINGS_PATH = join(homedir(), ".pi", "agent", "settings.json");
 const PROJECT_SETTINGS_PATH = join(process.cwd(), ".pi", "settings.json");
 const GLOBAL_AGENTS_PATH = join(homedir(), ".pi", "agent", "AGENTS.md");
 
+// ToolWatch ledger disabled — pi manages its own context and tool results.
+// Re-injecting recovered results causes duplicate messages and context contamination.
+// To re-enable for debugging, set TOOL_WATCH_ENABLED = true.
+const TOOL_WATCH_ENABLED = false;
+
 const TOOL_WATCH_CUSTOM_TYPE = "claude-agent-sdk-tool-watch";
 const MAX_TRACKED_TOOL_EXECUTIONS = 256;
 const MAX_TRACKED_TOOL_CONTENT_CHARS = 4000;
@@ -684,12 +689,17 @@ function mapToolArgs(
 				path: resolvePath(input.file_path ?? input.path),
 				content: input.content,
 			};
-		case "edit":
+		case "edit": {
+			const oldText = input.old_string ?? input.oldText ?? input.old_text;
+			const newText = input.new_string ?? input.newText ?? input.new_text;
+			if (oldText == null || newText == null) {
+				throw new Error(`Edit tool requires oldText and newText. Got: oldText=${JSON.stringify(oldText)}, newText=${JSON.stringify(newText)}`);
+			}
 			return {
 				path: resolvePath(input.file_path ?? input.path),
-				oldText: input.old_string ?? input.oldText ?? input.old_text,
-				newText: input.new_string ?? input.newText ?? input.new_text,
+				edits: [{ oldText, newText }],
 			};
+		}
 		case "bash":
 			return {
 				command: input.command,
@@ -700,12 +710,16 @@ function mapToolArgs(
 				pattern: input.pattern,
 				path: resolvePath(input.path),
 				glob: input.glob,
+				ignoreCase: input.ignoreCase ?? input.ignore_case,
+				literal: input.literal,
+				context: input.context,
 				limit: input.head_limit ?? input.limit,
 			};
 		case "find":
 			return {
 				pattern: input.pattern,
 				path: resolvePath(input.path),
+				limit: input.limit,
 			};
 		default:
 			return input;
@@ -903,11 +917,11 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 
 		try {
 			const { sdkTools, customTools, customToolNameToSdk, customToolNameToPi } = resolveSdkTools(context);
-			const sessionKey = getSessionKeyFromStreamOptions(options);
-			if (sessionKey) {
+			const sessionKey = TOOL_WATCH_ENABLED ? getSessionKeyFromStreamOptions(options) : undefined;
+			if (TOOL_WATCH_ENABLED && sessionKey) {
 				reconcileToolWatchStateWithContext(sessionKey, context);
 			}
-			const toolWatchNote = buildToolWatchPromptNote(sessionKey, context, customToolNameToSdk);
+			const toolWatchNote = TOOL_WATCH_ENABLED ? buildToolWatchPromptNote(sessionKey, context, customToolNameToSdk) : undefined;
 			const promptBlocks = buildPromptBlocks(context, customToolNameToSdk, toolWatchNote);
 			const prompt = buildPromptStream(promptBlocks);
 
@@ -1162,7 +1176,17 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	return stream;
 }
 
+// Guard against duplicate registration when subagents reload this module.
+// Without this, a child process re-importing the module overwrites the parent's
+// streamSimple with a fresh instance that has empty state — causing double messages
+// and state loss.
+const REGISTERED_SYMBOL = Symbol.for("claude-agent-sdk-pi:registered");
+
 export default function (pi: ExtensionAPI) {
+	if ((globalThis as any)[REGISTERED_SYMBOL]) {
+		return; // Already registered — skip to prevent overwrite
+	}
+	(globalThis as any)[REGISTERED_SYMBOL] = true;
 	extensionApi = pi;
 
 	const refreshToolWatchState = (
@@ -1184,32 +1208,34 @@ export default function (pi: ExtensionAPI) {
 		hydrateToolWatchStateFromEntries(sessionKey, entries);
 	};
 
-	pi.on("session_start", (_event, ctx) => {
-		refreshToolWatchState(ctx);
-	});
+	if (TOOL_WATCH_ENABLED) {
+		pi.on("session_start", (_event, ctx) => {
+			refreshToolWatchState(ctx);
+		});
 
-	pi.on("session_switch", (_event, ctx) => {
-		refreshToolWatchState(ctx);
-	});
+		pi.on("session_switch", (_event, ctx) => {
+			refreshToolWatchState(ctx);
+		});
 
-	pi.on("session_fork", (_event, ctx) => {
-		refreshToolWatchState(ctx);
-	});
+		pi.on("session_fork", (_event, ctx) => {
+			refreshToolWatchState(ctx);
+		});
 
-	pi.on("model_select", (event, ctx) => {
-		const provider = (event as { model?: { provider?: string } }).model?.provider;
-		if (provider !== PROVIDER_ID) return;
-		refreshToolWatchState(ctx, provider);
-	});
+		pi.on("model_select", (event, ctx) => {
+			const provider = (event as { model?: { provider?: string } }).model?.provider;
+			if (provider !== PROVIDER_ID) return;
+			refreshToolWatchState(ctx, provider);
+		});
 
-	pi.on("session_shutdown", (_event, ctx) => {
-		const sessionKey = getSessionKeyFromContext(ctx);
-		if (!sessionKey) return;
-		toolWatchStateBySession.delete(sessionKey);
-		if (activeSessionKey === sessionKey) {
-			activeSessionKey = undefined;
-		}
-	});
+		pi.on("session_shutdown", (_event, ctx) => {
+			const sessionKey = getSessionKeyFromContext(ctx);
+			if (!sessionKey) return;
+			toolWatchStateBySession.delete(sessionKey);
+			if (activeSessionKey === sessionKey) {
+				activeSessionKey = undefined;
+			}
+		});
+	}
 
 	const registerLooseEvent = (
 		eventName: string,
@@ -1222,6 +1248,7 @@ export default function (pi: ExtensionAPI) {
 		on(eventName, handler);
 	};
 
+	if (TOOL_WATCH_ENABLED) {
 	registerLooseEvent("message_end", (event, ctx) => {
 		const provider = ctx?.model?.provider;
 		if (provider !== PROVIDER_ID) return;
@@ -1305,6 +1332,7 @@ export default function (pi: ExtensionAPI) {
 			timestamp,
 		});
 	});
+	} // end TOOL_WATCH_ENABLED guard
 
 	pi.registerProvider(PROVIDER_ID, {
 		baseUrl: "claude-agent-sdk",

@@ -1,6 +1,54 @@
 # claude-agent-sdk-pi
 
+> **Fork note (junghan0611):** This is a stability-focused fork of [prateekmedia/claude-agent-sdk-pi](https://github.com/prateekmedia/claude-agent-sdk-pi). Priority is pi-native correctness over feature additions.
+
 This extension registers a custom provider that routes LLM calls through the **Claude Agent SDK** while **pi executes tools** and renders tool results in the TUI.
+
+## Version & Dependencies
+
+| Package | Installed | Latest | Gap | Notes |
+|---------|-----------|--------|-----|-------|
+| claude-agent-sdk-pi (this fork) | 1.0.16+ | — | — | Stability patches applied |
+| @anthropic-ai/claude-agent-sdk | 0.2.32 | 0.2.97 | ~65 versions (2026-02-05 → 04-08) | SDK bridge — upgrade after stability verified |
+| @anthropic-ai/sdk | 0.73.0 | 0.86.1 | ~13 versions (2026-02-05 → 04-08) | Anthropic API types |
+| @mariozechner/pi-ai | 0.66.1 | — | — | pi core |
+| @mariozechner/pi-coding-agent | 0.66.1 | — | — | pi tool schemas (edits[] since 0.66.1) |
+
+> **Upgrade strategy:** Fix pi-native bugs first → verify stability → then upgrade SDK. Mixing both makes root cause isolation impossible.
+
+## Fork Changelog
+
+### 2026-04-09: Stability patch — pi-native correctness
+
+**Problem:** Repeated messages, Edit silent failures, context contamination.
+
+**Root cause analysis (3 bugs):**
+
+1. **Edit arg mapping mismatch** — pi expects `{ path, edits: [{ oldText, newText }] }` but provider sent `{ path, oldText, newText }`. Edit calls silently failed, causing Claude to repeat the same edit proposal.
+
+2. **ToolWatch ledger context contamination** — The ledger (PR #3) re-injected "recovered" tool results into every prompt as text. Combined with `session_id: "prompt"` (no native session), this caused the model to re-process completed work and duplicate messages.
+
+3. **Module re-registration on subagent spawn** — No guard against `registerProvider()` being called twice when subagents reload the module, overwriting the parent’s `streamSimple` with empty state.
+
+**Changes:**
+
+| Fix | File | Lines |
+|-----|------|-------|
+| Edit args wrapped in `edits[]` array + explicit error on missing args | index.ts | mapToolArgs/edit |
+| Grep: pass `ignoreCase`, `literal`, `context` to pi | index.ts | mapToolArgs/grep |
+| Find: pass `limit` to pi | index.ts | mapToolArgs/find |
+| ToolWatch ledger disabled via `TOOL_WATCH_ENABLED = false` | index.ts | kill switch |
+| Module re-registration guard via `Symbol.for()` | index.ts | export default |
+
+**Design principle:** pi manages its own context, sessions, and tool results. This provider should be a thin bridge, not a parallel state machine.
+
+### 2026-04-09: Disable SDK session persistence
+
+- `persistSession: false` — pi manages its own sessions. SDK persistence causes JSONL bloat and state divergence.
+
+### 2026-04-09: Harness-first setup workflow
+
+- Added `run.sh` for local development: setup, auth sync, install, smoke test.
 
 ## Highlights
 
@@ -93,12 +141,14 @@ Use `/model` to select:
 
 Built-in tool mapping (Claude Code → pi):
 
-- Read → read
-- Write → write
-- Edit → edit
-- Bash → bash
-- Grep → grep
-- Glob → find
+| Claude Code | pi | Args mapped |
+|-------------|------|-------------|
+| Read | read | `path`, `offset`, `limit` |
+| Write | write | `path`, `content` |
+| Edit | edit | `path`, `edits: [{ oldText, newText }]` |
+| Bash | bash | `command`, `timeout` |
+| Grep | grep | `pattern`, `path`, `glob`, `ignoreCase`, `literal`, `context`, `limit` |
+| Glob | find | `pattern`, `path`, `limit` |
 
 Claude Code only sees the tools that are active in pi.
 
