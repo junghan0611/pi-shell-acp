@@ -1,7 +1,8 @@
-import { calculateCost, createAssistantMessageEventStream, getModels, type AssistantMessage, type AssistantMessageEventStream, type Context, type ImageContent, type Model, type SimpleStreamOptions, type Tool } from "@mariozechner/pi-ai";
+import { calculateCost, createAssistantMessageEventStream, getModels, type AssistantMessage, type AssistantMessageEventStream, type Context, type ImageContent, type Model, type SimpleStreamOptions, type Tool, type ToolResultMessage } from "@mariozechner/pi-ai";
 import { AuthStorage, type ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { createSdkMcpServer, query, type SDKMessage, type SDKUserMessage, type SettingSource } from "@anthropic-ai/claude-agent-sdk";
-import type { Base64ImageSource, CacheControlEphemeral, ContentBlockParam, ImageBlockParam, MessageParam, TextBlockParam } from "@anthropic-ai/sdk/resources";
+import Anthropic from "@anthropic-ai/sdk";
+import type { Base64ImageSource, CacheControlEphemeral, ContentBlockParam, ImageBlockParam, MessageParam, TextBlockParam, ToolResultBlockParam, ToolUseBlockParam } from "@anthropic-ai/sdk/resources";
 import { pascalCase } from "change-case";
 import { existsSync, readFileSync } from "fs";
 import { homedir } from "os";
@@ -345,6 +346,447 @@ const MODELS = getModels("anthropic").map((model) => ({
 	maxTokens: model.maxTokens,
 }));
 
+
+// --- Direct Anthropic API path (multi-turn, parity with pi-mono anthropic provider) ---
+
+function sanitizeSurrogates(text: string): string {
+	return text.replace(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g, "");
+}
+
+function normalizeToolCallId(id: string): string {
+	return id.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 64);
+}
+
+function preprocessMessages(messages: readonly import("@mariozechner/pi-ai").Message[]): import("@mariozechner/pi-ai").Message[] {
+	const result: import("@mariozechner/pi-ai").Message[] = [];
+	let pendingToolCallIds = new Set<string>();
+	let existingToolResultIds = new Set<string>();
+
+	for (let i = 0; i < messages.length; i++) {
+		const msg = messages[i];
+
+		if (msg.role === "assistant") {
+			if (pendingToolCallIds.size > 0) {
+				for (const tcId of pendingToolCallIds) {
+					if (!existingToolResultIds.has(tcId)) {
+						result.push({
+							role: "toolResult",
+							toolCallId: tcId,
+							toolName: "",
+							content: [{ type: "text", text: "No result provided" }],
+							isError: true,
+							timestamp: Date.now(),
+						} as ToolResultMessage);
+					}
+				}
+				pendingToolCallIds = new Set();
+				existingToolResultIds = new Set();
+			}
+
+			if (msg.stopReason === "error" || msg.stopReason === "aborted") {
+				continue;
+			}
+
+			const toolCalls = msg.content.filter((b) => b.type === "toolCall");
+			if (toolCalls.length > 0) {
+				pendingToolCallIds = new Set(toolCalls.map((tc) => (tc as any).id as string));
+				existingToolResultIds = new Set();
+			}
+			result.push(msg);
+		} else if (msg.role === "toolResult") {
+			existingToolResultIds.add(msg.toolCallId);
+			result.push(msg);
+		} else if (msg.role === "user") {
+			if (pendingToolCallIds.size > 0) {
+				for (const tcId of pendingToolCallIds) {
+					if (!existingToolResultIds.has(tcId)) {
+						result.push({
+							role: "toolResult",
+							toolCallId: tcId,
+							toolName: "",
+							content: [{ type: "text", text: "No result provided" }],
+							isError: true,
+							timestamp: Date.now(),
+						} as ToolResultMessage);
+					}
+				}
+				pendingToolCallIds = new Set();
+				existingToolResultIds = new Set();
+			}
+			result.push(msg);
+		} else {
+			result.push(msg);
+		}
+	}
+
+	if (pendingToolCallIds.size > 0) {
+		for (const tcId of pendingToolCallIds) {
+			if (!existingToolResultIds.has(tcId)) {
+				result.push({
+					role: "toolResult",
+					toolCallId: tcId,
+					toolName: "",
+					content: [{ type: "text", text: "No result provided" }],
+					isError: true,
+					timestamp: Date.now(),
+				} as ToolResultMessage);
+			}
+		}
+	}
+
+	return result;
+}
+
+function buildMultiTurnMessages(context: Context): MessageParam[] {
+	const params: MessageParam[] = [];
+	const messages = preprocessMessages(context.messages);
+
+	for (let i = 0; i < messages.length; i++) {
+		const msg = messages[i];
+
+		if (msg.role === "user") {
+			if (typeof msg.content === "string") {
+				if (msg.content.trim().length > 0) {
+					params.push({ role: "user", content: sanitizeSurrogates(msg.content) });
+				}
+				continue;
+			}
+			const blocks: ContentBlockParam[] = [];
+			let hasText = false;
+			for (const item of msg.content) {
+				if (item.type === "text") {
+					if (item.text.trim().length > 0) hasText = true;
+					blocks.push({ type: "text", text: sanitizeSurrogates(item.text) });
+				} else if (item.type === "image") {
+					blocks.push({
+						type: "image",
+						source: { type: "base64", media_type: item.mimeType as Base64ImageSource["media_type"], data: item.data },
+					});
+				}
+			}
+			if (!hasText && blocks.some((b) => b.type === "image")) {
+				blocks.unshift({ type: "text", text: "(see attached image)" });
+			}
+			if (blocks.length === 0) continue;
+			params.push({ role: "user", content: blocks });
+
+		} else if (msg.role === "assistant") {
+			const blocks: ContentBlockParam[] = [];
+			for (const block of msg.content) {
+				if (block.type === "text") {
+					if (block.text.trim().length === 0) continue;
+					blocks.push({ type: "text", text: sanitizeSurrogates(block.text) });
+				} else if (block.type === "thinking") {
+					if (block.redacted) {
+						blocks.push({ type: "redacted_thinking", data: block.thinkingSignature! } as ContentBlockParam);
+						continue;
+					}
+					if (block.thinking.trim().length === 0) continue;
+					if (!block.thinkingSignature || block.thinkingSignature.trim().length === 0) {
+						blocks.push({ type: "text", text: sanitizeSurrogates(block.thinking) });
+					} else {
+						blocks.push({ type: "thinking", thinking: sanitizeSurrogates(block.thinking), signature: block.thinkingSignature } as ContentBlockParam);
+					}
+				} else if (block.type === "toolCall") {
+					blocks.push({ type: "tool_use", id: normalizeToolCallId(block.id), name: block.name, input: block.arguments ?? {} } as ToolUseBlockParam);
+				}
+			}
+			if (blocks.length === 0) continue;
+			params.push({ role: "assistant", content: blocks });
+
+		} else if (msg.role === "toolResult") {
+			const toolResults: ContentBlockParam[] = [];
+			const convertToolContent = (content: Array<{ type: string; text?: string; data?: string; mimeType?: string }>): ToolResultBlockParam["content"] => {
+				if (!content || content.length === 0) return undefined;
+				const hasImage = content.some((c) => c.type === "image");
+				if (!hasImage) {
+					return content.filter((c) => c.type === "text").map((c) => (c as any).text ?? "").join("\n");
+				}
+				return content.map((c) => {
+					if (c.type === "text") return { type: "text" as const, text: c.text ?? "" };
+					return { type: "image" as const, source: { type: "base64" as const, media_type: (c.mimeType ?? "image/png") as Base64ImageSource["media_type"], data: c.data ?? "" } };
+				});
+			};
+
+			toolResults.push({ type: "tool_result", tool_use_id: normalizeToolCallId(msg.toolCallId), content: convertToolContent(msg.content as any), is_error: msg.isError } as ToolResultBlockParam);
+			let j = i + 1;
+			while (j < messages.length && messages[j].role === "toolResult") {
+				const nextMsg = messages[j] as ToolResultMessage;
+				toolResults.push({ type: "tool_result", tool_use_id: normalizeToolCallId(nextMsg.toolCallId), content: convertToolContent(nextMsg.content as any), is_error: nextMsg.isError } as ToolResultBlockParam);
+				j++;
+			}
+			i = j - 1;
+			params.push({ role: "user", content: toolResults });
+		}
+	}
+
+	// Merge consecutive same-role messages (Anthropic API requires alternating roles)
+	const merged: MessageParam[] = [];
+	for (const msg of params) {
+		if (merged.length > 0 && merged[merged.length - 1].role === msg.role) {
+			const prev = merged[merged.length - 1];
+			const prevContent: ContentBlockParam[] = Array.isArray(prev.content) ? prev.content : [{ type: "text", text: prev.content as string }];
+			const curContent: ContentBlockParam[] = Array.isArray(msg.content) ? msg.content : [{ type: "text", text: msg.content as string }];
+			prev.content = [...prevContent, ...curContent];
+		} else {
+			merged.push({ ...msg });
+		}
+	}
+
+	if (merged.length > 0 && merged[0].role !== "user") {
+		merged.unshift({ role: "user", content: "(conversation continued)" });
+	}
+	if (merged.length === 0) {
+		merged.push({ role: "user", content: "" });
+	}
+
+	return merged;
+}
+
+function convertPiToolsToAnthropic(tools: Tool[] | undefined): Anthropic.Messages.Tool[] {
+	if (!tools || tools.length === 0) return [];
+	return tools.map((tool) => {
+		const jsonSchema = tool.parameters as any;
+		return {
+			name: tool.name,
+			description: tool.description,
+			input_schema: {
+				type: "object" as const,
+				properties: jsonSchema?.properties || {},
+				required: jsonSchema?.required || [],
+			},
+		};
+	});
+}
+
+function streamDirectAnthropic(model: Model<any>, context: Context, options?: SimpleStreamOptions): AssistantMessageEventStream {
+	const stream = createAssistantMessageEventStream();
+
+	(async () => {
+		const output: AssistantMessage = {
+			role: "assistant",
+			content: [],
+			api: model.api,
+			provider: model.provider,
+			model: model.id,
+			usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+			stopReason: "stop",
+			timestamp: Date.now(),
+		};
+
+		try {
+			// pi passes the literal string "ANTHROPIC_API_KEY" from registerProvider, not the actual key.
+			// Resolve the real API key from auth storage (supports OAuth tokens).
+			const authStorage = AuthStorage.create();
+			const apiKey = await authStorage.getApiKey(PROVIDER_ID) ?? await authStorage.getApiKey("anthropic") ?? options?.apiKey;
+			if (!apiKey || apiKey === "ANTHROPIC_API_KEY") throw new Error("No API key available for claude-agent-sdk provider. Run: pi login anthropic");
+
+			const isOAuth = apiKey.includes("sk-ant-oat");
+			const client = isOAuth
+				? new Anthropic({
+					apiKey: null,
+					authToken: apiKey,
+					baseURL: "https://api.anthropic.com",
+					dangerouslyAllowBrowser: true,
+					defaultHeaders: {
+						"accept": "application/json",
+						"anthropic-dangerous-direct-browser-access": "true",
+						"anthropic-beta": "claude-code-20250219,oauth-2025-04-20,fine-grained-tool-streaming-2025-05-14",
+						"x-app": "cli",
+					},
+				} as ConstructorParameters<typeof Anthropic>[0])
+				: new Anthropic({ apiKey });
+
+			const messages = buildMultiTurnMessages(context);
+			const tools = convertPiToolsToAnthropic(context.tools);
+
+			const systemBlocks: Anthropic.Messages.TextBlockParam[] = [];
+			// OAuth requires Claude Code identity prefix (Anthropic validates app identity)
+			if (isOAuth) {
+				systemBlocks.push({
+					type: "text",
+					text: "You are Claude Code, Anthropic's official CLI for Claude.",
+					cache_control: { type: "ephemeral" },
+				});
+			}
+			if (context.systemPrompt) {
+				systemBlocks.push({ type: "text", text: sanitizeSurrogates(context.systemPrompt), cache_control: { type: "ephemeral" } });
+			}
+
+			const maxTokens = options?.maxTokens || Math.floor(model.maxTokens / 3);
+
+			const params: Anthropic.Messages.MessageCreateParamsStreaming = {
+				model: model.id,
+				messages,
+				max_tokens: maxTokens,
+				stream: true,
+				...(systemBlocks.length > 0 ? { system: systemBlocks } : {}),
+				...(tools.length > 0 ? { tools } : {}),
+			};
+
+			// Thinking configuration (matches pi-mono logic)
+			if (model.reasoning) {
+				const thinkingTokens = mapThinkingTokens(options?.reasoning, model.id, options?.thinkingBudgets);
+				if (options?.reasoning && thinkingTokens) {
+					const supportsAdaptive = model.id.includes("opus-4-6") || model.id.includes("opus-4.6")
+						|| model.id.includes("sonnet-4-6") || model.id.includes("sonnet-4.6");
+					if (supportsAdaptive) {
+						(params as any).thinking = { type: "adaptive" };
+						// Map reasoning level to effort for adaptive models
+						const effortMap: Record<string, string> = { minimal: "low", low: "low", medium: "medium", high: "high", xhigh: "high" };
+						const effort = options?.reasoning ? effortMap[options.reasoning] : undefined;
+						if (effort) {
+							(params as any).output_config = { effort };
+						}
+					} else {
+						(params as any).thinking = { type: "enabled", budget_tokens: thinkingTokens };
+					}
+				} else {
+					(params as any).thinking = { type: "disabled" };
+				}
+			}
+
+			if (options?.temperature !== undefined && !(params as any).thinking?.type?.match?.(/enabled|adaptive/)) {
+				params.temperature = options.temperature;
+			}
+
+			// Cache control on last user message
+			if (messages.length > 0) {
+				const lastMsg = messages[messages.length - 1];
+				if (lastMsg.role === "user" && Array.isArray(lastMsg.content)) {
+					const lastBlock = lastMsg.content[lastMsg.content.length - 1] as any;
+					if (lastBlock && (lastBlock.type === "text" || lastBlock.type === "tool_result")) {
+						lastBlock.cache_control = { type: "ephemeral" };
+					}
+				}
+			}
+
+			const apiStream = client.messages.stream(params);
+
+			if (options?.signal) {
+				const onAbort = () => { apiStream.abort(); };
+				if (options.signal.aborted) { apiStream.abort(); }
+				else { options.signal.addEventListener("abort", onAbort, { once: true }); }
+			}
+
+			stream.push({ type: "start", partial: output });
+
+			const blocks = output.content as Array<
+				| { type: "text"; text: string }
+				| { type: "thinking"; thinking: string; thinkingSignature?: string }
+				| { type: "toolCall"; id: string; name: string; arguments: Record<string, unknown>; partialJson: string }
+			>;
+
+			for await (const event of apiStream) {
+				if (event.type === "message_start") {
+					const usage = (event as any).message?.usage;
+					if (usage) {
+						output.usage.input = usage.input_tokens ?? 0;
+						output.usage.output = usage.output_tokens ?? 0;
+						output.usage.cacheRead = usage.cache_read_input_tokens ?? 0;
+						output.usage.cacheWrite = usage.cache_creation_input_tokens ?? 0;
+						output.usage.totalTokens = output.usage.input + output.usage.output + output.usage.cacheRead + output.usage.cacheWrite;
+						calculateCost(model, output.usage);
+					}
+				} else if (event.type === "content_block_start") {
+					const cb = (event as any).content_block;
+					if (cb?.type === "text") {
+						output.content.push({ type: "text", text: "" });
+						stream.push({ type: "text_start", contentIndex: output.content.length - 1, partial: output });
+					} else if (cb?.type === "thinking") {
+						output.content.push({ type: "thinking", thinking: "", thinkingSignature: "" });
+						stream.push({ type: "thinking_start", contentIndex: output.content.length - 1, partial: output });
+					} else if (cb?.type === "redacted_thinking") {
+						// Redacted thinking: store signature for multi-turn continuity
+						output.content.push({ type: "thinking", thinking: "", thinkingSignature: cb.data ?? "", redacted: true } as any);
+					} else if (cb?.type === "tool_use") {
+						(output.content as any[]).push({ type: "toolCall", id: cb.id, name: cb.name, arguments: (cb.input as Record<string, unknown>) ?? {}, partialJson: "" });
+						stream.push({ type: "toolcall_start", contentIndex: output.content.length - 1, partial: output });
+					}
+				} else if (event.type === "content_block_delta") {
+					const delta = (event as any).delta;
+					const idx = (event as any).index;
+					if (delta?.type === "text_delta") {
+						const block = blocks[idx];
+						if (block?.type === "text") {
+							block.text += delta.text;
+							stream.push({ type: "text_delta", contentIndex: idx, delta: delta.text, partial: output });
+						}
+					} else if (delta?.type === "thinking_delta") {
+						const block = blocks[idx];
+						if (block?.type === "thinking") {
+							block.thinking += delta.thinking;
+							stream.push({ type: "thinking_delta", contentIndex: idx, delta: delta.thinking, partial: output });
+						}
+					} else if (delta?.type === "input_json_delta") {
+						const block = blocks[idx];
+						if (block?.type === "toolCall") {
+							block.partialJson += delta.partial_json;
+							block.arguments = parsePartialJson(block.partialJson, block.arguments);
+							stream.push({ type: "toolcall_delta", contentIndex: idx, delta: delta.partial_json, partial: output });
+						}
+					} else if (delta?.type === "signature_delta") {
+						const block = blocks[idx];
+						if (block?.type === "thinking") {
+							block.thinkingSignature = (block.thinkingSignature ?? "") + delta.signature;
+						}
+					}
+				} else if (event.type === "content_block_stop") {
+					const idx = (event as any).index;
+					const block = blocks[idx];
+					if (!block) continue;
+					if (block.type === "text") {
+						stream.push({ type: "text_end", contentIndex: idx, content: block.text, partial: output });
+					} else if (block.type === "thinking") {
+						stream.push({ type: "thinking_end", contentIndex: idx, content: block.thinking, partial: output });
+					} else if (block.type === "toolCall") {
+						block.arguments = parsePartialJson(block.partialJson, block.arguments);
+						delete (block as any).partialJson;
+						stream.push({ type: "toolcall_end", contentIndex: idx, toolCall: block, partial: output });
+					}
+				} else if (event.type === "message_delta") {
+					const delta = (event as any).delta;
+					const usage = (event as any).usage;
+					output.stopReason = mapStopReason(delta?.stop_reason);
+					if (usage) {
+						if (usage.input_tokens != null) output.usage.input = usage.input_tokens;
+						if (usage.output_tokens != null) output.usage.output = usage.output_tokens;
+						if (usage.cache_read_input_tokens != null) output.usage.cacheRead = usage.cache_read_input_tokens;
+						if (usage.cache_creation_input_tokens != null) output.usage.cacheWrite = usage.cache_creation_input_tokens;
+						output.usage.totalTokens = output.usage.input + output.usage.output + output.usage.cacheRead + output.usage.cacheWrite;
+						calculateCost(model, output.usage);
+					}
+				}
+			}
+
+			// Ensure toolUse stopReason if we got tool calls
+			if (output.content.some((b) => b.type === "toolCall")) {
+				output.stopReason = "toolUse";
+			}
+
+			stream.push({
+				type: "done",
+				reason: output.stopReason === "toolUse" ? "toolUse" : output.stopReason === "length" ? "length" : "stop",
+				message: output,
+			});
+			stream.end();
+		} catch (error: any) {
+			if (error?.status === 529) {
+				output.stopReason = "error";
+				output.errorMessage = "Anthropic API is overloaded. Please try again.";
+			} else {
+				output.stopReason = options?.signal?.aborted ? "aborted" : "error";
+				output.errorMessage = error?.message ?? String(error);
+			}
+			stream.push({ type: "done", reason: "stop", message: output });
+			stream.end();
+		}
+	})();
+
+	return stream;
+}
+
+// --- SDK path (used as fallback, kept for reference) ---
 
 function buildPromptBlocks(
 	context: Context,
@@ -1394,6 +1836,6 @@ export default function (pi: ExtensionAPI) {
 		apiKey: "ANTHROPIC_API_KEY",
 		api: "claude-agent-sdk",
 		models: MODELS,
-		streamSimple: streamClaudeAgentSdk,
+		streamSimple: streamDirectAnthropic,
 	});
 }
