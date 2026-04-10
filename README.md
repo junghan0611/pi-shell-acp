@@ -6,7 +6,7 @@
 
 ## Status
 
-**Current phase:** Phase 1 ACP bridge skeleton is implemented and smoke-tested.
+**Current phase:** Phase 2 baseline is implemented, smoke-tested, and benchmarked.
 
 **Current runtime path:**
 
@@ -24,10 +24,41 @@ pi
 **Compatibility note:**
 - Package/repo name is still `claude-agent-sdk-pi`
 - Provider ID is still `claude-agent-sdk`
-- A rename may happen later, after the ACP path is stable
+- The naming is now legacy baggage from the direct-SDK era
+- A cleaner repository/package split or rename will likely happen later, once the ACP path and operating model fully settle
 
 **Current caveat:**
-The architecture has been reframed around Claude-side capability loading, and the bridge now exposes a basic configuration surface for append vs non-append operation, setting source selection, and strict MCP mode. However, long-session replay/reconnect and deeper validation of daily-driving behavior are still incomplete.
+The architecture has been reframed around Claude-side capability loading, and the bridge now exposes a basic configuration surface for append vs non-append operation, setting source selection, and strict MCP mode. Core prompt routing, tool visibility, session invalidation, and benchmarked harness behavior are working. However, long-session replay/reconnect, richer tool rendering, and deeper day-to-day validation are still incomplete.
+
+## Benchmark Snapshot
+
+Benchmark status as of **2026-04-10**: the ACP bridge is no longer just "working in principle" — it is competitive with, and often faster than, a direct provider route in the same harness.
+
+Comparison used:
+
+- direct: `github-copilot/claude-sonnet-4.6`
+- ACP bridge: `claude-agent-sdk/claude-sonnet-4-6`
+- harness: real pi project context via `./bench.sh .`
+
+| Test | Direct | ACP bridge | Ratio | Verdict |
+|------|--------|------------|-------|---------|
+| simple | 3.8s | 4.1s | 1.1x | parity |
+| reasoning | 16.5s | 14.8s | 0.9x | bridge faster |
+| korean-long | 12.3s | 8.1s | 0.7x | bridge faster |
+| tool-read | 8.9s | 8.2s | 0.9x | parity |
+| tool-bash | 11.9s | 7.0s | 0.6x | bridge faster |
+| multi-step | 10.3s | 8.2s | 0.8x | bridge faster |
+| file-search | 11.8s | 8.5s | 0.7x | bridge faster |
+| sysprompt | 5.7s | 6.7s | 1.2x | parity |
+| code-read | 15.6s | 18.4s | 1.2x | direct slightly faster |
+| git-status | 9.1s | 6.4s | 0.7x | bridge faster |
+
+What this means:
+
+- the bridge now answers correctly across basic prompts, reasoning, Korean generation, tool use, and harness-aware queries
+- system prompt / AGENTS.md loading works in real project context
+- tool use through the ACP path is not merely functional; it is often faster than the direct comparison route
+- the remaining gaps are now mostly about UX polish and lifecycle depth, not basic correctness
 
 ---
 
@@ -103,6 +134,19 @@ That means the preferred long-term model is now:
 - **this repository** owns transport, visibility, and synchronization
 
 This was the key architectural clarification.
+
+### 2026-04-10 — From skeleton to usable baseline
+
+The bridge then crossed an important threshold from “architectural skeleton” to “usable baseline”:
+
+- added visible rendering of Claude-side tool activity in pi
+- added history/signature-based ACP session invalidation
+- added process-group cleanup for Unix subprocess trees
+- added a basic non-append settings surface
+- fixed prompt extraction so pi hook/user metadata messages do not replace the actual user prompt
+- validated the path with `bench.sh` against a direct Claude route
+
+The benchmark result was not just “it runs.” The ACP path produced correct answers across simple prompts, reasoning, tool use, multi-step file reading, Korean generation, and harness-aware prompts.
 
 ---
 
@@ -211,7 +255,7 @@ Even if Claude executes tools natively, pi still needs to:
 
 ## What Is Implemented Today
 
-### Phase 1: minimal working ACP bridge
+### Current implemented baseline
 
 Implemented now:
 
@@ -223,11 +267,22 @@ Implemented now:
 - ACP `prompt`
 - ACP prompt cancellation
 - ACP session reuse keyed by the pi session ID
+- prompt extraction that selects the real user prompt instead of trailing pi hook/user metadata messages
 - streaming mapping for:
   - `agent_message_chunk` -> pi text events
   - `agent_thought_chunk` -> pi thinking events
-- basic usage / stop-reason propagation
+- visible text-notice rendering for:
+  - `tool_call`
+  - `tool_call_update`
+  - permission outcomes
+- history-signature based session invalidation when pi and ACP state diverge
+- process-group cleanup for Unix subprocess trees
+- basic settings surface for:
+  - `appendSystemPrompt`
+  - `settingSources`
+  - `strictMcpConfig`
 - local smoke testing through `run.sh`
+- benchmark coverage through `bench.sh`
 
 ### Current module layout
 
@@ -235,6 +290,7 @@ Implemented now:
 - `acp-bridge.ts` — subprocess lifecycle, ACP connection, session management
 - `event-mapper.ts` — ACP session updates -> pi stream events
 - `run.sh` — install/auth/smoke workflow
+- `bench.sh` — direct-vs-ACP benchmark runner
 
 ---
 
@@ -248,6 +304,7 @@ The following items are intentionally **not** claimed as complete:
 - deeper long-running validation of process-tree cleanup across real workloads
 - a complete strategy for explicit vs automatic MCP routing
 - package/repository/provider renaming after stabilization
+- long-horizon daily-driving validation across larger real projects
 
 ### Why these are important
 
@@ -304,6 +361,27 @@ The current smoke workflow checks two things:
 
 1. pi can load the provider and list models
 2. the ACP bridge can create a session, send a prompt, and receive a real response
+
+### Benchmark
+
+```bash
+./bench.sh .
+```
+
+Useful environment overrides:
+
+```bash
+PI_BENCH_SUITE=quick ./bench.sh .
+PI_BENCH_MODEL_DIRECT=github-copilot/claude-sonnet-4.6 ./bench.sh .
+PI_BENCH_MODEL_SDK=claude-agent-sdk/claude-sonnet-4-6 ./bench.sh .
+```
+
+The benchmark is especially useful after changing:
+
+- prompt extraction
+- session invalidation
+- settings/defaults
+- tool visibility
 
 ### Local setup into another pi project
 
@@ -392,6 +470,7 @@ Default behavior when no settings are present:
 - improve tool rendering beyond plain text notices
 - add history replay or a clearer recovery story after invalidation
 - validate subprocess cleanup under longer-running real tools
+- continue benchmarking against direct provider routes while Claude-side tuning evolves
 
 ### Mid-term
 
