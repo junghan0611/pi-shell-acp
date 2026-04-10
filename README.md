@@ -27,7 +27,7 @@ pi
 - A rename may happen later, after the ACP path is stable
 
 **Current caveat:**
-The architecture has been reframed around Claude-side capability loading, but the bridge still lacks a complete configuration surface for append vs non-append operation, setting source selection, and safe tool/status rendering.
+The architecture has been reframed around Claude-side capability loading, and the bridge now exposes a basic configuration surface for append vs non-append operation, setting source selection, and strict MCP mode. However, long-session replay/reconnect and deeper validation of daily-driving behavior are still incomplete.
 
 ---
 
@@ -242,15 +242,11 @@ Implemented now:
 
 The following items are intentionally **not** claimed as complete:
 
-- rich pi-side rendering of `tool_call` / `tool_call_update`
-- robust handling of history edits / forks / replay invalidation
+- richer pi-side rendering of `tool_call` / `tool_call_update` beyond the current visible text notices
+- history-preserving replay after session invalidation
 - ACP `loadSession` / resume / replay support
-- process-group cleanup for deep Claude-side subprocess trees
-- a complete configuration surface for:
-  - append vs non-append
-  - `settingSources`
-  - `strictMcpConfig`
-  - explicit vs automatic MCP strategy
+- deeper long-running validation of process-tree cleanup across real workloads
+- a complete strategy for explicit vs automatic MCP routing
 - package/repository/provider renaming after stabilization
 
 ### Why these are important
@@ -258,9 +254,9 @@ The following items are intentionally **not** claimed as complete:
 These are not just polish items.
 They affect correctness and operability:
 
-- without tool rendering, pi becomes blind while Claude works
-- without history invalidation, pi and Claude can drift into different realities
-- without robust shutdown, Claude-side shells can outlive the bridge
+- without visible tool activity, pi becomes blind while Claude works
+- without replay after invalidation, history edits can correctly reset the session but still lose prior context
+- without robust shutdown under real workloads, Claude-side shells can outlive the bridge
 
 ---
 
@@ -349,7 +345,42 @@ Supported values today:
 - `approve-reads`
 - `deny-all`
 
-**Warning:** the current Phase 1 implementation still needs stronger UI visibility around tool execution. Do not mistake the current default behavior for the final safe operating mode.
+### Provider settings surface
+
+The bridge reads provider settings from:
+
+- `~/.pi/agent/settings.json`
+- `<project>/.pi/settings.json`
+
+Project settings override global settings.
+
+Example:
+
+```json
+{
+  "claudeAgentSdkProvider": {
+    "appendSystemPrompt": false,
+    "settingSources": ["user"],
+    "strictMcpConfig": false
+  }
+}
+```
+
+Current semantics:
+
+- `appendSystemPrompt: false`
+  - do not forward pi's system prompt append into Claude
+  - prefer Claude-side loading from standard paths
+- `settingSources`
+  - controls which Claude settings layers are loaded
+- `strictMcpConfig`
+  - when `true`, passes `--strict-mcp-config` through Claude Code
+
+Default behavior when no settings are present:
+
+- `appendSystemPrompt: false`
+- `settingSources: ["user"]`
+- `strictMcpConfig: false`
 
 ---
 
@@ -357,10 +388,10 @@ Supported values today:
 
 ### Near-term
 
-- render `tool_call` / `tool_call_update` in pi
-- detect history mutation and invalidate ACP sessions correctly
-- fix subprocess tree shutdown
-- expose append/non-append and Claude config loading controls
+- validate the new settings surface under real multi-turn usage
+- improve tool rendering beyond plain text notices
+- add history replay or a clearer recovery story after invalidation
+- validate subprocess cleanup under longer-running real tools
 
 ### Mid-term
 

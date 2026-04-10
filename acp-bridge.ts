@@ -28,6 +28,8 @@ export type BridgePromptEvent =
 
 type PendingPromptHandler = (event: BridgePromptEvent) => Promise<void> | void;
 
+export type ClaudeSettingSource = "user" | "project" | "local";
+
 export type AcpBridgeSession = {
 	key: string;
 	cwd: string;
@@ -37,6 +39,9 @@ export type AcpBridgeSession = {
 	acpSessionId: string;
 	modelId?: string;
 	systemPromptAppend?: string;
+	settingSources: ClaudeSettingSource[];
+	strictMcpConfig: boolean;
+	bridgeConfigSignature: string;
 	contextMessageSignatures: string[];
 	stderrTail: string[];
 	closed: boolean;
@@ -48,6 +53,9 @@ export type EnsureBridgeSessionParams = {
 	cwd: string;
 	modelId?: string;
 	systemPromptAppend?: string;
+	settingSources: ClaudeSettingSource[];
+	strictMcpConfig: boolean;
+	bridgeConfigSignature: string;
 	contextMessageSignatures: string[];
 };
 
@@ -313,6 +321,9 @@ async function startBridgeSession(params: EnsureBridgeSessionParams): Promise<Ac
 		acpSessionId: "",
 		modelId: params.modelId,
 		systemPromptAppend: normalizeText(params.systemPromptAppend),
+		settingSources: [...params.settingSources],
+		strictMcpConfig: params.strictMcpConfig,
+		bridgeConfigSignature: params.bridgeConfigSignature,
 		contextMessageSignatures: [...params.contextMessageSignatures],
 		stderrTail,
 		closed: false,
@@ -341,12 +352,21 @@ async function startBridgeSession(params: EnsureBridgeSessionParams): Promise<Ac
 	});
 	session.initializeResult = initializeResult;
 
+	const claudeCodeOptions: Record<string, any> = {
+		...(params.modelId ? { model: params.modelId } : {}),
+		tools: { type: "preset", preset: "claude_code" },
+		settingSources: [...params.settingSources],
+	};
+	if (params.strictMcpConfig) {
+		claudeCodeOptions.extraArgs = {
+			...(claudeCodeOptions.extraArgs ?? {}),
+			"strict-mcp-config": null,
+		};
+	}
+
 	const meta: Record<string, any> = {
 		claudeCode: {
-			options: {
-				...(params.modelId ? { model: params.modelId } : {}),
-				tools: { type: "preset", preset: "claude_code" },
-			},
+			options: claudeCodeOptions,
 		},
 	};
 	if (session.systemPromptAppend) {
@@ -375,6 +395,7 @@ export async function ensureBridgeSession(params: EnsureBridgeSessionParams): Pr
 		isChildAlive(existing.child) &&
 		existing.cwd === params.cwd &&
 		existing.systemPromptAppend === normalizedSystemPrompt &&
+		existing.bridgeConfigSignature === params.bridgeConfigSignature &&
 		hasPrefix(existing.contextMessageSignatures, params.contextMessageSignatures)
 	) {
 		if (params.modelId && existing.modelId !== params.modelId) {
@@ -393,6 +414,9 @@ export async function ensureBridgeSession(params: EnsureBridgeSessionParams): Pr
 				});
 			}
 		}
+		existing.settingSources = [...params.settingSources];
+		existing.strictMcpConfig = params.strictMcpConfig;
+		existing.bridgeConfigSignature = params.bridgeConfigSignature;
 		existing.contextMessageSignatures = [...params.contextMessageSignatures];
 		return existing;
 	}

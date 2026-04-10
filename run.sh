@@ -173,6 +173,9 @@ const session = await ensureBridgeSession({
   cwd: process.cwd(),
   modelId: process.env.PI_CLAUDE_AGENT_SDK_MODEL_ID || 'claude-sonnet-4-6',
   systemPromptAppend: '간단히 답하세요.',
+  settingSources: ['user'],
+  strictMcpConfig: false,
+  bridgeConfigSignature: JSON.stringify({ appendSystemPrompt: false, settingSources: ['user'], strictMcpConfig: false }),
   contextMessageSignatures: ['smoke:user:ok만 답하세요.'],
 });
 

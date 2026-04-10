@@ -1,10 +1,27 @@
 import { calculateCost, createAssistantMessageEventStream, getModels, type AssistantMessage, type AssistantMessageEventStream, type Context, type Model, type SimpleStreamOptions } from "@mariozechner/pi-ai";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import { existsSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { applyBridgePromptEvent, finalizeAcpStreamState, type AcpPiStreamState } from "./event-mapper.js";
-import { cancelActivePrompt, closeBridgeSession, ensureBridgeSession, getBridgeErrorDetails, sendPrompt, setActivePromptHandler } from "./acp-bridge.js";
+import { cancelActivePrompt, closeBridgeSession, ensureBridgeSession, getBridgeErrorDetails, sendPrompt, setActivePromptHandler, type ClaudeSettingSource } from "./acp-bridge.js";
 
 const PROVIDER_ID = "claude-agent-sdk";
 const REGISTERED_SYMBOL = Symbol.for("claude-agent-sdk-pi:registered");
+const GLOBAL_SETTINGS_PATH = join(homedir(), ".pi", "agent", "settings.json");
+
+type ProviderSettings = {
+	appendSystemPrompt?: boolean;
+	settingSources?: ClaudeSettingSource[];
+	strictMcpConfig?: boolean;
+};
+
+type ResolvedProviderSettings = {
+	appendSystemPrompt: boolean;
+	settingSources: ClaudeSettingSource[];
+	strictMcpConfig: boolean;
+	bridgeConfigSignature: string;
+};
 
 const MODELS = getModels("anthropic").map((model) => ({
 	id: model.id,
@@ -69,6 +86,61 @@ function messageContentSignature(content: any): string {
 
 function getContextMessageSignatures(context: Context): string[] {
 	return context.messages.map((message: any) => `${message.role}:${messageContentSignature(message.content)}`);
+}
+
+function readSettingsFile(filePath: string): ProviderSettings {
+	if (!existsSync(filePath)) return {};
+	try {
+		const raw = readFileSync(filePath, "utf-8");
+		const parsed = JSON.parse(raw) as Record<string, unknown>;
+		const settingsBlock =
+			(parsed["claudeAgentSdkProvider"] as Record<string, unknown> | undefined) ??
+			(parsed["claude-agent-sdk-provider"] as Record<string, unknown> | undefined) ??
+			(parsed["claudeAgentSdk"] as Record<string, unknown> | undefined);
+		if (!settingsBlock || typeof settingsBlock !== "object") return {};
+		const appendSystemPrompt =
+			typeof settingsBlock["appendSystemPrompt"] === "boolean"
+				? (settingsBlock["appendSystemPrompt"] as boolean)
+				: undefined;
+		const settingSourcesRaw = settingsBlock["settingSources"];
+		const settingSources =
+			Array.isArray(settingSourcesRaw) &&
+			settingSourcesRaw.every(
+				(value) => typeof value === "string" && (value === "user" || value === "project" || value === "local"),
+			)
+				? (settingSourcesRaw as ClaudeSettingSource[])
+				: undefined;
+		const strictMcpConfig =
+			typeof settingsBlock["strictMcpConfig"] === "boolean"
+				? (settingsBlock["strictMcpConfig"] as boolean)
+				: undefined;
+		return {
+			appendSystemPrompt,
+			settingSources,
+			strictMcpConfig,
+		};
+	} catch {
+		return {};
+	}
+}
+
+function loadProviderSettings(cwd: string): ResolvedProviderSettings {
+	const globalSettings = readSettingsFile(GLOBAL_SETTINGS_PATH);
+	const projectSettings = readSettingsFile(join(cwd, ".pi", "settings.json"));
+	const merged = { ...globalSettings, ...projectSettings };
+	const appendSystemPrompt = merged.appendSystemPrompt ?? false;
+	const settingSources = merged.settingSources ?? (appendSystemPrompt ? [] : ["user"]);
+	const strictMcpConfig = merged.strictMcpConfig ?? false;
+	return {
+		appendSystemPrompt,
+		settingSources,
+		strictMcpConfig,
+		bridgeConfigSignature: JSON.stringify({
+			appendSystemPrompt,
+			settingSources,
+			strictMcpConfig,
+		}),
+	};
 }
 
 function extractPromptBlocks(context: Context): Array<{ type: "text"; text: string } | { type: "image"; data?: string; mimeType?: string; uri?: string }> {
@@ -138,6 +210,7 @@ function streamClaudeAcp(model: Model<any>, context: Context, options?: SimpleSt
 		const output = createOutputMessage(model);
 		const cwd = (options as { cwd?: string } | undefined)?.cwd ?? process.cwd();
 		const sessionKey = resolveSessionKey(options, cwd);
+		const providerSettings = loadProviderSettings(cwd);
 		let bridgeSession: Awaited<ReturnType<typeof ensureBridgeSession>> | undefined;
 		let aborted = false;
 
@@ -165,7 +238,10 @@ function streamClaudeAcp(model: Model<any>, context: Context, options?: SimpleSt
 				sessionKey,
 				cwd,
 				modelId: model.id,
-				systemPromptAppend: context.systemPrompt,
+				systemPromptAppend: providerSettings.appendSystemPrompt ? context.systemPrompt : undefined,
+				settingSources: providerSettings.settingSources,
+				strictMcpConfig: providerSettings.strictMcpConfig,
+				bridgeConfigSignature: providerSettings.bridgeConfigSignature,
 				contextMessageSignatures: getContextMessageSignatures(context),
 			});
 
