@@ -1,193 +1,301 @@
 # claude-agent-sdk-pi
 
-> **Fork note (junghan0611):** This is a stability-focused fork of [prateekmedia/claude-agent-sdk-pi](https://github.com/prateekmedia/claude-agent-sdk-pi). Priority is pi-native correctness over feature additions.
-
-This extension registers a custom provider that routes LLM calls through the **Claude Agent SDK** while **pi executes tools** and renders tool results in the TUI.
-
-## Version & Dependencies
-
-| Package | Installed | Latest | Gap | Notes |
-|---------|-----------|--------|-----|-------|
-| claude-agent-sdk-pi (this fork) | 1.0.16+ | — | — | Stability patches applied |
-| @anthropic-ai/claude-agent-sdk | 0.2.32 | 0.2.97 | ~65 versions (2026-02-05 → 04-08) | SDK bridge — upgrade after stability verified |
-| @anthropic-ai/sdk | 0.73.0 | 0.86.1 | ~13 versions (2026-02-05 → 04-08) | Anthropic API types |
-| @mariozechner/pi-ai | 0.66.1 | — | — | pi core |
-| @mariozechner/pi-coding-agent | 0.66.1 | — | — | pi tool schemas (edits[] since 0.66.1) |
-
-> **Upgrade strategy:** Fix pi-native bugs first → verify stability → then upgrade SDK. Mixing both makes root cause isolation impossible.
-
-## Fork Changelog
-
-### 2026-04-09: Stability patch — pi-native correctness
-
-**Problem:** Repeated messages, Edit silent failures, context contamination.
-
-**Root cause analysis (3 bugs):**
-
-1. **Edit arg mapping mismatch** — pi expects `{ path, edits: [{ oldText, newText }] }` but provider sent `{ path, oldText, newText }`. Edit calls silently failed, causing Claude to repeat the same edit proposal.
-
-2. **ToolWatch ledger context contamination** — The ledger (PR #3) re-injected "recovered" tool results into every prompt as text. Combined with `session_id: "prompt"` (no native session), this caused the model to re-process completed work and duplicate messages.
-
-3. **Module re-registration on subagent spawn** — No guard against `registerProvider()` being called twice when subagents reload the module, overwriting the parent’s `streamSimple` with empty state.
-
-**Changes:**
-
-| Fix | File | Lines |
-|-----|------|-------|
-| Edit args wrapped in `edits[]` array + explicit error on missing args | index.ts | mapToolArgs/edit |
-| Grep: pass `ignoreCase`, `literal`, `context` to pi | index.ts | mapToolArgs/grep |
-| Find: pass `limit` to pi | index.ts | mapToolArgs/find |
-| ToolWatch ledger disabled via `TOOL_WATCH_ENABLED = false` | index.ts | kill switch |
-| Module re-registration guard via `Symbol.for()` | index.ts | export default |
-
-**Design principle:** pi manages its own context, sessions, and tool results. This provider should be a thin bridge, not a parallel state machine.
-
-### 2026-04-09: Disable SDK session persistence
-
-- `persistSession: false` — pi manages its own sessions. SDK persistence causes JSONL bloat and state divergence.
-
-### 2026-04-09: Harness-first setup workflow
-
-- Added `run.sh` for local development: setup, auth sync, install, smoke test.
-
-## Highlights
-
-- Claude Agent SDK is used as the LLM backend (Claude Code auth or API key).
-- Tool execution is **blocked in Claude Code**; pi executes tools natively.
-- Built-in tool calls are mapped to Claude Code tool names.
-- Custom tools are exposed to Claude Code via in-process MCP.
-- Skills can be appended to Claude Code’s default system prompt (optional).
-
-## Demo
+> Transitional repository name. The package name and provider ID are kept for compatibility, but the runtime architecture has pivoted from a direct Claude Agent SDK bridge to an ACP-first bridge.
 
 ![Demo](screenshot.png)
 
-## Setup
+## Status
 
-### Harness-first local workflow
+**Current phase:** Phase 1 ACP bridge is implemented and smoke-tested.
 
-For local harness management, use `run.sh` from this repo:
+**Current runtime path:**
+
+```text
+pi
+  -> claude-agent-sdk-pi   (this extension; thin ACP client)
+    -> claude-agent-acp    (canonical ACP server for Claude Code)
+      -> Claude Code
+```
+
+**Compatibility note:**
+- Package/repo name is still `claude-agent-sdk-pi`
+- Provider ID is still `claude-agent-sdk`
+- A rename may happen later, after the ACP path is stable
+
+---
+
+## History
+
+### 2026-04-09 — The direct bridge started to collapse under bespoke glue
+
+This repository began as a fork of the original `claude-agent-sdk-pi` approach: use the Claude Agent SDK directly inside a pi provider, block tool execution inside Claude Code, and let pi execute tools itself.
+
+That approach looked attractive because it appeared to preserve pi-native control over tools, sessions, and UI. In practice, it accumulated too much custom glue:
+
+- tool name mapping
+- tool argument rewriting
+- prompt reconstruction
+- session emulation
+- tool call ID normalization
+- context recovery / ledger logic
+- custom MCP exposure for pi tools
+- provider-side compensation for SDK behavior changes
+
+The result was not “Claude is weak.” The result was that the bridge itself became a parallel state machine.
+
+That showed up as concrete failures:
+
+- repeated or duplicated assistant output
+- edit failures caused by argument-shape drift
+- context contamination from recovered tool results
+- unstable behavior whenever upstream SDK semantics shifted
+
+### 2026-04-09 — Stabilization pass on the old architecture
+
+Before changing architecture, this fork applied a short stabilization pass to confirm the immediate failure modes:
+
+- fixed the `edit` argument mapping to pi’s `edits[]` shape
+- disabled the ToolWatch ledger that re-injected stale tool results
+- added a module re-registration guard to prevent provider overwrite on reload/subagent import
+- disabled SDK session persistence because pi already owns session history
+
+Those fixes improved local behavior, but they also made the deeper conclusion obvious:
+
+> The long-term problem was not a missing patch. The problem was the amount of bespoke protocol translation sitting between pi and Claude Code.
+
+### 2026-04-10 — Architectural pivot to ACP
+
+The project then pivoted to a new approach:
+
+- keep **pi** as the top-level harness
+- keep **Claude Code** as Claude Code
+- remove as much bespoke bridge logic as possible
+- connect them through the **Agent Client Protocol (ACP)**
+
+That means this repository is no longer trying to be a custom re-implementation of Claude Code behavior inside pi.
+
+Instead, it is now a **thin ACP client extension for pi**.
+
+This shift is the core design decision of the project.
+
+---
+
+## Problem Statement
+
+The original direct-SDK path tried to make pi and Claude Code share one behavioral model.
+That required translation layers in both directions.
+
+Over time, those layers created three structural problems:
+
+1. **Semantic drift**
+   - upstream SDK/tool behavior changed faster than the custom bridge could safely track
+
+2. **State duplication**
+   - pi had one view of the conversation
+   - the provider had another
+   - Claude Code had a third
+
+3. **Bespoke recovery logic**
+   - once the bridge started compensating for previous mismatches, each fix increased the next mismatch surface
+
+The ACP pivot solves this by changing the layer boundary instead of adding more patches.
+
+---
+
+## Current Approach
+
+### Principle
+
+This extension should be a **thin transport and event-mapping layer**, not a second harness.
+
+### Responsibilities by layer
+
+#### pi
+- owns the top-level harness
+- owns session/UI/delegation/memory/agenda conventions
+- selects the provider
+- renders streaming output
+
+#### this repository (`claude-agent-sdk-pi`)
+- spawns `claude-agent-acp`
+- initializes the ACP connection
+- creates/reuses ACP sessions
+- forwards the current user prompt
+- maps ACP session updates into pi stream events
+- handles cancellation and process lifecycle
+
+#### `claude-agent-acp`
+- provides the canonical ACP server for Claude Code
+- owns Claude-specific ACP semantics
+
+#### Claude Code
+- remains the actual Claude-side engine
+- keeps its own native behavior through the ACP server path
+
+### What this explicitly avoids
+
+This repository should **not** reintroduce:
+
+- prompt reconstruction from full pi history
+- a second session ledger for “recovered” tool state
+- custom tool-call semantics that fight the ACP/Claude path
+- ad-hoc provider-side emulation of Claude Code internals
+
+---
+
+## What Is Implemented Today
+
+### Phase 1: minimal working ACP bridge
+
+Implemented now:
+
+- provider registration in pi
+- model listing via pi’s Anthropic model catalog
+- subprocess spawn of `claude-agent-acp`
+- ACP `initialize`
+- ACP `newSession`
+- ACP `prompt`
+- ACP prompt cancellation
+- ACP session reuse keyed by the pi session ID
+- streaming mapping for:
+  - `agent_message_chunk` -> pi text events
+  - `agent_thought_chunk` -> pi thinking events
+- basic usage / stop-reason propagation
+- local smoke testing through `run.sh`
+
+### Current module layout
+
+- `index.ts` — pi provider registration and top-level stream entry
+- `acp-bridge.ts` — subprocess lifecycle, ACP connection, session management
+- `event-mapper.ts` — ACP session updates -> pi stream events
+- `run.sh` — install/auth/smoke workflow
+
+---
+
+## What Is Not Done Yet
+
+The following items are intentionally **not** claimed as complete:
+
+- rich pi-side rendering of `tool_call` / `tool_call_update`
+- ACP `loadSession` / resume / replay support
+- a deliberate long-term strategy for pi-native tool routing
+- full settings/config surface for the new ACP bridge
+- package/repository/provider renaming after stabilization
+- full documentation refresh across every historical note in the repo
+
+---
+
+## Tool Strategy (Current Reality)
+
+At the moment, this repository is focused on making the **ACP path itself** correct and minimal.
+
+That means the current implementation is **not** trying to recreate the previous “pi executes all Claude-requested tools through a custom direct bridge” model.
+
+The architectural priority is:
+
+1. make the ACP path reliable
+2. keep the extension small
+3. only revisit tool-routing decisions after the transport/session layer is stable
+
+If a future phase reintroduces pi-native tool execution, it should be treated as a deliberate design project — not as a quick compatibility patch.
+
+---
+
+## Development Workflow
+
+### Install dependencies
 
 ```bash
-cd ~/repos/gh/claude-agent-sdk-pi
+npm install
+```
+
+### Type-check
+
+```bash
+npm run typecheck
+```
+
+### Local smoke test
+
+```bash
+./run.sh smoke .
+```
+
+The current smoke workflow checks two things:
+
+1. pi can load the provider and list models
+2. the ACP bridge can create a session, send a prompt, and receive a real response
+
+### Local setup into another pi project
+
+```bash
 ./run.sh setup ~/repos/gh/agent-config
 ```
 
-What it does:
-- runs `npm install`
-- copies `anthropic` OAuth credentials in `~/.pi/agent/auth.json` to the `claude-agent-sdk` alias (if present)
-- installs this local repo path into the target project's `.pi/settings.json`
-- runs a smoke test with `pi -e <repo> ...`
+This will:
 
-Other commands:
+- install dependencies
+- sync pi auth alias data
+- install this local package path into the target project’s `.pi/settings.json`
+- run a smoke test
+
+---
+
+## Environment Overrides
+
+### Override the ACP server command
 
 ```bash
-./run.sh sync-auth
-./run.sh install ~/repos/gh/agent-config
-./run.sh smoke ~/repos/gh/agent-config
-./run.sh remove ~/repos/gh/agent-config
+export CLAUDE_AGENT_ACP_COMMAND='node /path/to/claude-agent-acp/dist/index.js'
 ```
 
-### Standard package install
+If unset, the bridge tries:
 
-1) Install the extension globally (npm is the preferred source now):
+1. the locally installed `@agentclientprotocol/claude-agent-acp` package
+2. `claude-agent-acp` from `PATH`
 
-```
-pi install npm:claude-agent-sdk-pi
-```
+### Permission mode for ACP requests
 
-(You can pin a specific version for reproducible installs.)
-
-**Alternative (git):**
-
-```
-pi install git:github.com/prateekmedia/claude-agent-sdk-pi
+```bash
+export CLAUDE_ACP_PERMISSION_MODE=approve-all
 ```
 
-See **pi-coding-agent** install docs for other install sources and paths.
+Supported values today:
 
-2) **Authenticate** (choose one):
+- `approve-all`
+- `approve-reads`
+- `deny-all`
 
-- **Claude Code login** (Pro/Max):
-  ```bash
-  npx @anthropic-ai/claude-code
-  ```
-  Ensure no API key env vars are set.
+This is intentionally minimal for Phase 1.
 
-- **API key** (API plan):
-  ```bash
-  export ANTHROPIC_API_KEY=sk-ant-...
-  ```
+---
 
-3) Reload pi:
+## Roadmap
 
-```
-/reload
-```
+### Near-term
 
-## Provider ID
+- improve pi-side rendering for tool updates
+- add ACP session load/reuse beyond the current live-process model
+- tighten error reporting and diagnostics
+- document the new architecture more rigorously
 
-`claude-agent-sdk`
+### Mid-term
 
-Use `/model` to select:
-- `claude-agent-sdk/claude-opus-4-5`
-- `claude-agent-sdk/claude-haiku-4-5`
+- decide whether pi-native tool routing is worth reintroducing
+- add a clearer configuration surface for bridge behavior
+- rename the repository/provider once the architecture settles
 
-## Tool Behavior
+### Long-term
 
-- Claude Code **proposes** tool calls.
-- pi **executes** them.
-- Tool execution in Claude Code is **denied**.
+- keep the bridge boring
+- minimize custom semantics
+- rely on ACP as the stable boundary instead of growing another bespoke layer
 
-Built-in tool mapping (Claude Code → pi):
+---
 
-| Claude Code | pi | Args mapped |
-|-------------|------|-------------|
-| Read | read | `path`, `offset`, `limit` |
-| Write | write | `path`, `content` |
-| Edit | edit | `path`, `edits: [{ oldText, newText }]` |
-| Bash | bash | `command`, `timeout` |
-| Grep | grep | `pattern`, `path`, `glob`, `ignoreCase`, `literal`, `context`, `limit` |
-| Glob | find | `pattern`, `path`, `limit` |
+## Design Rule
 
-Claude Code only sees the tools that are active in pi.
+If a proposed change makes this repository more magical, more stateful, or more “special,” it is probably moving in the wrong direction.
 
-### Custom tools
-
-Any extra tools registered in pi are exposed to Claude Code via an in-process MCP server:
-
-- MCP server name: `custom-tools`
-- Claude Code tool name format: `mcp__custom-tools__<toolName>`
-- Example: `mcp__custom-tools__subagent`
-
-The provider automatically maps these back to the pi tool name (e.g. `subagent`).
-
-## Context loading
-
-1) **Append to system prompt (Default)**
-   - Uses **AGENTS.md + skills** from pi and appends to Claude Code’s preset prompt.
-   - No extra config needed.
-
-2) **Use Claude Code’s dir (Recommended)**
-   - Set `appendSystemPrompt: false` so Claude Code loads its own resources from `.claude/`.
-   - By default it loads both user + project settings (`["user","project"]`).
-   - If you want to **ignore project-level `.claude/` folders**, set `settingSources: ["user"]`.
-   - This provider runs Claude Code in a **tool-denied** mode (pi executes tools), so auto-loading MCP servers from
-     `~/.claude.json` is usually just token overhead. By default, the provider passes `--strict-mcp-config` to prevent
-     that tool schema dump. Set `strictMcpConfig: false` to opt out.
-
-   **Config (user-only CLAUDE.md/skills + no MCP auto-load):**
-   ```json
-   {
-     "claudeAgentSdkProvider": {
-       "appendSystemPrompt": false,
-       "settingSources": ["user"],
-       "strictMcpConfig": true
-     }
-   }
-   ```
-
-   ```bash
-   ln -s ~/.pi/agent/AGENTS.md ~/.claude/CLAUDE.md
-   ln -s ~/.pi/agent/skills ~/.claude/skills
-   ```
+The goal is not to be clever.
+The goal is to be thin, standard, and reliable.

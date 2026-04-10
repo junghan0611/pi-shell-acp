@@ -164,8 +164,39 @@ smoke_test() {
   (cd "$project_dir" && pi -e "$REPO_DIR" --list-models claude-agent-sdk >/dev/null)
   echo "[smoke] provider models: ok"
 
-  (cd "$project_dir" && pi -e "$REPO_DIR" --model "$model" -p "ok만 답하세요" | tail -n 5)
-  echo "[smoke] prompt: ok"
+  (cd "$REPO_DIR" && node --input-type=module <<'EOF'
+import { ensureBridgeSession, sendPrompt, setActivePromptHandler, closeBridgeSession } from './acp-bridge.ts';
+
+const sessionKey = 'run-sh-smoke';
+const session = await ensureBridgeSession({
+  sessionKey,
+  cwd: process.cwd(),
+  modelId: process.env.PI_CLAUDE_AGENT_SDK_MODEL_ID || 'claude-sonnet-4-6',
+  systemPromptAppend: '간단히 답하세요.',
+});
+
+let text = '';
+setActivePromptHandler(session, (notification) => {
+  const update = notification.update;
+  if (update?.sessionUpdate === 'agent_message_chunk' && update.content?.type === 'text') {
+    text += update.content.text;
+  }
+});
+
+const result = await sendPrompt(session, [{ type: 'text', text: 'ok만 답하세요.' }]);
+setActivePromptHandler(session, undefined);
+await closeBridgeSession(sessionKey);
+
+if (result.stopReason !== 'end_turn') {
+  throw new Error(`unexpected stopReason: ${result.stopReason}`);
+}
+if (!text.trim()) {
+  throw new Error('empty bridge response');
+}
+console.log(`[smoke] bridge response: ${text.trim()}`);
+EOF
+  )
+  echo "[smoke] bridge prompt: ok"
 }
 
 setup_all() {

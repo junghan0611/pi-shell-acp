@@ -1,340 +1,10 @@
-import { calculateCost, createAssistantMessageEventStream, getModels, type AssistantMessage, type AssistantMessageEventStream, type Context, type ImageContent, type Model, type SimpleStreamOptions, type Tool, type ToolResultMessage } from "@mariozechner/pi-ai";
-import { AuthStorage, type ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import { createSdkMcpServer, query, type SDKMessage, type SDKUserMessage, type SettingSource } from "@anthropic-ai/claude-agent-sdk";
-import Anthropic from "@anthropic-ai/sdk";
-import type { Base64ImageSource, CacheControlEphemeral, ContentBlockParam, ImageBlockParam, MessageParam, TextBlockParam, ToolResultBlockParam, ToolUseBlockParam } from "@anthropic-ai/sdk/resources";
-import { pascalCase } from "change-case";
-import { existsSync, readFileSync } from "fs";
-import { homedir } from "os";
-import { dirname, join, relative, resolve } from "path";
-import { z } from "zod";
+import { calculateCost, createAssistantMessageEventStream, getModels, type AssistantMessage, type AssistantMessageEventStream, type Context, type Model, type SimpleStreamOptions } from "@mariozechner/pi-ai";
+import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import { applyAcpSessionUpdate, finalizeAcpStreamState, type AcpPiStreamState } from "./event-mapper.js";
+import { cancelActivePrompt, closeBridgeSession, ensureBridgeSession, getBridgeErrorDetails, sendPrompt, setActivePromptHandler } from "./acp-bridge.js";
 
 const PROVIDER_ID = "claude-agent-sdk";
-
-const SDK_TO_PI_TOOL_NAME: Record<string, string> = {
-	read: "read",
-	write: "write",
-	edit: "edit",
-	bash: "bash",
-	grep: "grep",
-	glob: "find",
-};
-
-const PI_TO_SDK_TOOL_NAME: Record<string, string> = {
-	read: "Read",
-	write: "Write",
-	edit: "Edit",
-	bash: "Bash",
-	grep: "Grep",
-	find: "Glob",
-	glob: "Glob",
-};
-
-const DEFAULT_TOOLS = ["Read", "Write", "Edit", "Bash", "Grep", "Glob"];
-
-const BUILTIN_TOOL_NAMES = new Set(Object.keys(PI_TO_SDK_TOOL_NAME));
-const TOOL_EXECUTION_DENIED_MESSAGE = "Tool execution is unavailable in this environment.";
-const MCP_SERVER_NAME = "custom-tools";
-const MCP_TOOL_PREFIX = `mcp__${MCP_SERVER_NAME}__`;
-
-const SKILLS_ALIAS_GLOBAL = "~/.claude/skills";
-const SKILLS_ALIAS_PROJECT = ".claude/skills";
-const GLOBAL_SKILLS_ROOT = join(homedir(), ".pi", "agent", "skills");
-const PROJECT_SKILLS_ROOT = join(process.cwd(), ".pi", "skills");
-const GLOBAL_SETTINGS_PATH = join(homedir(), ".pi", "agent", "settings.json");
-const PROJECT_SETTINGS_PATH = join(process.cwd(), ".pi", "settings.json");
-const GLOBAL_AGENTS_PATH = join(homedir(), ".pi", "agent", "AGENTS.md");
-
-// ToolWatch ledger disabled — pi manages its own context and tool results.
-// Re-injecting recovered results causes duplicate messages and context contamination.
-// To re-enable for debugging, set TOOL_WATCH_ENABLED = true.
-const TOOL_WATCH_ENABLED = false;
-
-const TOOL_WATCH_CUSTOM_TYPE = "claude-agent-sdk-tool-watch";
-const MAX_TRACKED_TOOL_EXECUTIONS = 256;
-const MAX_TRACKED_TOOL_CONTENT_CHARS = 4000;
-const MAX_LEDGER_TOOL_RESULTS = 4;
-const MAX_LEDGER_TOOL_CONTENT_CHARS = 1200;
-
-type ToolWatchCustomEntryData = {
-	type: "tool_execution_end";
-	toolCallId: string;
-	toolName: string;
-	content: string;
-	isError: boolean;
-	timestamp: number;
-};
-
-type PendingToolCall = {
-	toolName: string;
-	timestamp: number;
-};
-
-type TrackedToolExecution = {
-	toolCallId: string;
-	toolName: string;
-	content: string;
-	isError: boolean;
-	timestamp: number;
-};
-
-type SessionToolWatchState = {
-	pendingToolCalls: Map<string, PendingToolCall>;
-	completedToolCalls: Map<string, TrackedToolExecution>;
-};
-
-const toolWatchStateBySession = new Map<string, SessionToolWatchState>();
-let activeSessionKey: string | undefined;
-let extensionApi: ExtensionAPI | undefined;
-
-function createEmptyToolWatchState(): SessionToolWatchState {
-	return {
-		pendingToolCalls: new Map(),
-		completedToolCalls: new Map(),
-	};
-}
-
-function getOrCreateToolWatchState(sessionKey: string): SessionToolWatchState {
-	const existing = toolWatchStateBySession.get(sessionKey);
-	if (existing) return existing;
-	const created = createEmptyToolWatchState();
-	toolWatchStateBySession.set(sessionKey, created);
-	return created;
-}
-
-function getSessionKeyFromSessionId(sessionId?: string): string | undefined {
-	if (!sessionId) return undefined;
-	return `session:${sessionId}`;
-}
-
-function getSessionKeyFromStreamOptions(options?: SimpleStreamOptions): string | undefined {
-	const fromOptions = getSessionKeyFromSessionId(options?.sessionId);
-	if (fromOptions) return fromOptions;
-	return activeSessionKey;
-}
-
-function getSessionKeyFromContext(ctx?: { sessionManager?: { getSessionId?: () => string } }): string | undefined {
-	const sessionId = ctx?.sessionManager?.getSessionId?.();
-	if (!sessionId) return undefined;
-	return getSessionKeyFromSessionId(sessionId);
-}
-
-function truncateText(text: string, limit: number): string {
-	if (text.length <= limit) return text;
-	return `${text.slice(0, limit)}\n...[truncated]`;
-}
-
-function stringifyUnknown(value: unknown): string {
-	if (typeof value === "string") return value;
-	try {
-		return JSON.stringify(value, null, 2);
-	} catch {
-		return String(value);
-	}
-}
-
-function contentToPlainText(
-	content:
-		| string
-		| Array<{
-			type?: string;
-			text?: string;
-			mimeType?: string;
-		}>
-		| undefined,
-): string {
-	if (typeof content === "string") return content;
-	if (!Array.isArray(content)) return "";
-	return content
-		.map((block) => {
-			if (block?.type === "text") return block.text ?? "";
-			if (block?.type === "image") return `[image:${block.mimeType ?? "unknown"}]`;
-			if (block?.type) return `[${block.type}]`;
-			return "";
-		})
-		.filter((line) => line.length > 0)
-		.join("\n");
-}
-
-function extractToolExecutionContent(result: unknown): string {
-	if (result && typeof result === "object" && "content" in result) {
-		const objectResult = result as { content?: unknown };
-		const text = contentToPlainText(
-			Array.isArray(objectResult.content)
-				? (objectResult.content as Array<{ type?: string; text?: string; mimeType?: string }>)
-				: undefined,
-		);
-		if (text) return truncateText(text, MAX_TRACKED_TOOL_CONTENT_CHARS);
-	}
-	const fallback = stringifyUnknown(result);
-	return truncateText(fallback, MAX_TRACKED_TOOL_CONTENT_CHARS);
-}
-
-function collectAssistantToolCalls(message: unknown): Array<{ id: string; name: string }> {
-	if (!message || typeof message !== "object") return [];
-	const assistantMessage = message as {
-		role?: string;
-		content?: Array<{ type?: string; id?: string; name?: string }>;
-	};
-	if (assistantMessage.role !== "assistant" || !Array.isArray(assistantMessage.content)) return [];
-	return assistantMessage.content
-		.filter((block): block is { type: "toolCall"; id: string; name: string } => {
-			return block?.type === "toolCall" && typeof block.id === "string" && typeof block.name === "string";
-		})
-		.map((block) => ({ id: block.id, name: block.name }));
-}
-
-function trackPendingToolCall(sessionKey: string, toolCallId: string, toolName: string, timestamp: number): void {
-	const state = getOrCreateToolWatchState(sessionKey);
-	if (state.completedToolCalls.has(toolCallId)) return;
-	state.pendingToolCalls.set(toolCallId, { toolName, timestamp });
-}
-
-function trackCompletedToolCall(sessionKey: string, execution: TrackedToolExecution): void {
-	const state = getOrCreateToolWatchState(sessionKey);
-	state.pendingToolCalls.delete(execution.toolCallId);
-	state.completedToolCalls.delete(execution.toolCallId);
-	state.completedToolCalls.set(execution.toolCallId, execution);
-	while (state.completedToolCalls.size > MAX_TRACKED_TOOL_EXECUTIONS) {
-		const oldestKey = state.completedToolCalls.keys().next().value;
-		if (!oldestKey) break;
-		state.completedToolCalls.delete(oldestKey);
-	}
-}
-
-function hydrateToolWatchStateFromEntries(sessionKey: string, entries: Array<Record<string, any>>): void {
-	toolWatchStateBySession.set(sessionKey, createEmptyToolWatchState());
-	for (const entry of entries) {
-		if (entry.type === "message") {
-			const message = entry.message;
-			const messageTimestamp = typeof message?.timestamp === "number" ? message.timestamp : Date.now();
-			if (message?.role === "assistant") {
-				for (const toolCall of collectAssistantToolCalls(message)) {
-					trackPendingToolCall(sessionKey, toolCall.id, toolCall.name, messageTimestamp);
-				}
-				continue;
-			}
-			if (message?.role === "toolResult") {
-				if (typeof message.toolCallId === "string" && typeof message.toolName === "string") {
-					trackCompletedToolCall(sessionKey, {
-						toolCallId: message.toolCallId,
-						toolName: message.toolName,
-						content: truncateText(contentToPlainText(message.content), MAX_TRACKED_TOOL_CONTENT_CHARS),
-						isError: message.isError === true,
-						timestamp: typeof message.timestamp === "number" ? message.timestamp : Date.now(),
-					});
-				}
-			}
-			continue;
-		}
-		if (entry.type === "custom" && entry.customType === TOOL_WATCH_CUSTOM_TYPE) {
-			const data = entry.data as ToolWatchCustomEntryData | undefined;
-			if (!data || data.type !== "tool_execution_end") continue;
-			if (!data.toolCallId || !data.toolName) continue;
-			trackCompletedToolCall(sessionKey, {
-				toolCallId: data.toolCallId,
-				toolName: data.toolName,
-				content: truncateText(data.content ?? "", MAX_TRACKED_TOOL_CONTENT_CHARS),
-				isError: data.isError === true,
-				timestamp: typeof data.timestamp === "number" ? data.timestamp : Date.now(),
-			});
-		}
-	}
-}
-
-function reconcileToolWatchStateWithContext(sessionKey: string, context: Context): void {
-	const state = toolWatchStateBySession.get(sessionKey);
-	if (!state) return;
-	for (const message of context.messages) {
-		if (message.role === "assistant") {
-			for (const toolCall of collectAssistantToolCalls(message)) {
-				if (!state.completedToolCalls.has(toolCall.id)) {
-					trackPendingToolCall(sessionKey, toolCall.id, toolCall.name, message.timestamp);
-				}
-			}
-			continue;
-		}
-		if (message.role === "toolResult") {
-			state.pendingToolCalls.delete(message.toolCallId);
-			if (!state.completedToolCalls.has(message.toolCallId)) {
-				trackCompletedToolCall(sessionKey, {
-					toolCallId: message.toolCallId,
-					toolName: message.toolName,
-					content: truncateText(contentToPlainText(message.content), MAX_TRACKED_TOOL_CONTENT_CHARS),
-					isError: message.isError,
-					timestamp: message.timestamp,
-				});
-			}
-		}
-	}
-}
-
-function buildToolWatchPromptNote(
-	sessionKey: string | undefined,
-	context: Context,
-	customToolNameToSdk?: Map<string, string>,
-): string | undefined {
-	if (!sessionKey) return undefined;
-	const state = toolWatchStateBySession.get(sessionKey);
-	if (!state) return undefined;
-
-	const toolResultIdsInContext = new Set<string>();
-	const assistantToolIdsInContext = new Set<string>();
-	for (const message of context.messages) {
-		if (message.role === "assistant") {
-			for (const toolCall of collectAssistantToolCalls(message)) {
-				assistantToolIdsInContext.add(toolCall.id);
-			}
-			continue;
-		}
-		if (message.role === "toolResult") {
-			toolResultIdsInContext.add(message.toolCallId);
-		}
-	}
-
-	const recoveredExecutions = Array.from(state.completedToolCalls.values())
-		.filter((execution) => {
-			if (toolResultIdsInContext.has(execution.toolCallId)) return false;
-			return assistantToolIdsInContext.has(execution.toolCallId) || state.pendingToolCalls.has(execution.toolCallId);
-		})
-		.sort((a, b) => b.timestamp - a.timestamp)
-		.slice(0, MAX_LEDGER_TOOL_RESULTS);
-
-	const unresolvedToolCalls = Array.from(state.pendingToolCalls.entries())
-		.filter(([toolCallId]) => {
-			if (toolResultIdsInContext.has(toolCallId)) return false;
-			return assistantToolIdsInContext.has(toolCallId);
-		})
-		.sort((a, b) => b[1].timestamp - a[1].timestamp)
-		.slice(0, MAX_LEDGER_TOOL_RESULTS);
-
-	if (!recoveredExecutions.length && !unresolvedToolCalls.length) return undefined;
-
-	const parts: string[] = [];
-
-	if (recoveredExecutions.length) {
-		for (const execution of recoveredExecutions) {
-			const sdkToolName = mapPiToolNameToSdk(execution.toolName, customToolNameToSdk);
-			const status = execution.isError ? "error" : "ok";
-			const content = truncateText(execution.content || "(empty tool result)", MAX_LEDGER_TOOL_CONTENT_CHARS);
-			parts.push(
-				`TOOL RESULT (recovered ${sdkToolName}, id=${execution.toolCallId}, status=${status}):\n${content}`,
-			);
-		}
-	}
-
-	if (unresolvedToolCalls.length) {
-		for (const [toolCallId, pending] of unresolvedToolCalls) {
-			const sdkToolName = mapPiToolNameToSdk(pending.toolName, customToolNameToSdk);
-			parts.push(
-				`TOOL RESULT (missing execution ${sdkToolName}, id=${toolCallId}, status=error):\n` +
-					"Tool execution did not complete or its result was not observed. Do not guess. Call the tool again.",
-			);
-		}
-	}
-
-	return parts.join("\n\n");
-}
+const REGISTERED_SYMBOL = Symbol.for("claude-agent-sdk-pi:registered");
 
 const MODELS = getModels("anthropic").map((model) => ({
 	id: model.id,
@@ -346,1305 +16,146 @@ const MODELS = getModels("anthropic").map((model) => ({
 	maxTokens: model.maxTokens,
 }));
 
-
-// --- Direct Anthropic API path (multi-turn, parity with pi-mono anthropic provider) ---
-
-function sanitizeSurrogates(text: string): string {
-	return text.replace(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g, "");
-}
-
-function normalizeToolCallId(id: string): string {
-	return id.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 64);
-}
-
-function preprocessMessages(messages: readonly import("@mariozechner/pi-ai").Message[]): import("@mariozechner/pi-ai").Message[] {
-	const result: import("@mariozechner/pi-ai").Message[] = [];
-	let pendingToolCallIds = new Set<string>();
-	let existingToolResultIds = new Set<string>();
-
-	for (let i = 0; i < messages.length; i++) {
-		const msg = messages[i];
-
-		if (msg.role === "assistant") {
-			if (pendingToolCallIds.size > 0) {
-				for (const tcId of pendingToolCallIds) {
-					if (!existingToolResultIds.has(tcId)) {
-						result.push({
-							role: "toolResult",
-							toolCallId: tcId,
-							toolName: "",
-							content: [{ type: "text", text: "No result provided" }],
-							isError: true,
-							timestamp: Date.now(),
-						} as ToolResultMessage);
-					}
-				}
-				pendingToolCallIds = new Set();
-				existingToolResultIds = new Set();
-			}
-
-			if (msg.stopReason === "error" || msg.stopReason === "aborted") {
-				continue;
-			}
-
-			const toolCalls = msg.content.filter((b) => b.type === "toolCall");
-			if (toolCalls.length > 0) {
-				pendingToolCallIds = new Set(toolCalls.map((tc) => (tc as any).id as string));
-				existingToolResultIds = new Set();
-			}
-			result.push(msg);
-		} else if (msg.role === "toolResult") {
-			existingToolResultIds.add(msg.toolCallId);
-			result.push(msg);
-		} else if (msg.role === "user") {
-			if (pendingToolCallIds.size > 0) {
-				for (const tcId of pendingToolCallIds) {
-					if (!existingToolResultIds.has(tcId)) {
-						result.push({
-							role: "toolResult",
-							toolCallId: tcId,
-							toolName: "",
-							content: [{ type: "text", text: "No result provided" }],
-							isError: true,
-							timestamp: Date.now(),
-						} as ToolResultMessage);
-					}
-				}
-				pendingToolCallIds = new Set();
-				existingToolResultIds = new Set();
-			}
-			result.push(msg);
-		} else {
-			result.push(msg);
-		}
-	}
-
-	if (pendingToolCallIds.size > 0) {
-		for (const tcId of pendingToolCallIds) {
-			if (!existingToolResultIds.has(tcId)) {
-				result.push({
-					role: "toolResult",
-					toolCallId: tcId,
-					toolName: "",
-					content: [{ type: "text", text: "No result provided" }],
-					isError: true,
-					timestamp: Date.now(),
-				} as ToolResultMessage);
-			}
-		}
-	}
-
-	return result;
-}
-
-function buildMultiTurnMessages(context: Context): MessageParam[] {
-	const params: MessageParam[] = [];
-	const messages = preprocessMessages(context.messages);
-
-	for (let i = 0; i < messages.length; i++) {
-		const msg = messages[i];
-
-		if (msg.role === "user") {
-			if (typeof msg.content === "string") {
-				if (msg.content.trim().length > 0) {
-					params.push({ role: "user", content: sanitizeSurrogates(msg.content) });
-				}
-				continue;
-			}
-			const blocks: ContentBlockParam[] = [];
-			let hasText = false;
-			for (const item of msg.content) {
-				if (item.type === "text") {
-					if (item.text.trim().length > 0) hasText = true;
-					blocks.push({ type: "text", text: sanitizeSurrogates(item.text) });
-				} else if (item.type === "image") {
-					blocks.push({
-						type: "image",
-						source: { type: "base64", media_type: item.mimeType as Base64ImageSource["media_type"], data: item.data },
-					});
-				}
-			}
-			if (!hasText && blocks.some((b) => b.type === "image")) {
-				blocks.unshift({ type: "text", text: "(see attached image)" });
-			}
-			if (blocks.length === 0) continue;
-			params.push({ role: "user", content: blocks });
-
-		} else if (msg.role === "assistant") {
-			const blocks: ContentBlockParam[] = [];
-			for (const block of msg.content) {
-				if (block.type === "text") {
-					if (block.text.trim().length === 0) continue;
-					blocks.push({ type: "text", text: sanitizeSurrogates(block.text) });
-				} else if (block.type === "thinking") {
-					if (block.redacted) {
-						blocks.push({ type: "redacted_thinking", data: block.thinkingSignature! } as ContentBlockParam);
-						continue;
-					}
-					if (block.thinking.trim().length === 0) continue;
-					if (!block.thinkingSignature || block.thinkingSignature.trim().length === 0) {
-						blocks.push({ type: "text", text: sanitizeSurrogates(block.thinking) });
-					} else {
-						blocks.push({ type: "thinking", thinking: sanitizeSurrogates(block.thinking), signature: block.thinkingSignature } as ContentBlockParam);
-					}
-				} else if (block.type === "toolCall") {
-					blocks.push({ type: "tool_use", id: normalizeToolCallId(block.id), name: block.name, input: block.arguments ?? {} } as ToolUseBlockParam);
-				}
-			}
-			if (blocks.length === 0) continue;
-			params.push({ role: "assistant", content: blocks });
-
-		} else if (msg.role === "toolResult") {
-			const toolResults: ContentBlockParam[] = [];
-			const convertToolContent = (content: Array<{ type: string; text?: string; data?: string; mimeType?: string }>): ToolResultBlockParam["content"] => {
-				if (!content || content.length === 0) return undefined;
-				const hasImage = content.some((c) => c.type === "image");
-				if (!hasImage) {
-					return content.filter((c) => c.type === "text").map((c) => (c as any).text ?? "").join("\n");
-				}
-				return content.map((c) => {
-					if (c.type === "text") return { type: "text" as const, text: c.text ?? "" };
-					return { type: "image" as const, source: { type: "base64" as const, media_type: (c.mimeType ?? "image/png") as Base64ImageSource["media_type"], data: c.data ?? "" } };
-				});
-			};
-
-			toolResults.push({ type: "tool_result", tool_use_id: normalizeToolCallId(msg.toolCallId), content: convertToolContent(msg.content as any), is_error: msg.isError } as ToolResultBlockParam);
-			let j = i + 1;
-			while (j < messages.length && messages[j].role === "toolResult") {
-				const nextMsg = messages[j] as ToolResultMessage;
-				toolResults.push({ type: "tool_result", tool_use_id: normalizeToolCallId(nextMsg.toolCallId), content: convertToolContent(nextMsg.content as any), is_error: nextMsg.isError } as ToolResultBlockParam);
-				j++;
-			}
-			i = j - 1;
-			params.push({ role: "user", content: toolResults });
-		}
-	}
-
-	// Merge consecutive same-role messages (Anthropic API requires alternating roles)
-	const merged: MessageParam[] = [];
-	for (const msg of params) {
-		if (merged.length > 0 && merged[merged.length - 1].role === msg.role) {
-			const prev = merged[merged.length - 1];
-			const prevContent: ContentBlockParam[] = Array.isArray(prev.content) ? prev.content : [{ type: "text", text: prev.content as string }];
-			const curContent: ContentBlockParam[] = Array.isArray(msg.content) ? msg.content : [{ type: "text", text: msg.content as string }];
-			prev.content = [...prevContent, ...curContent];
-		} else {
-			merged.push({ ...msg });
-		}
-	}
-
-	if (merged.length > 0 && merged[0].role !== "user") {
-		merged.unshift({ role: "user", content: "(conversation continued)" });
-	}
-	if (merged.length === 0) {
-		merged.push({ role: "user", content: "" });
-	}
-
-	return merged;
-}
-
-function convertPiToolsToAnthropic(tools: Tool[] | undefined): Anthropic.Messages.Tool[] {
-	if (!tools || tools.length === 0) return [];
-	return tools.map((tool) => {
-		const jsonSchema = tool.parameters as any;
-		return {
-			name: tool.name,
-			description: tool.description,
-			input_schema: {
-				type: "object" as const,
-				properties: jsonSchema?.properties || {},
-				required: jsonSchema?.required || [],
-			},
-		};
-	});
-}
-
-function streamDirectAnthropic(model: Model<any>, context: Context, options?: SimpleStreamOptions): AssistantMessageEventStream {
-	const stream = createAssistantMessageEventStream();
-
-	(async () => {
-		const output: AssistantMessage = {
-			role: "assistant",
-			content: [],
-			api: model.api,
-			provider: model.provider,
-			model: model.id,
-			usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
-			stopReason: "stop",
-			timestamp: Date.now(),
-		};
-
-		try {
-			// pi passes the literal string "ANTHROPIC_API_KEY" from registerProvider, not the actual key.
-			// Resolve the real API key from auth storage (supports OAuth tokens).
-			const authStorage = AuthStorage.create();
-			const apiKey = await authStorage.getApiKey(PROVIDER_ID) ?? await authStorage.getApiKey("anthropic") ?? options?.apiKey;
-			if (!apiKey || apiKey === "ANTHROPIC_API_KEY") throw new Error("No API key available for claude-agent-sdk provider. Run: pi login anthropic");
-
-			const isOAuth = apiKey.includes("sk-ant-oat");
-			const client = isOAuth
-				? new Anthropic({
-					apiKey: null,
-					authToken: apiKey,
-					baseURL: "https://api.anthropic.com",
-					dangerouslyAllowBrowser: true,
-					defaultHeaders: {
-						"accept": "application/json",
-						"anthropic-dangerous-direct-browser-access": "true",
-						"anthropic-beta": "claude-code-20250219,oauth-2025-04-20,fine-grained-tool-streaming-2025-05-14",
-						"x-app": "cli",
-					},
-				} as ConstructorParameters<typeof Anthropic>[0])
-				: new Anthropic({ apiKey });
-
-			const messages = buildMultiTurnMessages(context);
-			const tools = convertPiToolsToAnthropic(context.tools);
-
-			const systemBlocks: Anthropic.Messages.TextBlockParam[] = [];
-			// OAuth requires Claude Code identity prefix (Anthropic validates app identity)
-			if (isOAuth) {
-				systemBlocks.push({
-					type: "text",
-					text: "You are Claude Code, Anthropic's official CLI for Claude.",
-					cache_control: { type: "ephemeral" },
-				});
-			}
-			if (context.systemPrompt) {
-				systemBlocks.push({ type: "text", text: sanitizeSurrogates(context.systemPrompt), cache_control: { type: "ephemeral" } });
-			}
-
-			const maxTokens = options?.maxTokens || Math.floor(model.maxTokens / 3);
-
-			const params: Anthropic.Messages.MessageCreateParamsStreaming = {
-				model: model.id,
-				messages,
-				max_tokens: maxTokens,
-				stream: true,
-				...(systemBlocks.length > 0 ? { system: systemBlocks } : {}),
-				...(tools.length > 0 ? { tools } : {}),
-			};
-
-			// Thinking configuration (matches pi-mono logic)
-			if (model.reasoning) {
-				const thinkingTokens = mapThinkingTokens(options?.reasoning, model.id, options?.thinkingBudgets);
-				if (options?.reasoning && thinkingTokens) {
-					const supportsAdaptive = model.id.includes("opus-4-6") || model.id.includes("opus-4.6")
-						|| model.id.includes("sonnet-4-6") || model.id.includes("sonnet-4.6");
-					if (supportsAdaptive) {
-						(params as any).thinking = { type: "adaptive" };
-						// Map reasoning level to effort for adaptive models
-						const effortMap: Record<string, string> = { minimal: "low", low: "low", medium: "medium", high: "high", xhigh: "high" };
-						const effort = options?.reasoning ? effortMap[options.reasoning] : undefined;
-						if (effort) {
-							(params as any).output_config = { effort };
-						}
-					} else {
-						(params as any).thinking = { type: "enabled", budget_tokens: thinkingTokens };
-					}
-				} else {
-					(params as any).thinking = { type: "disabled" };
-				}
-			}
-
-			if (options?.temperature !== undefined && !(params as any).thinking?.type?.match?.(/enabled|adaptive/)) {
-				params.temperature = options.temperature;
-			}
-
-			// Cache control on last user message
-			if (messages.length > 0) {
-				const lastMsg = messages[messages.length - 1];
-				if (lastMsg.role === "user" && Array.isArray(lastMsg.content)) {
-					const lastBlock = lastMsg.content[lastMsg.content.length - 1] as any;
-					if (lastBlock && (lastBlock.type === "text" || lastBlock.type === "tool_result")) {
-						lastBlock.cache_control = { type: "ephemeral" };
-					}
-				}
-			}
-
-			const apiStream = client.messages.stream(params);
-
-			if (options?.signal) {
-				const onAbort = () => { apiStream.abort(); };
-				if (options.signal.aborted) { apiStream.abort(); }
-				else { options.signal.addEventListener("abort", onAbort, { once: true }); }
-			}
-
-			stream.push({ type: "start", partial: output });
-
-			const blocks = output.content as Array<
-				| { type: "text"; text: string }
-				| { type: "thinking"; thinking: string; thinkingSignature?: string }
-				| { type: "toolCall"; id: string; name: string; arguments: Record<string, unknown>; partialJson: string }
-			>;
-
-			for await (const event of apiStream) {
-				if (event.type === "message_start") {
-					const usage = (event as any).message?.usage;
-					if (usage) {
-						output.usage.input = usage.input_tokens ?? 0;
-						output.usage.output = usage.output_tokens ?? 0;
-						output.usage.cacheRead = usage.cache_read_input_tokens ?? 0;
-						output.usage.cacheWrite = usage.cache_creation_input_tokens ?? 0;
-						output.usage.totalTokens = output.usage.input + output.usage.output + output.usage.cacheRead + output.usage.cacheWrite;
-						calculateCost(model, output.usage);
-					}
-				} else if (event.type === "content_block_start") {
-					const cb = (event as any).content_block;
-					if (cb?.type === "text") {
-						output.content.push({ type: "text", text: "" });
-						stream.push({ type: "text_start", contentIndex: output.content.length - 1, partial: output });
-					} else if (cb?.type === "thinking") {
-						output.content.push({ type: "thinking", thinking: "", thinkingSignature: "" });
-						stream.push({ type: "thinking_start", contentIndex: output.content.length - 1, partial: output });
-					} else if (cb?.type === "redacted_thinking") {
-						// Redacted thinking: store signature for multi-turn continuity
-						output.content.push({ type: "thinking", thinking: "", thinkingSignature: cb.data ?? "", redacted: true } as any);
-					} else if (cb?.type === "tool_use") {
-						(output.content as any[]).push({ type: "toolCall", id: cb.id, name: cb.name, arguments: (cb.input as Record<string, unknown>) ?? {}, partialJson: "" });
-						stream.push({ type: "toolcall_start", contentIndex: output.content.length - 1, partial: output });
-					}
-				} else if (event.type === "content_block_delta") {
-					const delta = (event as any).delta;
-					const idx = (event as any).index;
-					if (delta?.type === "text_delta") {
-						const block = blocks[idx];
-						if (block?.type === "text") {
-							block.text += delta.text;
-							stream.push({ type: "text_delta", contentIndex: idx, delta: delta.text, partial: output });
-						}
-					} else if (delta?.type === "thinking_delta") {
-						const block = blocks[idx];
-						if (block?.type === "thinking") {
-							block.thinking += delta.thinking;
-							stream.push({ type: "thinking_delta", contentIndex: idx, delta: delta.thinking, partial: output });
-						}
-					} else if (delta?.type === "input_json_delta") {
-						const block = blocks[idx];
-						if (block?.type === "toolCall") {
-							block.partialJson += delta.partial_json;
-							block.arguments = parsePartialJson(block.partialJson, block.arguments);
-							stream.push({ type: "toolcall_delta", contentIndex: idx, delta: delta.partial_json, partial: output });
-						}
-					} else if (delta?.type === "signature_delta") {
-						const block = blocks[idx];
-						if (block?.type === "thinking") {
-							block.thinkingSignature = (block.thinkingSignature ?? "") + delta.signature;
-						}
-					}
-				} else if (event.type === "content_block_stop") {
-					const idx = (event as any).index;
-					const block = blocks[idx];
-					if (!block) continue;
-					if (block.type === "text") {
-						stream.push({ type: "text_end", contentIndex: idx, content: block.text, partial: output });
-					} else if (block.type === "thinking") {
-						stream.push({ type: "thinking_end", contentIndex: idx, content: block.thinking, partial: output });
-					} else if (block.type === "toolCall") {
-						block.arguments = parsePartialJson(block.partialJson, block.arguments);
-						delete (block as any).partialJson;
-						stream.push({ type: "toolcall_end", contentIndex: idx, toolCall: block, partial: output });
-					}
-				} else if (event.type === "message_delta") {
-					const delta = (event as any).delta;
-					const usage = (event as any).usage;
-					output.stopReason = mapStopReason(delta?.stop_reason);
-					if (usage) {
-						if (usage.input_tokens != null) output.usage.input = usage.input_tokens;
-						if (usage.output_tokens != null) output.usage.output = usage.output_tokens;
-						if (usage.cache_read_input_tokens != null) output.usage.cacheRead = usage.cache_read_input_tokens;
-						if (usage.cache_creation_input_tokens != null) output.usage.cacheWrite = usage.cache_creation_input_tokens;
-						output.usage.totalTokens = output.usage.input + output.usage.output + output.usage.cacheRead + output.usage.cacheWrite;
-						calculateCost(model, output.usage);
-					}
-				}
-			}
-
-			// Ensure toolUse stopReason if we got tool calls
-			if (output.content.some((b) => b.type === "toolCall")) {
-				output.stopReason = "toolUse";
-			}
-
-			stream.push({
-				type: "done",
-				reason: output.stopReason === "toolUse" ? "toolUse" : output.stopReason === "length" ? "length" : "stop",
-				message: output,
-			});
-			stream.end();
-		} catch (error: any) {
-			if (error?.status === 529) {
-				output.stopReason = "error";
-				output.errorMessage = "Anthropic API is overloaded. Please try again.";
-			} else {
-				output.stopReason = options?.signal?.aborted ? "aborted" : "error";
-				output.errorMessage = error?.message ?? String(error);
-			}
-			stream.push({ type: "done", reason: "stop", message: output });
-			stream.end();
-		}
-	})();
-
-	return stream;
-}
-
-// --- SDK path (used as fallback, kept for reference) ---
-
-function buildPromptBlocks(
-	context: Context,
-	customToolNameToSdk: Map<string, string> | undefined,
-	toolWatchNote?: string,
-): ContentBlockParam[] {
-	const blocks: ContentBlockParam[] = [];
-
-	const pushText = (text: string) => {
-		blocks.push({ type: "text", text });
+function createEmptyUsage() {
+	return {
+		input: 0,
+		output: 0,
+		cacheRead: 0,
+		cacheWrite: 0,
+		totalTokens: 0,
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 	};
+}
 
-	const pushImage = (image: ImageContent) => {
-		blocks.push({
-			type: "image",
-			source: {
-				type: "base64",
-				media_type: image.mimeType as Base64ImageSource["media_type"],
-				data: image.data,
-			},
-		});
+function createOutputMessage(model: Model<any>): AssistantMessage {
+	return {
+		role: "assistant",
+		content: [],
+		api: model.api,
+		provider: model.provider,
+		model: model.id,
+		usage: createEmptyUsage(),
+		stopReason: "stop",
+		timestamp: Date.now(),
 	};
+}
 
-	const pushPrefix = (label: string) => {
-		const prefix = `${blocks.length ? "\n\n" : ""}${label}\n`;
-		pushText(prefix);
-	};
+function resolveSessionKey(options: SimpleStreamOptions | undefined, cwd: string): string {
+	const sessionId = (options as { sessionId?: string } | undefined)?.sessionId;
+	return sessionId ? `pi:${sessionId}` : `cwd:${cwd}`;
+}
 
-	const appendContentBlocks = (
-		content:
-			| string
-			| Array<{
-					type: string;
-					text?: string;
-					data?: string;
-					mimeType?: string;
-				}>,
-	): boolean => {
-		if (typeof content === "string") {
-			if (content.length > 0) {
-				pushText(content);
-				return content.trim().length > 0;
-			}
-			return false;
-		}
-		if (!Array.isArray(content)) return false;
-		let hasText = false;
-		for (const block of content) {
-			if (block.type === "text") {
-				const text = block.text ?? "";
-				if (text.trim().length > 0) hasText = true;
-				pushText(text);
-				continue;
-			}
-			if (block.type === "image") {
-				pushImage(block as ImageContent);
-				continue;
-			}
-			pushText(`[${block.type}]`);
-		}
-		return hasText;
-	};
+function extractPromptBlocks(context: Context): Array<{ type: "text"; text: string } | { type: "image"; data?: string; mimeType?: string; uri?: string }> {
+	const latestUserMessage = [...context.messages].reverse().find((message) => message.role === "user") as any;
+	if (!latestUserMessage) {
+		return [{ type: "text", text: "" }];
+	}
 
-	for (const message of context.messages) {
-		if (message.role === "user") {
-			pushPrefix("USER:");
-			const hasText = appendContentBlocks(message.content);
-			if (!hasText) {
-				pushText("(see attached image)");
-			}
+	const blocks: Array<{ type: "text"; text: string } | { type: "image"; data?: string; mimeType?: string; uri?: string }> = [];
+	for (const block of latestUserMessage.content ?? []) {
+		if (block?.type === "text") {
+			blocks.push({ type: "text", text: String(block.text ?? "") });
 			continue;
 		}
-
-		if (message.role === "assistant") {
-			pushPrefix("ASSISTANT:");
-			const text = contentToText(message.content, customToolNameToSdk);
-			if (text.length > 0) {
-				pushText(text);
-			}
-			continue;
-		}
-
-		if (message.role === "toolResult") {
-			const header = `TOOL RESULT (historical ${mapPiToolNameToSdk(message.toolName, customToolNameToSdk)}, id=${message.toolCallId}):`;
-			pushPrefix(header);
-			const hasText = appendContentBlocks(message.content);
-			if (!hasText) {
-				pushText("(see attached image)");
+		if (block?.type === "image") {
+			const source = block.source ?? {};
+			if (source.type === "base64") {
+				blocks.push({
+					type: "image",
+					data: source.data,
+					mimeType: source.mediaType ?? source.mimeType,
+				});
+			} else if (source.type === "url") {
+				blocks.push({
+					type: "image",
+					uri: source.url,
+				});
 			}
 		}
 	}
 
-	if (toolWatchNote && toolWatchNote.trim().length > 0) {
-		pushPrefix("RECOVERED TOOL RESULTS:");
-		pushText(toolWatchNote.trim());
+	if (blocks.length === 0) {
+		blocks.push({ type: "text", text: "" });
 	}
-
-	if (!blocks.length) return [{ type: "text", text: "" }];
-
 	return blocks;
 }
 
-function buildPromptStream(promptBlocks: ContentBlockParam[]): AsyncIterable<SDKUserMessage> {
-	async function* generator() {
-		const message: SDKUserMessage = {
-			type: "user",
-			message: {
-				role: "user",
-				content: promptBlocks,
-			} as MessageParam,
-			parent_tool_use_id: null,
-			session_id: "prompt",
-		};
-
-		yield message;
-	}
-
-	return generator();
+function applyPromptUsage(model: Model<any>, output: AssistantMessage, promptResponse: any): void {
+	const usage = promptResponse?.usage;
+	if (!usage || typeof usage !== "object") return;
+	output.usage.input = Number(usage.inputTokens ?? 0);
+	output.usage.output = Number(usage.outputTokens ?? 0);
+	output.usage.cacheRead = Number(usage.cachedReadTokens ?? 0);
+	output.usage.cacheWrite = Number(usage.cachedWriteTokens ?? 0);
+	output.usage.totalTokens = Number(
+		usage.totalTokens ??
+			output.usage.input + output.usage.output + output.usage.cacheRead + output.usage.cacheWrite,
+	);
+	calculateCost(model, output.usage);
 }
 
-function contentToText(
-	content:
-		| string
-		| Array<{
-			type: string;
-			text?: string;
-			thinking?: string;
-			name?: string;
-			arguments?: Record<string, unknown>;
-		}>,
-	customToolNameToSdk?: Map<string, string>,
-): string {
-	if (typeof content === "string") return content;
-	if (!Array.isArray(content)) return "";
-	return content
-		.map((block) => {
-			if (block.type === "text") return block.text ?? "";
-			if (block.type === "thinking") return block.thinking ?? "";
-			if (block.type === "toolCall") {
-				const args = block.arguments ? JSON.stringify(block.arguments) : "{}";
-				const toolName = mapPiToolNameToSdk(block.name, customToolNameToSdk);
-				return `Historical tool call (non-executable): ${toolName} args=${args}`;
-			}
-			return `[${block.type}]`;
-		})
-		.join("\n");
-}
-
-function mapPiToolNameToSdk(name?: string, customToolNameToSdk?: Map<string, string>): string {
-	if (!name) return "";
-	const normalized = name.toLowerCase();
-	if (customToolNameToSdk) {
-		const mapped = customToolNameToSdk.get(name) ?? customToolNameToSdk.get(normalized);
-		if (mapped) return mapped;
-	}
-	if (PI_TO_SDK_TOOL_NAME[normalized]) return PI_TO_SDK_TOOL_NAME[normalized];
-	return pascalCase(name);
-}
-
-type ProviderSettings = {
-	appendSystemPrompt?: boolean;
-
-	/**
-	 * Controls which filesystem-based configuration sources the SDK loads settings from
-	 * (maps to Claude Code CLI --setting-sources)
-	 *
-	 * - "user"    => ~/.claude (or CLAUDE_CONFIG_DIR)
-	 * - "project" => .claude in the current repo
-	 * - "local"   => .claude/settings.local.json in the current repo
-	 */
-	settingSources?: SettingSource[];
-
-	/**
-	 * When true, pass Claude Code CLI --strict-mcp-config to ignore MCP servers from ~/.claude.json
-	 * and project .mcp.json files. This prevents Claude Code from auto-injecting large MCP tool
-	 * schemas (a major token cost) when appendSystemPrompt=false.
-	 */
-	strictMcpConfig?: boolean;
-};
-
-function extractSkillsAppend(systemPrompt?: string): string | undefined {
-	if (!systemPrompt) return undefined;
-	const startMarker = "The following skills provide specialized instructions for specific tasks.";
-	const endMarker = "</available_skills>";
-	const startIndex = systemPrompt.indexOf(startMarker);
-	if (startIndex === -1) return undefined;
-	const endIndex = systemPrompt.indexOf(endMarker, startIndex);
-	if (endIndex === -1) return undefined;
-	const skillsBlock = systemPrompt.slice(startIndex, endIndex + endMarker.length).trim();
-	return rewriteSkillsLocations(skillsBlock);
-}
-
-function loadProviderSettings(): ProviderSettings {
-	const globalSettings = readSettingsFile(GLOBAL_SETTINGS_PATH);
-	const projectSettings = readSettingsFile(PROJECT_SETTINGS_PATH);
-	return { ...globalSettings, ...projectSettings };
-}
-
-function readSettingsFile(filePath: string): ProviderSettings {
-	if (!existsSync(filePath)) return {};
-	try {
-		const raw = readFileSync(filePath, "utf-8");
-		const parsed = JSON.parse(raw) as Record<string, unknown>;
-		const settingsBlock =
-			(parsed["claudeAgentSdkProvider"] as Record<string, unknown> | undefined) ??
-			(parsed["claude-agent-sdk-provider"] as Record<string, unknown> | undefined) ??
-			(parsed["claudeAgentSdk"] as Record<string, unknown> | undefined);
-		if (!settingsBlock || typeof settingsBlock !== "object") return {};
-		const appendSystemPrompt =
-			typeof settingsBlock["appendSystemPrompt"] === "boolean"
-				? settingsBlock["appendSystemPrompt"]
-				: undefined;
-
-		const settingSourcesRaw = settingsBlock["settingSources"];
-		const settingSources =
-			Array.isArray(settingSourcesRaw) &&
-			settingSourcesRaw.every(
-				(value) =>
-					typeof value === "string" && (value === "user" || value === "project" || value === "local"),
-			)
-				? (settingSourcesRaw as SettingSource[])
-				: undefined;
-
-		const strictMcpConfig =
-			typeof settingsBlock["strictMcpConfig"] === "boolean" ? settingsBlock["strictMcpConfig"] : undefined;
-
-		const legacyDisable = false;
-		return {
-			appendSystemPrompt: appendSystemPrompt ?? (legacyDisable ? false : undefined),
-			settingSources,
-			strictMcpConfig,
-		};
-	} catch {
-		return {};
-	}
-}
-
-function rewriteSkillsLocations(skillsBlock: string): string {
-	return skillsBlock.replace(/<location>([^<]+)<\/location>/g, (_match, location: string) => {
-		let rewritten = location;
-		if (location.startsWith(GLOBAL_SKILLS_ROOT)) {
-			const relPath = relative(GLOBAL_SKILLS_ROOT, location).replace(/^\.+/, "");
-			rewritten = `${SKILLS_ALIAS_GLOBAL}/${relPath}`.replace(/\/\/+/g, "/");
-		} else if (location.startsWith(PROJECT_SKILLS_ROOT)) {
-			const relPath = relative(PROJECT_SKILLS_ROOT, location).replace(/^\.+/, "");
-			rewritten = `${SKILLS_ALIAS_PROJECT}/${relPath}`.replace(/\/\/+/g, "/");
-		}
-		return `<location>${rewritten}</location>`;
-	});
-}
-
-function resolveAgentsMdPath(): string | undefined {
-	const fromCwd = findAgentsMdInParents(process.cwd());
-	if (fromCwd) return fromCwd;
-	if (existsSync(GLOBAL_AGENTS_PATH)) return GLOBAL_AGENTS_PATH;
-	return undefined;
-}
-
-function findAgentsMdInParents(startDir: string): string | undefined {
-	let current = resolve(startDir);
-	while (true) {
-		const candidate = join(current, "AGENTS.md");
-		if (existsSync(candidate)) return candidate;
-		const parent = dirname(current);
-		if (parent === current) break;
-		current = parent;
-	}
-	return undefined;
-}
-
-function extractAgentsAppend(): string | undefined {
-	const agentsPath = resolveAgentsMdPath();
-	if (!agentsPath) return undefined;
-	try {
-		const content = readFileSync(agentsPath, "utf-8").trim();
-		if (!content) return undefined;
-		const sanitized = sanitizeAgentsContent(content);
-		return sanitized.length > 0 ? `# CLAUDE.md\n\n${sanitized}` : undefined;
-	} catch {
-		return undefined;
-	}
-}
-
-function sanitizeAgentsContent(content: string): string {
-	let sanitized = content;
-	sanitized = sanitized.replace(/~\/\.pi\b/gi, "~/.claude");
-	sanitized = sanitized.replace(/(^|[\s'"`])\.pi\//g, "$1.claude/");
-	sanitized = sanitized.replace(/\b\.pi\b/gi, ".claude");
-	sanitized = sanitized.replace(/\bpi\b/gi, "environment");
-	return sanitized;
-}
-
-function rewriteSkillAliasPath(pathValue: unknown): unknown {
-	if (typeof pathValue !== "string") return pathValue;
-	if (pathValue.startsWith(SKILLS_ALIAS_GLOBAL)) {
-		return pathValue.replace(SKILLS_ALIAS_GLOBAL, "~/.pi/agent/skills");
-	}
-	if (pathValue.startsWith(`./${SKILLS_ALIAS_PROJECT}`)) {
-		return pathValue.replace(`./${SKILLS_ALIAS_PROJECT}`, PROJECT_SKILLS_ROOT);
-	}
-	if (pathValue.startsWith(SKILLS_ALIAS_PROJECT)) {
-		return pathValue.replace(SKILLS_ALIAS_PROJECT, PROJECT_SKILLS_ROOT);
-	}
-	const projectAliasAbs = join(process.cwd(), SKILLS_ALIAS_PROJECT);
-	if (pathValue.startsWith(projectAliasAbs)) {
-		return pathValue.replace(projectAliasAbs, PROJECT_SKILLS_ROOT);
-	}
-	return pathValue;
-}
-
-function mapToolName(name: string, customToolNameToPi?: Map<string, string>): string {
-	const normalized = name.toLowerCase();
-	const builtin = SDK_TO_PI_TOOL_NAME[normalized];
-	if (builtin) return builtin;
-	if (customToolNameToPi) {
-		const mapped = customToolNameToPi.get(name) ?? customToolNameToPi.get(normalized);
-		if (mapped) return mapped;
-	}
-	if (normalized.startsWith(MCP_TOOL_PREFIX)) {
-		return name.slice(MCP_TOOL_PREFIX.length);
-	}
-	return name;
-}
-
-function mapToolArgs(
-	toolName: string,
-	args: Record<string, unknown> | undefined,
-	allowSkillAliasRewrite = true,
-): Record<string, unknown> {
-	const normalized = toolName.toLowerCase();
-	const input = args ?? {};
-	const resolvePath = (value: unknown) => (allowSkillAliasRewrite ? rewriteSkillAliasPath(value) : value);
-
-	switch (normalized) {
-		case "read":
-			return {
-				path: resolvePath(input.file_path ?? input.path),
-				offset: input.offset,
-				limit: input.limit,
-			};
-		case "write":
-			return {
-				path: resolvePath(input.file_path ?? input.path),
-				content: input.content,
-			};
-		case "edit": {
-			const oldText = input.old_string ?? input.oldText ?? input.old_text;
-			const newText = input.new_string ?? input.newText ?? input.new_text;
-			if (oldText == null || newText == null) {
-				throw new Error(`Edit tool requires oldText and newText. Got: oldText=${JSON.stringify(oldText)}, newText=${JSON.stringify(newText)}`);
-			}
-			return {
-				path: resolvePath(input.file_path ?? input.path),
-				edits: [{ oldText, newText }],
-			};
-		}
-		case "bash":
-			return {
-				command: input.command,
-				timeout: input.timeout,
-			};
-		case "grep":
-			return {
-				pattern: input.pattern,
-				path: resolvePath(input.path),
-				glob: input.glob,
-				ignoreCase: input.ignoreCase ?? input.ignore_case,
-				literal: input.literal,
-				context: input.context,
-				limit: input.head_limit ?? input.limit,
-			};
-		case "find":
-			return {
-				pattern: input.pattern,
-				path: resolvePath(input.path),
-				limit: input.limit,
-			};
-		default:
-			return input;
-	}
-}
-
-function resolveSdkTools(context: Context): {
-	sdkTools: string[];
-	customTools: Tool[];
-	customToolNameToSdk: Map<string, string>;
-	customToolNameToPi: Map<string, string>;
-} {
-	if (!context.tools) {
-		return {
-			sdkTools: [...DEFAULT_TOOLS],
-			customTools: [],
-			customToolNameToSdk: new Map(),
-			customToolNameToPi: new Map(),
-		};
-	}
-
-	const sdkTools = new Set<string>();
-	const customTools: Tool[] = [];
-	const customToolNameToSdk = new Map<string, string>();
-	const customToolNameToPi = new Map<string, string>();
-
-	for (const tool of context.tools) {
-		const normalized = tool.name.toLowerCase();
-		if (BUILTIN_TOOL_NAMES.has(normalized)) {
-			const sdkName = PI_TO_SDK_TOOL_NAME[normalized];
-			if (sdkName) sdkTools.add(sdkName);
-			continue;
-		}
-		const sdkName = `${MCP_TOOL_PREFIX}${tool.name}`;
-		customTools.push(tool);
-		customToolNameToSdk.set(tool.name, sdkName);
-		customToolNameToSdk.set(normalized, sdkName);
-		customToolNameToPi.set(sdkName, tool.name);
-		customToolNameToPi.set(sdkName.toLowerCase(), tool.name);
-	}
-
-	return { sdkTools: Array.from(sdkTools), customTools, customToolNameToSdk, customToolNameToPi };
-}
-
-// Convert a single JSON Schema property (from TypeBox) to a Zod type.
-// createSdkMcpServer expects Zod schemas — TypeBox objects silently produce empty schemas.
-function jsonSchemaPropertyToZod(prop: Record<string, unknown>): z.ZodTypeAny {
-	let base: z.ZodTypeAny;
-	if (Array.isArray(prop.enum)) {
-		base = z.enum(prop.enum as [string, ...string[]]);
-	} else {
-		switch (prop.type) {
-			case "string":
-				base = z.string();
-				break;
-			case "number":
-			case "integer":
-				base = z.number();
-				break;
-			case "boolean":
-				base = z.boolean();
-				break;
-			case "array":
-				base = prop.items
-					? z.array(jsonSchemaPropertyToZod(prop.items as Record<string, unknown>))
-					: z.array(z.unknown());
-				break;
-			case "object":
-				if (prop.properties) {
-					base = z.object(jsonSchemaToZodShape(prop));
-				} else {
-					base = z.record(z.string(), z.unknown());
-				}
-				break;
-			default:
-				base = z.unknown();
-		}
-	}
-	if (typeof prop.description === "string") {
-		base = base.describe(prop.description);
-	}
-	return base;
-}
-
-// Convert a top-level JSON Schema object (TypeBox output) to a Zod raw shape.
-function jsonSchemaToZodShape(schema: unknown): Record<string, z.ZodTypeAny> {
-	const s = schema as Record<string, unknown>;
-	if (!s || s.type !== "object" || !s.properties) return {};
-	const props = s.properties as Record<string, Record<string, unknown>>;
-	const required = new Set(Array.isArray(s.required) ? (s.required as string[]) : []);
-	const shape: Record<string, z.ZodTypeAny> = {};
-	for (const [key, prop] of Object.entries(props)) {
-		const zodProp = jsonSchemaPropertyToZod(prop);
-		shape[key] = required.has(key) ? zodProp : zodProp.optional();
-	}
-	return shape;
-}
-
-function buildCustomToolServers(customTools: Tool[]): Record<string, ReturnType<typeof createSdkMcpServer>> | undefined {
-	if (!customTools.length) return undefined;
-
-	const mcpTools = customTools.map((tool) => ({
-		name: tool.name,
-		description: tool.description,
-		inputSchema: jsonSchemaToZodShape(tool.parameters),
-		handler: async () => ({
-			content: [{ type: "text", text: TOOL_EXECUTION_DENIED_MESSAGE }],
-			isError: true,
-		}),
-	}));
-
-	const server = createSdkMcpServer({
-		name: MCP_SERVER_NAME,
-		version: "1.0.0",
-		tools: mcpTools,
-	});
-
-	return { [MCP_SERVER_NAME]: server };
-}
-
-function mapStopReason(reason: string | undefined): "stop" | "length" | "toolUse" {
-	switch (reason) {
-		case "tool_use":
-			return "toolUse";
+function mapPromptStopReason(stopReason: string | undefined): AssistantMessage["stopReason"] {
+	switch (stopReason) {
 		case "max_tokens":
 			return "length";
-		case "end_turn":
+		case "cancelled":
+			return "aborted";
 		default:
 			return "stop";
 	}
 }
 
-type ThinkingLevel = NonNullable<SimpleStreamOptions["reasoning"]>;
-type NonXhighThinkingLevel = Exclude<ThinkingLevel, "xhigh">;
-
-const DEFAULT_THINKING_BUDGETS: Record<NonXhighThinkingLevel, number> = {
-	minimal: 2048,
-	low: 8192,
-	medium: 16384,
-	high: 31999,
-};
-
-// NOTE: "xhigh" is unavailable in the TUI because pi-ai's supportsXhigh()
-// doesn't recognize the "claude-agent-sdk" api type. As a workaround, opus-4-6
-// gets shifted budgets so "high" uses the budget that xhigh would normally use.
-const OPUS_46_THINKING_BUDGETS: Record<ThinkingLevel, number> = {
-	minimal: 2048,
-	low: 8192,
-	medium: 31999,
-	high: 63999,
-	// Future-proofing: pi currently won't surface "xhigh" for this provider because
-	// pi-ai's supportsXhigh() doesn't recognize the "claude-agent-sdk" api type.
-	// If/when that changes, we can shift the budgets to 2048, 8192, 16384, 31999, 63999.
-	xhigh: 63999,
-};
-
-function mapThinkingTokens(
-	reasoning?: ThinkingLevel,
-	modelId?: string,
-	thinkingBudgets?: SimpleStreamOptions["thinkingBudgets"],
-): number | undefined {
-	if (!reasoning) return undefined;
-
-	const isOpus46 = modelId?.includes("opus-4-6") || modelId?.includes("opus-4.6");
-	if (isOpus46) {
-		return OPUS_46_THINKING_BUDGETS[reasoning];
-	}
-
-	const effectiveReasoning: NonXhighThinkingLevel = reasoning === "xhigh" ? "high" : reasoning;
-
-	const customBudgets = thinkingBudgets as (Partial<Record<NonXhighThinkingLevel, number>> | undefined);
-	const customBudget = customBudgets?.[effectiveReasoning];
-	if (typeof customBudget === "number" && Number.isFinite(customBudget) && customBudget > 0) {
-		return customBudget;
-	}
-
-	return DEFAULT_THINKING_BUDGETS[effectiveReasoning];
-}
-
-function parsePartialJson(input: string, fallback: Record<string, unknown>): Record<string, unknown> {
-	if (!input) return fallback;
-	try {
-		return JSON.parse(input);
-	} catch {
-		return fallback;
-	}
-}
-
-function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: SimpleStreamOptions): AssistantMessageEventStream {
+function streamClaudeAcp(model: Model<any>, context: Context, options?: SimpleStreamOptions): AssistantMessageEventStream {
 	const stream = createAssistantMessageEventStream();
 
 	(async () => {
-		const output: AssistantMessage = {
-			role: "assistant",
-			content: [],
-			api: model.api,
-			provider: model.provider,
-			model: model.id,
-			usage: {
-				input: 0,
-				output: 0,
-				cacheRead: 0,
-				cacheWrite: 0,
-				totalTokens: 0,
-				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-			},
-			stopReason: "stop",
-			timestamp: Date.now(),
+		const output = createOutputMessage(model);
+		const cwd = (options as { cwd?: string } | undefined)?.cwd ?? process.cwd();
+		const sessionKey = resolveSessionKey(options, cwd);
+		let bridgeSession: Awaited<ReturnType<typeof ensureBridgeSession>> | undefined;
+		let aborted = false;
+
+		const streamState: AcpPiStreamState = {
+			stream,
+			output,
 		};
 
-		let sdkQuery: ReturnType<typeof query> | undefined;
-		let wasAborted = false;
-		const requestAbort = () => {
-			if (!sdkQuery) return;
-			void sdkQuery.interrupt().catch(() => {
-				try {
-					sdkQuery?.close();
-				} catch {
-					// ignore shutdown errors
-				}
-			});
-		};
 		const onAbort = () => {
-			wasAborted = true;
-			requestAbort();
+			aborted = true;
+			if (bridgeSession) {
+				void cancelActivePrompt(bridgeSession).catch(() => {
+					// ignore
+				});
+			}
 		};
+
 		if (options?.signal) {
 			if (options.signal.aborted) onAbort();
 			else options.signal.addEventListener("abort", onAbort, { once: true });
 		}
 
-		const blocks = output.content as Array<
-			| { type: "text"; text: string; index: number }
-			| { type: "thinking"; thinking: string; thinkingSignature?: string; index: number }
-			| {
-				type: "toolCall";
-				id: string;
-				name: string;
-				arguments: Record<string, unknown>;
-				partialJson: string;
-				index: number;
-			}
-		>;
-
-		let started = false;
-		let sawStreamEvent = false;
-		let sawToolCall = false;
-		let shouldStopEarly = false;
-
 		try {
-			const { sdkTools, customTools, customToolNameToSdk, customToolNameToPi } = resolveSdkTools(context);
-			const sessionKey = TOOL_WATCH_ENABLED ? getSessionKeyFromStreamOptions(options) : undefined;
-			if (TOOL_WATCH_ENABLED && sessionKey) {
-				reconcileToolWatchStateWithContext(sessionKey, context);
-			}
-			const toolWatchNote = TOOL_WATCH_ENABLED ? buildToolWatchPromptNote(sessionKey, context, customToolNameToSdk) : undefined;
-			const promptBlocks = buildPromptBlocks(context, customToolNameToSdk, toolWatchNote);
-			const prompt = buildPromptStream(promptBlocks);
-
-			const cwd = (options as { cwd?: string } | undefined)?.cwd ?? process.cwd();
-
-			const mcpServers = buildCustomToolServers(customTools);
-			const providerSettings = loadProviderSettings();
-			const appendSystemPrompt = providerSettings.appendSystemPrompt !== false;
-			const agentsAppend = appendSystemPrompt ? extractAgentsAppend() : undefined;
-			const skillsAppend = appendSystemPrompt ? extractSkillsAppend(context.systemPrompt) : undefined;
-			const appendParts = [agentsAppend, skillsAppend].filter((part): part is string => Boolean(part));
-			const systemPromptAppend = appendParts.length > 0 ? appendParts.join("\n\n") : undefined;
-			const allowSkillAliasRewrite = Boolean(skillsAppend);
-
-			const settingSources: SettingSource[] | undefined = appendSystemPrompt
-				? undefined
-				: providerSettings.settingSources ?? ["user", "project"];
-
-			// Claude Code will auto-load MCP servers from ~/.claude.json and .mcp.json when settingSources is enabled.
-			// In this provider, Claude Code tool execution is denied and pi executes tools instead, so auto-loaded MCP
-			// tools are pure token overhead. Pass --strict-mcp-config to ignore all MCP configs except those explicitly
-			// provided via the SDK (mcpServers option).
-			const strictMcpConfigEnabled = !appendSystemPrompt && providerSettings.strictMcpConfig !== false;
-			const extraArgs = strictMcpConfigEnabled ? { "strict-mcp-config": null } : undefined;
-
-			const queryOptions: NonNullable<Parameters<typeof query>[0]["options"]> = {
+			bridgeSession = await ensureBridgeSession({
+				sessionKey,
 				cwd,
-				model: model.id,
-				tools: sdkTools,
-				permissionMode: "dontAsk",
-				persistSession: false,
-				includePartialMessages: true,
-				canUseTool: async () => ({
-					behavior: "deny",
-					message: TOOL_EXECUTION_DENIED_MESSAGE,
-				}),
-				systemPrompt: { type: "preset", preset: "claude_code", append: systemPromptAppend ? systemPromptAppend : undefined },
-				...(settingSources ? { settingSources } : {}),
-				...(extraArgs ? { extraArgs } : {}),
-				...(mcpServers ? { mcpServers } : {}),
-			};
-
-			const maxThinkingTokens = mapThinkingTokens(options?.reasoning, model.id, options?.thinkingBudgets);
-			if (maxThinkingTokens != null) {
-				queryOptions.maxThinkingTokens = maxThinkingTokens;
-			}
-
-			sdkQuery = query({
-				prompt,
-				options: queryOptions,
+				modelId: model.id,
+				systemPromptAppend: context.systemPrompt,
 			});
 
-			if (wasAborted) {
-				requestAbort();
-			}
+			setActivePromptHandler(bridgeSession, async (notification) => {
+				if (notification?.sessionId !== bridgeSession?.acpSessionId) return;
+				applyAcpSessionUpdate(streamState, notification.update as any);
+			});
 
-			for await (const message of sdkQuery) {
-				if (!started) {
-					stream.push({ type: "start", partial: output });
-					started = true;
-				}
+			stream.push({ type: "start", partial: output });
 
-				switch (message.type) {
-					case "stream_event": {
-						sawStreamEvent = true;
-						const event = (message as SDKMessage & { event: any }).event;
+			const promptBlocks = extractPromptBlocks(context);
+			const promptResponse = await sendPrompt(bridgeSession, promptBlocks);
+			applyPromptUsage(model, output, promptResponse);
+			output.stopReason = mapPromptStopReason(promptResponse?.stopReason);
+			finalizeAcpStreamState(streamState);
 
-						if (event?.type === "message_start") {
-							const usage = event.message?.usage;
-							output.usage.input = usage?.input_tokens ?? 0;
-							output.usage.output = usage?.output_tokens ?? 0;
-							output.usage.cacheRead = usage?.cache_read_input_tokens ?? 0;
-							output.usage.cacheWrite = usage?.cache_creation_input_tokens ?? 0;
-							output.usage.totalTokens =
-								output.usage.input + output.usage.output + output.usage.cacheRead + output.usage.cacheWrite;
-							calculateCost(model, output.usage);
-							break;
-						}
-
-						if (event?.type === "content_block_start") {
-							if (event.content_block?.type === "text") {
-								const block = { type: "text", text: "", index: event.index } as const;
-								output.content.push(block);
-								stream.push({ type: "text_start", contentIndex: output.content.length - 1, partial: output });
-							} else if (event.content_block?.type === "thinking") {
-								const block = { type: "thinking", thinking: "", thinkingSignature: "", index: event.index } as const;
-								output.content.push(block);
-								stream.push({ type: "thinking_start", contentIndex: output.content.length - 1, partial: output });
-							} else if (event.content_block?.type === "tool_use") {
-								sawToolCall = true;
-								const block = {
-									type: "toolCall",
-									id: event.content_block.id,
-									name: mapToolName(event.content_block.name, customToolNameToPi),
-									arguments: (event.content_block.input as Record<string, unknown>) ?? {},
-									partialJson: "",
-									index: event.index,
-								} as const;
-								output.content.push(block);
-								stream.push({ type: "toolcall_start", contentIndex: output.content.length - 1, partial: output });
-							}
-							break;
-						}
-
-						if (event?.type === "content_block_delta") {
-							if (event.delta?.type === "text_delta") {
-								const index = blocks.findIndex((block) => block.index === event.index);
-								const block = blocks[index];
-								if (block?.type === "text") {
-									block.text += event.delta.text;
-									stream.push({
-										type: "text_delta",
-										contentIndex: index,
-										delta: event.delta.text,
-										partial: output,
-									});
-								}
-							} else if (event.delta?.type === "thinking_delta") {
-								const index = blocks.findIndex((block) => block.index === event.index);
-								const block = blocks[index];
-								if (block?.type === "thinking") {
-									block.thinking += event.delta.thinking;
-									stream.push({
-										type: "thinking_delta",
-										contentIndex: index,
-										delta: event.delta.thinking,
-										partial: output,
-									});
-								}
-							} else if (event.delta?.type === "input_json_delta") {
-								const index = blocks.findIndex((block) => block.index === event.index);
-								const block = blocks[index];
-								if (block?.type === "toolCall") {
-									block.partialJson += event.delta.partial_json;
-									block.arguments = parsePartialJson(block.partialJson, block.arguments);
-									stream.push({
-										type: "toolcall_delta",
-										contentIndex: index,
-										delta: event.delta.partial_json,
-										partial: output,
-									});
-								}
-							} else if (event.delta?.type === "signature_delta") {
-								const index = blocks.findIndex((block) => block.index === event.index);
-								const block = blocks[index];
-								if (block?.type === "thinking") {
-									block.thinkingSignature = (block.thinkingSignature ?? "") + event.delta.signature;
-								}
-							}
-							break;
-						}
-
-						if (event?.type === "content_block_stop") {
-							const index = blocks.findIndex((block) => block.index === event.index);
-							const block = blocks[index];
-							if (!block) break;
-							delete (block as any).index;
-							if (block.type === "text") {
-								stream.push({
-									type: "text_end",
-									contentIndex: index,
-									content: block.text,
-									partial: output,
-								});
-							} else if (block.type === "thinking") {
-								stream.push({
-									type: "thinking_end",
-									contentIndex: index,
-									content: block.thinking,
-									partial: output,
-								});
-							} else if (block.type === "toolCall") {
-								sawToolCall = true;
-								block.arguments = mapToolArgs(
-									block.name,
-									parsePartialJson(block.partialJson, block.arguments),
-									allowSkillAliasRewrite,
-								);
-								delete (block as any).partialJson;
-								stream.push({
-									type: "toolcall_end",
-									contentIndex: index,
-									toolCall: block,
-									partial: output,
-								});
-							}
-							break;
-						}
-
-						if (event?.type === "message_delta") {
-							output.stopReason = mapStopReason(event.delta?.stop_reason);
-							const usage = event.usage ?? {};
-							if (usage.input_tokens != null) output.usage.input = usage.input_tokens;
-							if (usage.output_tokens != null) output.usage.output = usage.output_tokens;
-							if (usage.cache_read_input_tokens != null) output.usage.cacheRead = usage.cache_read_input_tokens;
-							if (usage.cache_creation_input_tokens != null) output.usage.cacheWrite = usage.cache_creation_input_tokens;
-							output.usage.totalTokens =
-								output.usage.input + output.usage.output + output.usage.cacheRead + output.usage.cacheWrite;
-							calculateCost(model, output.usage);
-							break;
-						}
-
-						if (event?.type === "message_stop" && sawToolCall) {
-							output.stopReason = "toolUse";
-							shouldStopEarly = true;
-							break;
-						}
-
-						break;
-					}
-
-					case "result": {
-						if (!sawStreamEvent && message.subtype === "success") {
-							output.content.push({ type: "text", text: message.result || "" });
-						}
-						break;
-					}
-				}
-
-				if (shouldStopEarly) {
-					break;
-				}
-			}
-
-			if (wasAborted || options?.signal?.aborted) {
-				output.stopReason = "aborted";
+			if (aborted || options?.signal?.aborted || output.stopReason === "aborted") {
 				output.errorMessage = "Operation aborted";
 				stream.push({ type: "error", reason: "aborted", error: output });
 				stream.end();
@@ -1653,189 +164,55 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 
 			stream.push({
 				type: "done",
-				reason: output.stopReason === "toolUse" ? "toolUse" : output.stopReason === "length" ? "length" : "stop",
+				reason: output.stopReason === "length" ? "length" : "stop",
 				message: output,
 			});
 			stream.end();
 		} catch (error) {
-			output.stopReason = options?.signal?.aborted ? "aborted" : "error";
-			output.errorMessage = error instanceof Error ? error.message : String(error);
-			stream.push({ type: "error", reason: output.stopReason as "aborted" | "error", error: output });
+			output.stopReason = aborted || options?.signal?.aborted ? "aborted" : "error";
+			output.errorMessage = getBridgeErrorDetails(error, bridgeSession);
+			finalizeAcpStreamState(streamState);
+			stream.push({
+				type: "error",
+				reason: output.stopReason === "aborted" ? "aborted" : "error",
+				error: output,
+			});
 			stream.end();
 		} finally {
 			if (options?.signal) {
 				options.signal.removeEventListener("abort", onAbort);
 			}
-			sdkQuery?.close();
+			if (bridgeSession) {
+				setActivePromptHandler(bridgeSession, undefined);
+			}
 		}
 	})();
 
 	return stream;
 }
 
-// Guard against duplicate registration when subagents reload this module.
-// Without this, a child process re-importing the module overwrites the parent's
-// streamSimple with a fresh instance that has empty state — causing double messages
-// and state loss.
-const REGISTERED_SYMBOL = Symbol.for("claude-agent-sdk-pi:registered");
-
 export default function (pi: ExtensionAPI) {
 	if ((globalThis as any)[REGISTERED_SYMBOL]) {
-		return; // Already registered — skip to prevent overwrite
+		return;
 	}
 	(globalThis as any)[REGISTERED_SYMBOL] = true;
-	extensionApi = pi;
 
-	const refreshToolWatchState = (
-		ctx: {
-			sessionManager?: { getSessionId?: () => string; getBranch?: () => Array<Record<string, any>> };
-			model?: { provider?: string };
-		},
-		providerOverride?: string,
-	) => {
-		const sessionKey = getSessionKeyFromContext(ctx);
-		if (!sessionKey) return;
-		activeSessionKey = sessionKey;
-		const provider = providerOverride ?? ctx.model?.provider;
-		if (provider !== PROVIDER_ID) {
-			toolWatchStateBySession.delete(sessionKey);
-			return;
-		}
-		const entries = ctx.sessionManager?.getBranch?.() ?? [];
-		hydrateToolWatchStateFromEntries(sessionKey, entries);
-	};
+	const on = pi.on as unknown as (
+		event: string,
+		handler: (event: Record<string, unknown>, ctx: { sessionManager?: { getSessionId?: () => string } }) => void,
+	) => void;
 
-	if (TOOL_WATCH_ENABLED) {
-		pi.on("session_start", (_event, ctx) => {
-			refreshToolWatchState(ctx);
-		});
-
-		pi.on("session_switch", (_event, ctx) => {
-			refreshToolWatchState(ctx);
-		});
-
-		pi.on("session_fork", (_event, ctx) => {
-			refreshToolWatchState(ctx);
-		});
-
-		pi.on("model_select", (event, ctx) => {
-			const provider = (event as { model?: { provider?: string } }).model?.provider;
-			if (provider !== PROVIDER_ID) return;
-			refreshToolWatchState(ctx, provider);
-		});
-
-		pi.on("session_shutdown", (_event, ctx) => {
-			const sessionKey = getSessionKeyFromContext(ctx);
-			if (!sessionKey) return;
-			toolWatchStateBySession.delete(sessionKey);
-			if (activeSessionKey === sessionKey) {
-				activeSessionKey = undefined;
-			}
-		});
-	}
-
-	const registerLooseEvent = (
-		eventName: string,
-		handler: (event: Record<string, unknown>, ctx: Record<string, any>) => void,
-	) => {
-		const on = pi.on as unknown as (
-			event: string,
-			handler: (event: Record<string, unknown>, ctx: Record<string, any>) => void,
-		) => void;
-		on(eventName, handler);
-	};
-
-	if (TOOL_WATCH_ENABLED) {
-	registerLooseEvent("message_end", (event, ctx) => {
-		const provider = ctx?.model?.provider;
-		if (provider !== PROVIDER_ID) return;
-		const sessionKey = getSessionKeyFromContext(ctx);
-		if (!sessionKey) return;
-		activeSessionKey = sessionKey;
-
-		const message = (event as { message?: unknown }).message;
-		if (!message || typeof message !== "object") return;
-		const role = (message as { role?: string }).role;
-		const timestampValue = (message as { timestamp?: unknown }).timestamp;
-		const timestamp = typeof timestampValue === "number" ? timestampValue : Date.now();
-
-		if (role === "assistant") {
-			for (const toolCall of collectAssistantToolCalls(message)) {
-				trackPendingToolCall(sessionKey, toolCall.id, toolCall.name, timestamp);
-			}
-			return;
-		}
-
-		if (role === "toolResult") {
-			const toolResult = message as {
-				toolCallId?: string;
-				toolName?: string;
-				content?: unknown;
-				isError?: boolean;
-			};
-			if (!toolResult.toolCallId || !toolResult.toolName) return;
-			trackCompletedToolCall(sessionKey, {
-				toolCallId: toolResult.toolCallId,
-				toolName: toolResult.toolName,
-				content: truncateText(contentToPlainText(toolResult.content as any), MAX_TRACKED_TOOL_CONTENT_CHARS),
-				isError: toolResult.isError === true,
-				timestamp,
-			});
-		}
+	on("session_shutdown", async (_event, ctx) => {
+		const sessionId = ctx?.sessionManager?.getSessionId?.();
+		if (!sessionId) return;
+		await closeBridgeSession(`pi:${sessionId}`);
 	});
-
-	registerLooseEvent("tool_execution_start", (event, ctx) => {
-		const provider = ctx?.model?.provider;
-		if (provider !== PROVIDER_ID) return;
-		const sessionKey = getSessionKeyFromContext(ctx);
-		if (!sessionKey) return;
-		activeSessionKey = sessionKey;
-
-		const toolCallId = (event as { toolCallId?: unknown }).toolCallId;
-		const toolName = (event as { toolName?: unknown }).toolName;
-		if (typeof toolCallId !== "string" || typeof toolName !== "string") return;
-		trackPendingToolCall(sessionKey, toolCallId, toolName, Date.now());
-	});
-
-	registerLooseEvent("tool_execution_end", (event, ctx) => {
-		const provider = ctx?.model?.provider;
-		if (provider !== PROVIDER_ID) return;
-		const sessionKey = getSessionKeyFromContext(ctx);
-		if (!sessionKey) return;
-		activeSessionKey = sessionKey;
-
-		const toolCallId = (event as { toolCallId?: unknown }).toolCallId;
-		const toolName = (event as { toolName?: unknown }).toolName;
-		if (typeof toolCallId !== "string" || typeof toolName !== "string") return;
-
-		const timestamp = Date.now();
-		const content = extractToolExecutionContent((event as { result?: unknown }).result);
-		const isError = (event as { isError?: unknown }).isError === true;
-
-		trackCompletedToolCall(sessionKey, {
-			toolCallId,
-			toolName,
-			content,
-			isError,
-			timestamp,
-		});
-
-		extensionApi?.appendEntry<ToolWatchCustomEntryData>(TOOL_WATCH_CUSTOM_TYPE, {
-			type: "tool_execution_end",
-			toolCallId,
-			toolName,
-			content,
-			isError,
-			timestamp,
-		});
-	});
-	} // end TOOL_WATCH_ENABLED guard
 
 	pi.registerProvider(PROVIDER_ID, {
 		baseUrl: "claude-agent-sdk",
 		apiKey: "ANTHROPIC_API_KEY",
 		api: "claude-agent-sdk",
 		models: MODELS,
-		streamSimple: streamDirectAnthropic,
+		streamSimple: streamClaudeAcp,
 	});
 }
