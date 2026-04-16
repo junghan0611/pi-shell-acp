@@ -46,7 +46,7 @@ This validated the architecture but also showed that the extra complexity wasn't
 Comparison used:
 
 - direct: `github-copilot/claude-sonnet-4.6`
-- ACP bridge: `claude-agent-sdk/claude-sonnet-4-6`
+- ACP bridge: `pi-shell-acp/claude-sonnet-4-6`
 - harness: real pi project context via `./bench.sh .`
 
 | Test | Direct | ACP bridge | Ratio | Verdict |
@@ -379,7 +379,7 @@ Useful environment overrides:
 ```bash
 PI_BENCH_SUITE=quick ./bench.sh .
 PI_BENCH_MODEL_DIRECT=github-copilot/claude-sonnet-4.6 ./bench.sh .
-PI_BENCH_MODEL_SDK=claude-agent-sdk/claude-sonnet-4-6 ./bench.sh .
+PI_BENCH_MODEL_SDK=pi-shell-acp/claude-sonnet-4-6 ./bench.sh .
 ```
 
 The benchmark is especially useful after changing:
@@ -442,7 +442,7 @@ Example:
 
 ```json
 {
-  "claudeAgentSdkProvider": {
+  "piShellAcpProvider": {
     "appendSystemPrompt": false,
     "settingSources": ["user"],
     "strictMcpConfig": false

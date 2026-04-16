@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { applyBridgePromptEvent, finalizeAcpStreamState, type AcpPiStreamState } from "./event-mapper.js";
 import { cancelActivePrompt, cleanupBridgeSessionProcess, ensureBridgeSession, getBridgeErrorDetails, sendPrompt, setActivePromptHandler, type ClaudeSettingSource } from "./acp-bridge.js";
 
-const PROVIDER_ID = "claude-agent-sdk";
+const PROVIDER_ID = "pi-shell-acp";
 const REGISTERED_SYMBOL = Symbol.for("pi-shell-acp:registered");
 const LEGACY_REGISTERED_SYMBOL = Symbol.for("claude-agent-sdk-pi:registered");
 const GLOBAL_SETTINGS_PATH = join(homedir(), ".pi", "agent", "settings.json");
@@ -331,9 +331,9 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.registerProvider(PROVIDER_ID, {
-		baseUrl: "claude-agent-sdk",
+		baseUrl: "pi-shell-acp",
 		apiKey: "ANTHROPIC_API_KEY",
-		api: "claude-agent-sdk",
+		api: "pi-shell-acp",
 		models: MODELS,
 		streamSimple: streamClaudeAcp,
 	});

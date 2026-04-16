@@ -5,14 +5,14 @@ REPO_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 PROJECT_DIR_DEFAULT=$(pwd)
 TARGET_PROJECT_DIR=${2:-$PROJECT_DIR_DEFAULT}
 PACKAGE_NAME="pi-shell-acp"
-PROVIDER_ID="claude-agent-sdk"
+PROVIDER_ID="pi-shell-acp"
 
 usage() {
   cat <<'EOF'
 Usage:
   ./run.sh setup [project-dir]   # npm install + sync auth alias + install this local package into project .pi/settings.json
   ./run.sh smoke [project-dir]   # smoke test provider/model loading and a simple prompt
-  ./run.sh sync-auth             # copy ~/.pi/agent/auth.json anthropic OAuth credentials to claude-agent-sdk alias
+  ./run.sh sync-auth             # copy ~/.pi/agent/auth.json anthropic OAuth credentials to pi-shell-acp alias
   ./run.sh install [project-dir] # install this local package into project .pi/settings.json
   ./run.sh remove [project-dir]  # remove pi-shell-acp / legacy claude-agent-sdk-pi entries from project .pi/settings.json
 
@@ -153,7 +153,7 @@ PY
 smoke_test() {
   local project_dir model
   project_dir=$(normalize_project_dir "$1")
-  model=${PI_CLAUDE_AGENT_SDK_MODEL:-claude-agent-sdk/claude-sonnet-4-6}
+  model=${PI_SHELL_ACP_MODEL:-${PI_CLAUDE_AGENT_SDK_MODEL:-pi-shell-acp/claude-sonnet-4-6}}
 
   require_cmd pi
 
@@ -161,7 +161,7 @@ smoke_test() {
   echo "[smoke] repo:    $REPO_DIR"
   echo "[smoke] model:   $model"
 
-  (cd "$project_dir" && pi -e "$REPO_DIR" --list-models claude-agent-sdk >/dev/null)
+  (cd "$project_dir" && pi -e "$REPO_DIR" --list-models pi-shell-acp >/dev/null)
   echo "[smoke] provider models: ok"
 
   (cd "$REPO_DIR" && node --input-type=module <<'EOF'
@@ -171,7 +171,7 @@ const sessionKey = 'run-sh-smoke';
 const session = await ensureBridgeSession({
   sessionKey,
   cwd: process.cwd(),
-  modelId: process.env.PI_CLAUDE_AGENT_SDK_MODEL_ID || 'claude-sonnet-4-6',
+  modelId: process.env.PI_SHELL_ACP_MODEL_ID || process.env.PI_CLAUDE_AGENT_SDK_MODEL_ID || 'claude-sonnet-4-6',
   systemPromptAppend: '간단히 답하세요.',
   settingSources: ['user'],
   strictMcpConfig: false,
