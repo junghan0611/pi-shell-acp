@@ -80,6 +80,34 @@ Persisted data is intentionally minimal:
 - `run.sh` — install / smoke helper
 - `bench.sh` — benchmark helper
 
+## Reference Implementations and Upstream Projects
+
+These are the main references behind this repo:
+
+- [xenodium/agent-shell](https://github.com/xenodium/agent-shell)
+  - Emacs ACP client UX with mature session orchestration semantics
+  - Important idea we borrow: treat ACP sessions as first-class and prefer `resume > load > new`
+- [xenodium/acp.el](https://github.com/xenodium/acp.el)
+  - Emacs ACP transport library
+  - Useful for understanding the minimal client-side ACP request/response surface
+- [agentclientprotocol/claude-agent-acp](https://github.com/agentclientprotocol/claude-agent-acp)
+  - Canonical ACP server for Claude Code
+- [agentclientprotocol](https://github.com/agentclientprotocol)
+  - ACP organization / upstream protocol context
+- [junghan0611/agent-config](https://github.com/junghan0611/agent-config)
+  - Real consumer repo where `pi-shell-acp` is installed and validated via `./run.sh setup`
+
+### Local reference paths used during development
+
+On this machine, the most important local reference files are:
+
+```text
+/home/junghan/doomemacs/.local/straight/repos/acp.el/acp.el
+/home/junghan/doomemacs/.local/straight/repos/agent-shell/agent-shell.el
+```
+
+When working on session bootstrap, capability detection, or resume/load behavior, compare conceptually against those files — but only port the minimal semantics needed here.
+
 ## Quick Start
 
 ### Local check

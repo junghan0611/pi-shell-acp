@@ -83,6 +83,36 @@ If a change makes this repo feel like a second harness, it is probably wrong.
 
 ---
 
+## Reference Implementations
+
+When a future agent asks "what is agent-shell?", the short answer is:
+- `agent-shell` = an Emacs ACP client with already-mature session orchestration semantics
+- `acp.el` = the lower-level Emacs ACP transport layer
+- `claude-agent-acp` = the canonical Claude Code ACP server we actually talk to
+
+Primary references:
+- https://github.com/xenodium/agent-shell
+- https://github.com/xenodium/acp.el
+- https://github.com/agentclientprotocol/claude-agent-acp
+- https://github.com/agentclientprotocol
+- https://github.com/junghan0611/agent-config
+
+Local reference paths on this machine:
+
+```text
+/home/junghan/doomemacs/.local/straight/repos/acp.el/acp.el
+/home/junghan/doomemacs/.local/straight/repos/agent-shell/agent-shell.el
+```
+
+Use them as semantic references for:
+- capability detection
+- `resume > load > new`
+- session bootstrap discipline
+
+Do not import their UI/transcript/session-browser machinery unless there is a very strong reason.
+
+---
+
 ## Verification
 
 Run these after meaningful changes:
