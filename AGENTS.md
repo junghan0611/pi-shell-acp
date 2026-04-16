@@ -1,109 +1,119 @@
 # AGENTS.md
 
-> **🔄 REACTIVATED** — This repository is active again as of 2026-04-15.
-> The earlier archive conclusion was superseded after the ben path was disabled pending account-risk observation.
+## Identity
 
-## Status
+`pi-shell-acp` is the **ACP bridge provider for pi**.
 
-This repository is **active again**. The ACP bridge experiment had previously been archived in favor of the ben approach, but `agent-config` has now switched back to `pi-shell-acp` as the default Claude path in pi.
+It should let pi talk to Claude Code through `claude-agent-acp` while keeping the bridge **thin, observable, and restart-safe**.
 
-The active integration now lives in:
-- `~/repos/gh/pi-shell-acp` — ACP bridge provider
-- `~/repos/gh/agent-config` — pi configuration loading this provider by default
-- `~/repos/3rd/pi-packages` — optional ben path, currently disabled by default
+Current public value:
+- `pi-shell-acp/...` provider/model surface
+- cross-process ACP session continuity for `pi:<sessionId>`
+- Claude Code identity preserved (`~/.claude`, native MCP, native skills)
 
-## Historical Mission
+---
 
-This repository connected **pi** to **Claude Code** through **ACP** with the smallest possible amount of custom glue.
+## Scope
 
-```text
-pi
-  -> this extension (thin ACP client)
-    -> claude-agent-acp
-      -> Claude Code
-        -> native Claude config / MCP / skills / PATH
-```
-
-The guiding principle was: keep the bridge thin, observable, and reliable.
-The conclusion was: the thinnest bridge is no bridge at all.
-
-## Key Architectural Lesson
-
-The experiment validated that:
-- pi owns harness UX and orchestration
-- Claude Code can own native capability loading and execution
-- A thin ACP bridge can connect them with transport, visibility, and session discipline
-
-But it also showed that when pi already handles tool execution well, the ACP intermediary layer adds complexity without proportional benefit.
-
-## What This Repository Should Own
-
-This repository may own:
-
-- pi provider registration
+This repo owns only the narrow bridge layer:
+- provider registration in pi
 - ACP subprocess lifecycle
-- ACP initialization and session management
-- prompt forwarding into ACP
-- prompt selection logic that extracts the real user prompt from pi context
-- ACP session-update to pi-event mapping
-- visibility for Claude-side tool execution
-- history/session invalidation logic when pi and ACP state diverge
-- cancellation, shutdown, and diagnostics for the bridge itself
-- basic provider settings for non-append operation
+- ACP initialize / resume / load / new session bootstrap
+- prompt forwarding
+- ACP event -> pi event mapping
+- bridge-local cleanup, invalidation, diagnostics
 
-## What This Repository Should Not Own
+This repo does **not** own:
+- pi session UX conventions
+- prompt reconstruction from full pi history
+- tool ledgers / recovery ledgers
+- Claude Code emulation
+- broad multi-agent orchestration
 
-Do **not** casually add back:
+If a change makes this repo feel like a second harness, it is probably wrong.
 
-- prompt reconstruction from full pi conversation history as the default mechanism
-- tool result ledgers that re-inject previous execution state
-- large tool-name or tool-argument translation systems
-- a parallel session model meant to "fix" Claude behavior
-- emulation of Claude Code internals in provider code
-- broad speculative abstractions for future multi-agent features
+---
 
-If such behavior becomes necessary, first explain **why ACP is insufficient** and **why the logic belongs here rather than upstream or in pi**.
+## Hard Rules
 
-## Layering Rules
+1. **Surface name is singular**
+   - provider id: `pi-shell-acp`
+   - model prefix: `pi-shell-acp/...`
+   - settings key: `piShellAcpProvider`
+   - do not reintroduce legacy aliases
 
-### pi owns
-- top-level harness behavior
-- session UX
-- memory / agenda / delegation conventions
-- broader agent workflow
+2. **Session continuity boundary**
+   - persist only `pi:<sessionId>` mappings
+   - never persist `cwd:<cwd>` fallback sessions
 
-### this repository owns
-- the narrow bridge from pi provider calls to ACP transport
-- bridge-specific visibility and lifecycle control
+3. **Bootstrap order**
+   - `resume > load > new`
 
-### claude-agent-acp owns
-- Claude-specific ACP server behavior
+4. **Keep the bridge thin**
+   - no full-history prompt rebuild
+   - no tool result ledger
+   - no custom Claude behavior emulation
 
-### Claude Code owns
-- Claude-side native runtime behavior
-- native config loading
-- Claude-side MCP / skills / shell execution
+5. **Shutdown semantics**
+   - ordinary process end should preserve persisted mapping
+   - explicit invalidation may delete it
 
-When in doubt, push responsibility **down to the canonical layer** or **up to pi**, not sideways into this repo.
+6. **Fast failure is better than silent compatibility**
+   - wrong names / wrong settings should fail early
 
-## Non-Append Preference
+---
 
-When a capability is already available through Claude Code's standard paths (for example `~/.claude`, native MCP config, or shell/PATH tools), prefer using that path over duplicating the same information in the bridge.
+## Important Files
 
-This does **not** mean "do nothing."
-It means:
+- `index.ts`
+  - provider registration
+  - settings load
+  - session shutdown behavior
+- `acp-bridge.ts`
+  - ACP lifecycle
+  - persisted session cache
+  - capability detection
+  - `resume > load > new`
+- `event-mapper.ts`
+  - ACP updates -> pi stream events
+- `run.sh`
+  - install / smoke workflow
+- `README.md`
+  - public explanation and operator entrypoint
 
-- do not duplicate configuration blindly
-- do not rebuild execution paths unnecessarily
-- do make execution visible to the pi user
-- do keep session state honest when history changes
+---
 
-## Reference Commands (Historical)
+## Verification
+
+Run these after meaningful changes:
 
 ```bash
-npm install
 npm run typecheck
-./run.sh smoke .
-./bench.sh .
-PI_BENCH_SUITE=quick ./bench.sh .
+./run.sh smoke /home/junghan/repos/gh/agent-config
 ```
+
+For cross-process continuity, verify with the same pi session file:
+
+```bash
+cd /home/junghan/repos/gh/agent-config
+SESSION_FILE=$(mktemp /tmp/pi-shell-acp-XXXXXX.jsonl)
+pi --session "$SESSION_FILE" --provider pi-shell-acp --model claude-3-5-haiku-latest -p 'Remember this exact secret token for later: test-token-123. Reply only READY.'
+pi --session "$SESSION_FILE" --provider pi-shell-acp --model claude-3-5-haiku-latest -p 'What was the secret token? Reply with the token only.'
+```
+
+Expected: second process returns `test-token-123`.
+
+For fallback boundary, ensure `cwd:` sessions do not create persisted cache records.
+
+---
+
+## Working Style
+
+Prefer surgical changes.
+
+When reviewing a proposed change, ask:
+- Does this belong in pi instead?
+- Does this belong in Claude Code / claude-agent-acp instead?
+- Does this make the bridge more magical than necessary?
+
+If yes, stop and narrow the change.
