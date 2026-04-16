@@ -14,7 +14,7 @@ Usage:
   ./run.sh smoke [project-dir]   # smoke test provider/model loading and a simple prompt
   ./run.sh sync-auth             # copy ~/.pi/agent/auth.json anthropic OAuth credentials to pi-shell-acp alias
   ./run.sh install [project-dir] # install this local package into project .pi/settings.json
-  ./run.sh remove [project-dir]  # remove pi-shell-acp / legacy claude-agent-sdk-pi entries from project .pi/settings.json
+  ./run.sh remove [project-dir]  # remove pi-shell-acp entries from project .pi/settings.json
 
 Notes:
   - project-dir defaults to current directory
@@ -101,7 +101,7 @@ if not isinstance(packages, list):
 filtered = []
 for item in packages:
     source = item.get("source") if isinstance(item, dict) else item
-    if isinstance(source, str) and ("claude-agent-sdk-pi" in source or "pi-shell-acp" in source) and source != repo_dir:
+    if isinstance(source, str) and ("pi-shell-acp" in source) and source != repo_dir:
         continue
     filtered.append(item)
 
@@ -139,7 +139,7 @@ filtered = []
 removed = 0
 for item in packages:
     source = item.get("source") if isinstance(item, dict) else item
-    if isinstance(source, str) and ("claude-agent-sdk-pi" in source or "pi-shell-acp" in source):
+    if isinstance(source, str) and ("pi-shell-acp" in source):
         removed += 1
         continue
     filtered.append(item)
@@ -153,7 +153,7 @@ PY
 smoke_test() {
   local project_dir model
   project_dir=$(normalize_project_dir "$1")
-  model=${PI_SHELL_ACP_MODEL:-${PI_CLAUDE_AGENT_SDK_MODEL:-pi-shell-acp/claude-sonnet-4-6}}
+  model=${PI_SHELL_ACP_MODEL:-pi-shell-acp/claude-sonnet-4-6}
 
   require_cmd pi
 
@@ -171,7 +171,7 @@ const sessionKey = 'run-sh-smoke';
 const session = await ensureBridgeSession({
   sessionKey,
   cwd: process.cwd(),
-  modelId: process.env.PI_SHELL_ACP_MODEL_ID || process.env.PI_CLAUDE_AGENT_SDK_MODEL_ID || 'claude-sonnet-4-6',
+  modelId: process.env.PI_SHELL_ACP_MODEL_ID || 'claude-sonnet-4-6',
   systemPromptAppend: '간단히 답하세요.',
   settingSources: ['user'],
   strictMcpConfig: false,

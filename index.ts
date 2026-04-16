@@ -8,7 +8,6 @@ import { cancelActivePrompt, cleanupBridgeSessionProcess, ensureBridgeSession, g
 
 const PROVIDER_ID = "pi-shell-acp";
 const REGISTERED_SYMBOL = Symbol.for("pi-shell-acp:registered");
-const LEGACY_REGISTERED_SYMBOL = Symbol.for("claude-agent-sdk-pi:registered");
 const GLOBAL_SETTINGS_PATH = join(homedir(), ".pi", "agent", "settings.json");
 
 type ProviderSettings = {
@@ -95,12 +94,7 @@ function readSettingsFile(filePath: string): ProviderSettings {
 		const raw = readFileSync(filePath, "utf-8");
 		const parsed = JSON.parse(raw) as Record<string, unknown>;
 		const settingsBlock =
-			(parsed["piShellAcpProvider"] as Record<string, unknown> | undefined) ??
-			(parsed["pi-shell-acp-provider"] as Record<string, unknown> | undefined) ??
-			(parsed["piShellAcp"] as Record<string, unknown> | undefined) ??
-			(parsed["claudeAgentSdkProvider"] as Record<string, unknown> | undefined) ??
-			(parsed["claude-agent-sdk-provider"] as Record<string, unknown> | undefined) ??
-			(parsed["claudeAgentSdk"] as Record<string, unknown> | undefined);
+			(parsed["piShellAcpProvider"] as Record<string, unknown> | undefined);
 		if (!settingsBlock || typeof settingsBlock !== "object") return {};
 		const appendSystemPrompt =
 			typeof settingsBlock["appendSystemPrompt"] === "boolean"
@@ -313,11 +307,10 @@ function streamClaudeAcp(model: Model<any>, context: Context, options?: SimpleSt
 }
 
 export default function (pi: ExtensionAPI) {
-	if ((globalThis as any)[REGISTERED_SYMBOL] || (globalThis as any)[LEGACY_REGISTERED_SYMBOL]) {
+	if ((globalThis as any)[REGISTERED_SYMBOL]) {
 		return;
 	}
 	(globalThis as any)[REGISTERED_SYMBOL] = true;
-	(globalThis as any)[LEGACY_REGISTERED_SYMBOL] = true;
 
 	const on = pi.on as unknown as (
 		event: string,
