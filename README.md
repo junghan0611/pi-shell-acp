@@ -1,4 +1,4 @@
-# claude-agent-sdk-pi
+# pi-shell-acp
 
 > **🔄 REACTIVATED** — This repository is active again as of 2026-04-15.
 > It had been archived after the ben approach looked simpler, but that path is now disabled by default in `agent-config` pending account-risk observation.
@@ -14,7 +14,7 @@
 
 ```text
 pi
-  -> claude-agent-sdk-pi   (this repository; thin ACP client)
+  -> pi-shell-acp          (this repository; thin ACP client)
     -> claude-agent-acp    (canonical ACP server for Claude Code)
       -> Claude Code
         -> native Claude configuration
@@ -191,7 +191,7 @@ This extension should be a **thin transport and event-mapping layer**, not a sec
 - selects the provider
 - renders streaming output
 
-#### this repository (`claude-agent-sdk-pi`)
+#### this repository (`pi-shell-acp`)
 - spawns `claude-agent-acp`
 - initializes the ACP connection
 - creates/reuses ACP sessions
@@ -272,6 +272,8 @@ Implemented now:
 - ACP `prompt`
 - ACP prompt cancellation
 - ACP session reuse keyed by the pi session ID
+- cross-process ACP session continuity for `pi:<sessionId>` mappings
+- persisted session bootstrap order: `resume > load > new`
 - prompt extraction that selects the real user prompt instead of trailing pi hook/user metadata messages
 - streaming mapping for:
   - `agent_message_chunk` -> pi text events
@@ -305,7 +307,6 @@ The following items are intentionally **not** claimed as complete:
 
 - richer pi-side rendering of `tool_call` / `tool_call_update` beyond the current visible text notices
 - history-preserving replay after session invalidation
-- ACP `loadSession` / resume / replay support
 - deeper long-running validation of process-tree cleanup across real workloads
 - a complete strategy for explicit vs automatic MCP routing
 - package/repository/provider renaming after stabilization
@@ -458,6 +459,22 @@ Current semantics:
   - controls which Claude settings layers are loaded
 - `strictMcpConfig`
   - when `true`, passes `--strict-mcp-config` through Claude Code
+
+### Cross-process session continuity cache
+
+For pi-backed sessions only, the bridge persists a minimal session mapping at:
+
+```text
+~/.pi/agent/cache/pi-shell-acp/sessions/<sha256(sessionKey)>.json
+```
+
+Properties of this cache:
+
+- persists only `pi:<sessionId>` mappings
+- never persists `cwd:<cwd>` fallback sessions
+- stores only the ACP session ID plus compatibility metadata
+- ordinary process shutdown keeps the persisted mapping so the next pi process can reconnect
+- incompatibility or explicit bridge close invalidates the persisted mapping and starts fresh
 
 Default behavior when no settings are present:
 

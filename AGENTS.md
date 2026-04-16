@@ -5,10 +5,10 @@
 
 ## Status
 
-This repository is **active again**. The ACP bridge experiment had previously been archived in favor of the ben approach, but `agent-config` has now switched back to `claude-agent-sdk-pi` as the default Claude path in pi.
+This repository is **active again**. The ACP bridge experiment had previously been archived in favor of the ben approach, but `agent-config` has now switched back to `pi-shell-acp` as the default Claude path in pi.
 
 The active integration now lives in:
-- `~/repos/gh/claude-agent-sdk-pi` — ACP bridge provider
+- `~/repos/gh/pi-shell-acp` — ACP bridge provider
 - `~/repos/gh/agent-config` — pi configuration loading this provider by default
 - `~/repos/3rd/pi-packages` — optional ben path, currently disabled by default
 

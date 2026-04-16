@@ -4,7 +4,7 @@ set -euo pipefail
 REPO_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 PROJECT_DIR_DEFAULT=$(pwd)
 TARGET_PROJECT_DIR=${2:-$PROJECT_DIR_DEFAULT}
-PACKAGE_NAME="claude-agent-sdk-pi"
+PACKAGE_NAME="pi-shell-acp"
 PROVIDER_ID="claude-agent-sdk"
 
 usage() {
@@ -14,7 +14,7 @@ Usage:
   ./run.sh smoke [project-dir]   # smoke test provider/model loading and a simple prompt
   ./run.sh sync-auth             # copy ~/.pi/agent/auth.json anthropic OAuth credentials to claude-agent-sdk alias
   ./run.sh install [project-dir] # install this local package into project .pi/settings.json
-  ./run.sh remove [project-dir]  # remove claude-agent-sdk-pi entries from project .pi/settings.json
+  ./run.sh remove [project-dir]  # remove pi-shell-acp / legacy claude-agent-sdk-pi entries from project .pi/settings.json
 
 Notes:
   - project-dir defaults to current directory
@@ -101,7 +101,7 @@ if not isinstance(packages, list):
 filtered = []
 for item in packages:
     source = item.get("source") if isinstance(item, dict) else item
-    if isinstance(source, str) and "claude-agent-sdk-pi" in source and source != repo_dir:
+    if isinstance(source, str) and ("claude-agent-sdk-pi" in source or "pi-shell-acp" in source) and source != repo_dir:
         continue
     filtered.append(item)
 
@@ -139,7 +139,7 @@ filtered = []
 removed = 0
 for item in packages:
     source = item.get("source") if isinstance(item, dict) else item
-    if isinstance(source, str) and "claude-agent-sdk-pi" in source:
+    if isinstance(source, str) and ("claude-agent-sdk-pi" in source or "pi-shell-acp" in source):
         removed += 1
         continue
     filtered.append(item)
