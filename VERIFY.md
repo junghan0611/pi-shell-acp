@@ -29,7 +29,10 @@
    - 프로세스가 바뀌어도 같은 pi session은 같은 ACP session으로 최대한 이어질 것
 4. **thin bridge 유지**
    - 여기서 두 번째 하네스를 만들지 말 것
-5. **운영 위생 유지**
+5. **capability exposure boundary 명시**
+   - pi custom tool / user MCP 가시성은 `piShellAcpProvider.mcpServers` 설정에 의해서만 결정된다
+   - 자동 `~/.mcp.json` 로드는 하지 않는다
+6. **운영 위생 유지**
    - orphan subprocess, 쓰레기 persisted session 남발 금지
 
 ---
@@ -239,7 +242,8 @@ const session = await ensureBridgeSession({
   systemPromptAppend: undefined,
   settingSources: ['user'],
   strictMcpConfig: false,
-  bridgeConfigSignature: JSON.stringify({ appendSystemPrompt: false, settingSources: ['user'], strictMcpConfig: false }),
+  mcpServers: [],
+  bridgeConfigSignature: JSON.stringify({ appendSystemPrompt: false, settingSources: ['user'], strictMcpConfig: false, mcpServers: '[]' }),
   contextMessageSignatures: ['verify:cwd-boundary'],
 });
 await closeBridgeSession(key, { closeRemote: true, invalidatePersisted: true });
@@ -368,21 +372,77 @@ pi -e "$REPO_DIR" --provider pi-shell-acp --model claude-sonnet-4-6 -p 'session_
 - recursive `pi` 호출로 우회
 
 현재 코드 기준 의심점:
-- `acp-bridge.ts`의 `newSession/loadSession/resumeSession` 호출에서 `mcpServers: []`
-- `buildSessionMeta()`가 Claude 쪽 `tools: { type: "preset", preset: "claude_code" }`만 넘김
+- `acp-bridge.ts`의 `newSession/loadSession/resumeSession` 호출은 이제 `params.mcpServers`를 전달한다
+- 그 목록은 `piShellAcpProvider.mcpServers` 설정(§8.5)에서만 온다 — 자동 `~/.mcp.json` 로드 없음
+- `buildSessionMeta()`가 Claude 쪽 `tools: { type: "preset", preset: "claude_code" }`를 넘김
 
-즉 현재는 **Claude Code native tool은 보이지만 pi custom tool은 안 보이는 상태**일 가능성이 높다.
+즉 현재 기본값(설정 없음)에서는 **Claude Code native tool은 보이지만 pi custom tool은 안 보이는 상태**가 정상이다.
 
 이 항목의 의미:
-- 이것이 의도된 설계인지
-- 아니면 thin bridge를 깨지 않는 최소 보강이 필요한지
-- "pi 하네스 parity"를 목표로 삼을지, "Claude-native only"를 명시할지
-를 가르는 분기점이다.
+- 기본값은 "Claude-native only" 로 선언됐다
+- pi 하네스 parity는 **별도 MCP adapter**를 만들어 `piShellAcpProvider.mcpServers` 로 주입할 때만 생긴다
+- bridge는 그것을 pass-through만 할 뿐, repo 안에서 승격 로직을 갖지 않는다
 
 이 테스트에서 실패하면:
 - 억지로 Claude 안에서 `bash`로 `pi`를 재귀 호출하게 하지 말 것
 - 먼저 **현재 bridge의 tool exposure boundary를 명확히 판정**할 것
-- future에 별도 MCP adapter가 생기면, 그때 positive test를 별도 섹션으로 추가할 것
+- 필요하면 `piShellAcpProvider.mcpServers`에 external MCP adapter를 명시적으로 추가해 §8.5로 검증
+
+### 8.5 MCP pass-through 가시성 — 명시 설정 기반 capability continuity
+
+`piShellAcpProvider.mcpServers`가 비어 있을 때와 채워졌을 때, ACP Claude 내부 `/mcp` 목록이 설정대로 반영되는지 본다.
+
+실험용 MCP 하나를 프로젝트 settings에 등록한다. 예를 들어 `<PROJECT>/.pi/settings.json`:
+
+```jsonc
+{
+  "piShellAcpProvider": {
+    "mcpServers": {
+      "session-bridge": {
+        "command": "node",
+        "args": ["/home/junghan/repos/gh/agent-config/mcp/session-bridge/server.js"]
+      }
+    }
+  }
+}
+```
+
+그 다음 같은 프로젝트에서:
+
+```bash
+cd "$PROJECT_DIR"
+pi -e "$REPO_DIR" --provider pi-shell-acp --model claude-sonnet-4-6 -p '지금 보이는 MCP 서버 이름을 쉼표로만 나열해. 설명 없이.'
+```
+
+**Pass 기준:**
+- 설정에 등록된 MCP(예: `session-bridge`)가 응답 목록에 들어 있다
+- 등록하지 않은 MCP는 보이지 않는다 (자동 `~/.mcp.json` 로드 없음을 확인)
+
+**resume/load/new 일관성:**
+
+같은 `SESSION_FILE`로 여러 턴을 돌려도 visibility가 바뀌면 안 된다.
+
+```bash
+export SESSION_FILE=$(mktemp /tmp/pi-shell-acp-mcp-XXXXXX.jsonl)
+cd "$PROJECT_DIR"
+pi -e "$REPO_DIR" --session "$SESSION_FILE" --provider pi-shell-acp --model claude-sonnet-4-6 -p '지금 보이는 MCP 서버 이름을 쉼표로만 나열해.'
+pi -e "$REPO_DIR" --session "$SESSION_FILE" --provider pi-shell-acp --model claude-sonnet-4-6 -p '다시 한 번 MCP 서버 이름만 나열해.'
+```
+
+Pass: 두 응답의 서버 목록이 동일.
+Fail: 1턴에만 보이거나, 2턴에서 달라짐 → session fingerprint 또는 세 경로 주입 통일 문제.
+
+**설정 변경 → 세션 무효화:**
+
+`piShellAcpProvider.mcpServers`를 바꾸면 `bridgeConfigSignature`가 달라져 persisted session이 호환 실패하고 새 세션으로 넘어가야 한다.
+
+```bash
+# settings.json에서 mcpServers 항목 추가/제거 후
+cd "$PROJECT_DIR"
+pi -e "$REPO_DIR" --session "$SESSION_FILE" --provider pi-shell-acp --model claude-sonnet-4-6 -p 'MCP 서버 이름만 나열해.'
+```
+
+Pass: 새 설정이 즉시 반영됨 (stale capability 없음).
 
 ---
 
@@ -533,6 +593,7 @@ find "$CACHE_DIR" -maxdepth 1 -type f | sort
 7. tool use / event mapping 대체로 정상
 8. orphan process / garbage record 남발 없음
 9. pi session transcript가 공통 기억축으로 usable함
+10. MCP pass-through가 `piShellAcpProvider.mcpServers` 설정대로 반영되고, resume/load/new 경로에서 가시성이 동일하며, 설정 변경 시 세션이 올바르게 무효화됨
 
-이 9개가 통과하면, 그때부터 `pi-shell-acp`는 단순 실험이 아니라
+이 10개가 통과하면, 그때부터 `pi-shell-acp`는 단순 실험이 아니라
 **pi 하네스 안에서 운영 가능한 ACP bridge** 로 본다.

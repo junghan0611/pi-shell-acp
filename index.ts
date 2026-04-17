@@ -4,7 +4,8 @@ import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { applyBridgePromptEvent, finalizeAcpStreamState, type AcpPiStreamState } from "./event-mapper.js";
-import { cancelActivePrompt, cleanupBridgeSessionProcess, ensureBridgeSession, getBridgeErrorDetails, sendPrompt, setActivePromptHandler, type ClaudeSettingSource } from "./acp-bridge.js";
+import { cancelActivePrompt, cleanupBridgeSessionProcess, ensureBridgeSession, getBridgeErrorDetails, normalizeMcpServers, sendPrompt, setActivePromptHandler, type ClaudeSettingSource, type McpServerInputMap } from "./acp-bridge.js";
+import type { McpServer } from "@agentclientprotocol/sdk";
 
 const PROVIDER_ID = "pi-shell-acp";
 const REGISTERED_SYMBOL = Symbol.for("pi-shell-acp:registered");
@@ -14,12 +15,14 @@ type ProviderSettings = {
 	appendSystemPrompt?: boolean;
 	settingSources?: ClaudeSettingSource[];
 	strictMcpConfig?: boolean;
+	mcpServers?: McpServerInputMap;
 };
 
 type ResolvedProviderSettings = {
 	appendSystemPrompt: boolean;
 	settingSources: ClaudeSettingSource[];
 	strictMcpConfig: boolean;
+	mcpServers: McpServer[];
 	bridgeConfigSignature: string;
 };
 
@@ -112,10 +115,16 @@ function readSettingsFile(filePath: string): ProviderSettings {
 			typeof settingsBlock["strictMcpConfig"] === "boolean"
 				? (settingsBlock["strictMcpConfig"] as boolean)
 				: undefined;
+		const mcpServersRaw = settingsBlock["mcpServers"];
+		const mcpServers =
+			mcpServersRaw && typeof mcpServersRaw === "object" && !Array.isArray(mcpServersRaw)
+				? (mcpServersRaw as McpServerInputMap)
+				: undefined;
 		return {
 			appendSystemPrompt,
 			settingSources,
 			strictMcpConfig,
+			mcpServers,
 		};
 	} catch {
 		return {};
@@ -129,14 +138,21 @@ function loadProviderSettings(cwd: string): ResolvedProviderSettings {
 	const appendSystemPrompt = merged.appendSystemPrompt ?? false;
 	const settingSources = merged.settingSources ?? (appendSystemPrompt ? [] : ["user"]);
 	const strictMcpConfig = merged.strictMcpConfig ?? false;
+	const mergedMcpServersRaw: McpServerInputMap = {
+		...(globalSettings.mcpServers ?? {}),
+		...(projectSettings.mcpServers ?? {}),
+	};
+	const { servers: mcpServers, signatureKey: mcpSignatureKey } = normalizeMcpServers(mergedMcpServersRaw);
 	return {
 		appendSystemPrompt,
 		settingSources,
 		strictMcpConfig,
+		mcpServers,
 		bridgeConfigSignature: JSON.stringify({
 			appendSystemPrompt,
 			settingSources,
 			strictMcpConfig,
+			mcpServers: mcpSignatureKey,
 		}),
 	};
 }
@@ -251,6 +267,7 @@ function streamClaudeAcp(model: Model<any>, context: Context, options?: SimpleSt
 				systemPromptAppend: providerSettings.appendSystemPrompt ? context.systemPrompt : undefined,
 				settingSources: providerSettings.settingSources,
 				strictMcpConfig: providerSettings.strictMcpConfig,
+				mcpServers: providerSettings.mcpServers,
 				bridgeConfigSignature: providerSettings.bridgeConfigSignature,
 				contextMessageSignatures: getContextMessageSignatures(context),
 			});

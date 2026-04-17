@@ -21,12 +21,22 @@ The goal is simple:
 - provider/model surface: `pi-shell-acp/...`
 - Claude Code native identity preserved
   - `~/.claude`
-  - native MCP
   - native skills / PATH tools
+  - Claude Code settings loaded via ACP `settingSources`
 - cross-process ACP session continuity for `pi:<sessionId>`
 - persisted bootstrap order: `resume > load > new`
 - `cwd:<cwd>` fallback sessions are **not** persisted
 - ordinary process shutdown keeps persisted mapping for the next pi process
+- explicit MCP pass-through via `piShellAcpProvider.mcpServers` — never automatic `~/.mcp.json` scanning
+
+## Use and Authentication
+
+This bridge uses the **user's own Claude Code authentication** (`~/.claude`, OAuth or API key already on the machine).
+
+- No credential proxying, forwarding, or resale.
+- No scraping; all traffic goes through the public `@agentclientprotocol/claude-agent-acp` subprocess.
+- No bypass of Claude Code's native safety, permission, or rate-limit machinery.
+- Tool surface exposed to Claude is entirely derived from explicit settings in this repo and the target project — there is no silent capability injection.
 
 ## Non-Goals
 
@@ -136,10 +146,53 @@ pi --provider pi-shell-acp --model claude-3-5-haiku-latest -p 'ok만 답하세�
   "piShellAcpProvider": {
     "appendSystemPrompt": false,
     "settingSources": ["user"],
-    "strictMcpConfig": false
+    "strictMcpConfig": false,
+    "mcpServers": {}
   }
 }
 ```
+
+### MCP pass-through
+
+`mcpServers` is an **explicit allowlist**. The bridge forwards exactly what you list here to every ACP session — nothing more, nothing less.
+
+Stdio MCP (most common):
+
+```json
+{
+  "piShellAcpProvider": {
+    "mcpServers": {
+      "session-bridge": {
+        "command": "node",
+        "args": ["/abs/path/to/server.js"],
+        "env": { "FOO": "bar" }
+      }
+    }
+  }
+}
+```
+
+HTTP / SSE MCP:
+
+```json
+{
+  "piShellAcpProvider": {
+    "mcpServers": {
+      "my-http-mcp": {
+        "type": "http",
+        "url": "https://example/mcp",
+        "headers": { "Authorization": "Bearer …" }
+      }
+    }
+  }
+}
+```
+
+Notes:
+- `mcpServers` from global (`~/.pi/agent/settings.json`) and project (`<cwd>/.pi/settings.json`) are merged by name, project wins on conflict.
+- The canonical form of `mcpServers` participates in the bridge session signature — changing it invalidates the persisted session automatically, so Claude never runs with a stale capability set.
+- This bridge does **not** read `~/.mcp.json` or any other ambient Claude config. If you want a server exposed, list it here.
+- pi-native extension tools (`delegate`, `session_search`, `knowledge_search`, …) are **not** auto-promoted. If you want them inside Claude, build a dedicated external MCP adapter and register it here.
 
 After updating `agent-config`, verify:
 

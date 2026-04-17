@@ -9,7 +9,8 @@ It should let pi talk to Claude Code through `claude-agent-acp` while keeping th
 Current public value:
 - `pi-shell-acp/...` provider/model surface
 - cross-process ACP session continuity for `pi:<sessionId>`
-- Claude Code identity preserved (`~/.claude`, native MCP, native skills)
+- Claude Code identity preserved (`~/.claude`, native skills, Claude Code settings via ACP `settingSources`)
+- explicit MCP pass-through via `piShellAcpProvider.mcpServers` — no ambient `~/.mcp.json` scanning
 
 ---
 
@@ -21,6 +22,7 @@ This repo owns only the narrow bridge layer:
 - ACP initialize / resume / load / new session bootstrap
 - prompt forwarding
 - ACP event -> pi event mapping
+- explicit MCP server pass-through from settings to ACP session requests
 - bridge-local cleanup, invalidation, diagnostics
 
 This repo does **not** own:
@@ -29,6 +31,7 @@ This repo does **not** own:
 - tool ledgers / recovery ledgers
 - Claude Code emulation
 - broad multi-agent orchestration
+- promotion of pi extension tools to Claude — build a separate MCP adapter for that and register it via `mcpServers` settings
 
 If a change makes this repo feel like a second harness, it is probably wrong.
 
@@ -53,12 +56,17 @@ If a change makes this repo feel like a second harness, it is probably wrong.
    - no full-history prompt rebuild
    - no tool result ledger
    - no custom Claude behavior emulation
+   - no automatic `~/.mcp.json` or ambient MCP discovery — only what `piShellAcpProvider.mcpServers` lists
 
-5. **Shutdown semantics**
+5. **MCP signature in session compatibility**
+   - canonical `mcpServers` hash participates in `bridgeConfigSignature`
+   - changing the MCP list invalidates the persisted session instead of silently reusing a stale one
+
+6. **Shutdown semantics**
    - ordinary process end should preserve persisted mapping
    - explicit invalidation may delete it
 
-6. **Fast failure is better than silent compatibility**
+7. **Fast failure is better than silent compatibility**
    - wrong names / wrong settings should fail early
 
 ---

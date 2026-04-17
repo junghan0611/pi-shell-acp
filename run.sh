@@ -175,7 +175,8 @@ const session = await ensureBridgeSession({
   systemPromptAppend: '간단히 답하세요.',
   settingSources: ['user'],
   strictMcpConfig: false,
-  bridgeConfigSignature: JSON.stringify({ appendSystemPrompt: false, settingSources: ['user'], strictMcpConfig: false }),
+  mcpServers: [],
+  bridgeConfigSignature: JSON.stringify({ appendSystemPrompt: false, settingSources: ['user'], strictMcpConfig: false, mcpServers: '[]' }),
   contextMessageSignatures: ['smoke:user:ok만 답하세요.'],
 });
 

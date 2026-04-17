@@ -10,6 +10,7 @@ import {
 	PROTOCOL_VERSION,
 	type AnyMessage,
 	type InitializeResponse,
+	type McpServer,
 	type PromptResponse,
 	type RequestPermissionRequest,
 	type RequestPermissionResponse,
@@ -31,6 +32,94 @@ export type BridgePromptEvent =
 type PendingPromptHandler = (event: BridgePromptEvent) => Promise<void> | void;
 
 export type ClaudeSettingSource = "user" | "project" | "local";
+
+type EnvKvInput = Record<string, string> | Array<{ name: string; value: string }>;
+
+type StdioMcpServerInput = {
+	type?: "stdio";
+	command: string;
+	args?: string[];
+	env?: EnvKvInput;
+};
+
+type HttpMcpServerInput = {
+	type: "http";
+	url: string;
+	headers?: EnvKvInput;
+};
+
+type SseMcpServerInput = {
+	type: "sse";
+	url: string;
+	headers?: EnvKvInput;
+};
+
+export type McpServerInput = StdioMcpServerInput | HttpMcpServerInput | SseMcpServerInput;
+export type McpServerInputMap = Record<string, McpServerInput>;
+
+export type NormalizedMcpServers = {
+	servers: McpServer[];
+	hash: string;
+	signatureKey: string;
+};
+
+function toKvArray(input: EnvKvInput | undefined): Array<{ name: string; value: string }> {
+	if (!input) return [];
+	const entries: Array<{ name: string; value: string }> = [];
+	if (Array.isArray(input)) {
+		for (const kv of input) {
+			if (!kv || typeof kv.name !== "string" || typeof kv.value !== "string") continue;
+			entries.push({ name: kv.name, value: kv.value });
+		}
+	} else if (typeof input === "object") {
+		for (const [name, value] of Object.entries(input)) {
+			if (typeof name !== "string" || typeof value !== "string") continue;
+			entries.push({ name, value });
+		}
+	}
+	entries.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+	return entries;
+}
+
+export function normalizeMcpServers(input: McpServerInputMap | undefined): NormalizedMcpServers {
+	const servers: McpServer[] = [];
+	const empty = {
+		servers,
+		hash: createHash("sha256").update("[]").digest("hex"),
+		signatureKey: "[]",
+	};
+	if (!input || typeof input !== "object") return empty;
+	const names = Object.keys(input).sort();
+	for (const name of names) {
+		const raw = input[name];
+		if (!raw || typeof raw !== "object") continue;
+		const declaredType = (raw as { type?: unknown }).type;
+		const type = declaredType === "http" || declaredType === "sse" ? declaredType : "stdio";
+		if (type === "http" || type === "sse") {
+			const def = raw as HttpMcpServerInput | SseMcpServerInput;
+			if (typeof def.url !== "string" || def.url.length === 0) continue;
+			servers.push({
+				type,
+				name,
+				url: def.url,
+				headers: toKvArray(def.headers),
+			} as McpServer);
+			continue;
+		}
+		const def = raw as StdioMcpServerInput;
+		if (typeof def.command !== "string" || def.command.length === 0) continue;
+		const args = Array.isArray(def.args) ? def.args.filter((x) => typeof x === "string") : [];
+		servers.push({
+			name,
+			command: def.command,
+			args,
+			env: toKvArray(def.env),
+		} as McpServer);
+	}
+	const signatureKey = JSON.stringify(servers);
+	const hash = createHash("sha256").update(signatureKey).digest("hex");
+	return { servers, hash, signatureKey };
+}
 
 type BridgeSessionCapabilities = {
 	loadSession: boolean;
@@ -67,6 +156,7 @@ export type AcpBridgeSession = {
 	systemPromptAppend?: string;
 	settingSources: ClaudeSettingSource[];
 	strictMcpConfig: boolean;
+	mcpServers: McpServer[];
 	bridgeConfigSignature: string;
 	contextMessageSignatures: string[];
 	stderrTail: string[];
@@ -81,6 +171,7 @@ export type EnsureBridgeSessionParams = {
 	systemPromptAppend?: string;
 	settingSources: ClaudeSettingSource[];
 	strictMcpConfig: boolean;
+	mcpServers: McpServer[];
 	bridgeConfigSignature: string;
 	contextMessageSignatures: string[];
 };
@@ -543,6 +634,7 @@ async function createBridgeProcess(params: EnsureBridgeSessionParams): Promise<A
 		systemPromptAppend: normalizeText(params.systemPromptAppend),
 		settingSources: [...params.settingSources],
 		strictMcpConfig: params.strictMcpConfig,
+		mcpServers: [...params.mcpServers],
 		bridgeConfigSignature: params.bridgeConfigSignature,
 		contextMessageSignatures: [...params.contextMessageSignatures],
 		stderrTail,
@@ -580,7 +672,7 @@ async function startNewBridgeSession(params: EnsureBridgeSessionParams): Promise
 	try {
 		const created = await session.connection.newSession({
 			cwd: params.cwd,
-			mcpServers: [],
+			mcpServers: [...params.mcpServers],
 			_meta: buildSessionMeta(params, session.systemPromptAppend),
 		});
 		if (!created?.sessionId) {
@@ -613,7 +705,7 @@ async function bootstrapPersistedBridgeSession(
 				const resumed = await (session.connection as any).unstable_resumeSession({
 					sessionId: record.acpSessionId,
 					cwd: params.cwd,
-					mcpServers: [],
+					mcpServers: [...params.mcpServers],
 					_meta: meta,
 				});
 				session.acpSessionId = record.acpSessionId;
@@ -631,7 +723,7 @@ async function bootstrapPersistedBridgeSession(
 				const loaded = await session.connection.loadSession({
 					sessionId: record.acpSessionId,
 					cwd: params.cwd,
-					mcpServers: [],
+					mcpServers: [...params.mcpServers],
 					_meta: meta,
 				});
 				session.acpSessionId = record.acpSessionId;
@@ -650,7 +742,7 @@ async function bootstrapPersistedBridgeSession(
 
 		const created = await session.connection.newSession({
 			cwd: params.cwd,
-			mcpServers: [],
+			mcpServers: [...params.mcpServers],
 			_meta: meta,
 		});
 		if (!created?.sessionId) {
