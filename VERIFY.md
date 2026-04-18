@@ -62,11 +62,13 @@ cd "$REPO_DIR"
 ```bash
 cd "$REPO_DIR"
 npm run typecheck
+npm run check-mcp            # pi-facing MCP normalization pure-logic gate (no Claude/ACP subprocess)
 ./run.sh smoke "$PROJECT_DIR"
 ```
 
 기대 결과:
 - typecheck 통과
+- check-mcp 통과 (`[check-mcp] N assertions ok`)
 - `--list-models pi-shell-acp` 성공
 - bridge prompt smoke 성공
 
@@ -231,10 +233,11 @@ echo "$BEFORE"
 ```bash
 cd "$REPO_DIR"
 node --input-type=module <<'EOF'
-import { ensureBridgeSession, closeBridgeSession } from './acp-bridge.ts';
+import { ensureBridgeSession, closeBridgeSession, normalizeMcpServers } from './acp-bridge.ts';
 
 const cwd = process.cwd();
 const key = `cwd:${cwd}`;
+const { hash: mcpServersHash } = normalizeMcpServers(undefined);
 const session = await ensureBridgeSession({
   sessionKey: key,
   cwd,
@@ -243,7 +246,7 @@ const session = await ensureBridgeSession({
   settingSources: ['user'],
   strictMcpConfig: false,
   mcpServers: [],
-  bridgeConfigSignature: JSON.stringify({ appendSystemPrompt: false, settingSources: ['user'], strictMcpConfig: false, mcpServers: '[]' }),
+  bridgeConfigSignature: JSON.stringify({ appendSystemPrompt: false, settingSources: ['user'], strictMcpConfig: false, mcpServersHash }),
   contextMessageSignatures: ['verify:cwd-boundary'],
 });
 await closeBridgeSession(key, { closeRemote: true, invalidatePersisted: true });
@@ -388,11 +391,11 @@ pi -e "$REPO_DIR" --provider pi-shell-acp --model claude-sonnet-4-6 -p 'session_
 - 먼저 **현재 bridge의 tool exposure boundary를 명확히 판정**할 것
 - 필요하면 `piShellAcpProvider.mcpServers`에 external MCP adapter를 명시적으로 추가해 §8.5로 검증
 
-### 8.5 MCP pass-through 가시성 — 명시 설정 기반 capability continuity
+### 8.5 pi-facing MCP injection 가시성 — 하나의 명시 설정이 resume/load/new 세 경로에 동일하게 반영되는가
 
-`piShellAcpProvider.mcpServers`가 비어 있을 때와 채워졌을 때, ACP Claude 내부 `/mcp` 목록이 설정대로 반영되는지 본다.
+`pi-shell-acp`의 MCP 책임은 단 하나다: `piShellAcpProvider.mcpServers`에 등록된 pi-facing MCP를 모든 ACP 세션 요청(`newSession` / `resumeSession` / `loadSession`)에 동일하게 주입한다. 이 테스트가 검증하는 것은 "범용 MCP 매니저"가 아니라 "pi가 정말 보이길 원하는 MCP 하나가 세 경로에서 일관되게 보이는가"이다.
 
-실험용 MCP 하나를 프로젝트 settings에 등록한다. 예를 들어 `<PROJECT>/.pi/settings.json`:
+실험용 pi-facing MCP 하나(예: `session-bridge`)를 프로젝트 settings에 등록한다. 예를 들어 `<PROJECT>/.pi/settings.json`:
 
 ```jsonc
 {
@@ -593,7 +596,7 @@ find "$CACHE_DIR" -maxdepth 1 -type f | sort
 7. tool use / event mapping 대체로 정상
 8. orphan process / garbage record 남발 없음
 9. pi session transcript가 공통 기억축으로 usable함
-10. MCP pass-through가 `piShellAcpProvider.mcpServers` 설정대로 반영되고, resume/load/new 경로에서 가시성이 동일하며, 설정 변경 시 세션이 올바르게 무효화됨
+10. pi-facing MCP injection이 `piShellAcpProvider.mcpServers` 설정대로만 반영되고, resume/load/new 세 경로에서 가시성이 동일하며, 설정 변경 시 세션이 올바르게 무효화되며, 잘못된 설정은 `McpServerConfigError`로 즉시 fail-fast됨
 
 이 10개가 통과하면, 그때부터 `pi-shell-acp`는 단순 실험이 아니라
 **pi 하네스 안에서 운영 가능한 ACP bridge** 로 본다.

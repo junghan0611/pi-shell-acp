@@ -12,6 +12,7 @@ usage() {
 Usage:
   ./run.sh setup [project-dir]   # npm install + sync auth alias + install this local package into project .pi/settings.json
   ./run.sh smoke [project-dir]   # smoke test provider/model loading and a simple prompt
+  ./run.sh check-mcp             # local deterministic check of normalizeMcpServers() — no Claude/ACP subprocess
   ./run.sh sync-auth             # copy ~/.pi/agent/auth.json anthropic OAuth credentials to pi-shell-acp alias
   ./run.sh install [project-dir] # install this local package into project .pi/settings.json
   ./run.sh remove [project-dir]  # remove pi-shell-acp entries from project .pi/settings.json
@@ -165,9 +166,10 @@ smoke_test() {
   echo "[smoke] provider models: ok"
 
   (cd "$REPO_DIR" && node --input-type=module <<'EOF'
-import { ensureBridgeSession, sendPrompt, setActivePromptHandler, closeBridgeSession } from './acp-bridge.ts';
+import { ensureBridgeSession, sendPrompt, setActivePromptHandler, closeBridgeSession, normalizeMcpServers } from './acp-bridge.ts';
 
 const sessionKey = 'run-sh-smoke';
+const emptyMcpHash = normalizeMcpServers(undefined).hash;
 const session = await ensureBridgeSession({
   sessionKey,
   cwd: process.cwd(),
@@ -176,7 +178,7 @@ const session = await ensureBridgeSession({
   settingSources: ['user'],
   strictMcpConfig: false,
   mcpServers: [],
-  bridgeConfigSignature: JSON.stringify({ appendSystemPrompt: false, settingSources: ['user'], strictMcpConfig: false, mcpServers: '[]' }),
+  bridgeConfigSignature: JSON.stringify({ appendSystemPrompt: false, settingSources: ['user'], strictMcpConfig: false, mcpServersHash: emptyMcpHash }),
   contextMessageSignatures: ['smoke:user:ok만 답하세요.'],
 });
 
@@ -203,6 +205,137 @@ console.log(`[smoke] bridge response: ${text.trim()}`);
 EOF
   )
   echo "[smoke] bridge prompt: ok"
+}
+
+check_mcp() {
+  (cd "$REPO_DIR" && node --input-type=module <<'EOF'
+import { normalizeMcpServers, McpServerConfigError } from './acp-bridge.ts';
+import { strict as assert } from 'node:assert';
+import { createHash } from 'node:crypto';
+
+const emptyHash = createHash('sha256').update('[]').digest('hex');
+
+function expectThrow(label, fn) {
+  try {
+    fn();
+  } catch (err) {
+    if (!(err instanceof McpServerConfigError)) {
+      throw new Error(`${label}: expected McpServerConfigError, got ${err?.name || err}`);
+    }
+    if (!Array.isArray(err.issues) || err.issues.length === 0) {
+      throw new Error(`${label}: expected non-empty issues[]`);
+    }
+    for (const issue of err.issues) {
+      if (typeof issue.server !== 'string' || issue.server.length === 0) {
+        throw new Error(`${label}: issue missing server name`);
+      }
+    }
+    return err;
+  }
+  throw new Error(`${label}: expected throw, got none`);
+}
+
+// 1. undefined -> empty, deterministic empty hash
+{
+  const r = normalizeMcpServers(undefined);
+  assert.deepEqual(r.servers, [], '1.undefined: servers empty');
+  assert.equal(r.hash, emptyHash, '1.undefined: hash matches sha256("[]")');
+  assert.equal(r.signatureKey, '[]', '1.undefined: signatureKey is "[]"');
+}
+
+// 2. {} -> same empty shape
+{
+  const r = normalizeMcpServers({});
+  assert.deepEqual(r.servers, []);
+  assert.equal(r.hash, emptyHash);
+}
+
+// 3. canonical ordering: z before a in input -> a first in output
+{
+  const r = normalizeMcpServers({
+    z: { command: 'bin-z' },
+    a: { command: 'bin-a' },
+  });
+  assert.deepEqual(r.servers.map(s => s.name), ['a', 'z'], '3: sorted by name');
+}
+
+// 4. deterministic hash — same semantic input -> same hash
+{
+  const a = normalizeMcpServers({ x: { command: 'c', args: ['1', '2'], env: { B: '2', A: '1' } } });
+  const b = normalizeMcpServers({ x: { command: 'c', args: ['1', '2'], env: { A: '1', B: '2' } } });
+  assert.equal(a.hash, b.hash, '4: env key order must not change hash');
+}
+
+// 5. stdio default shape (no "type")
+{
+  const r = normalizeMcpServers({ s: { command: 'bin', args: ['--x'], env: { K: 'v' } } });
+  assert.equal(r.servers.length, 1);
+  const s = r.servers[0];
+  assert.equal(s.name, 's');
+  assert.equal(s.command, 'bin');
+  assert.deepEqual(s.args, ['--x']);
+  assert.deepEqual(s.env, [{ name: 'K', value: 'v' }]);
+}
+
+// 6. http shape
+{
+  const r = normalizeMcpServers({
+    h: { type: 'http', url: 'https://e/mcp', headers: { Authorization: 'Bearer x' } },
+  });
+  const s = r.servers[0];
+  assert.equal(s.type, 'http');
+  assert.equal(s.url, 'https://e/mcp');
+  assert.deepEqual(s.headers, [{ name: 'Authorization', value: 'Bearer x' }]);
+}
+
+// 7. sse shape
+{
+  const r = normalizeMcpServers({ e: { type: 'sse', url: 'https://e/sse' } });
+  const s = r.servers[0];
+  assert.equal(s.type, 'sse');
+  assert.equal(s.url, 'https://e/sse');
+}
+
+// 8. unsupported type throws with server name
+{
+  const err = expectThrow('8.bad-type', () => normalizeMcpServers({ bad: { type: 'ws', url: 'x' } }));
+  assert.equal(err.issues[0].server, 'bad');
+  assert.match(err.message, /bad:/);
+}
+
+// 9. empty command throws
+expectThrow('9.empty-command', () => normalizeMcpServers({ noop: { command: '' } }));
+
+// 10. empty url (http) throws
+expectThrow('10.empty-url-http', () => normalizeMcpServers({ u: { type: 'http', url: '' } }));
+
+// 11. invalid env value throws
+expectThrow('11.env-non-string', () => normalizeMcpServers({ e: { command: 'c', env: { K: 42 } } }));
+
+// 12. args with non-string throws
+expectThrow('12.args-non-string', () => normalizeMcpServers({ a: { command: 'c', args: ['ok', 5] } }));
+
+// 13. root non-object (array) throws
+expectThrow('13.root-array', () => normalizeMcpServers([]));
+
+// 14. multiple invalid servers aggregated
+{
+  const err = expectThrow('14.aggregate', () => normalizeMcpServers({
+    a: { command: '' },
+    b: { type: 'ws' },
+  }));
+  assert.equal(err.issues.length, 2, '14: both issues surfaced');
+  assert.deepEqual(err.issues.map(i => i.server).sort(), ['a', 'b']);
+}
+
+// 15. headers bad shape throws
+expectThrow('15.headers-invalid', () => normalizeMcpServers({
+  h: { type: 'http', url: 'https://x', headers: 'no' },
+}));
+
+console.log('[check-mcp] 15 assertions ok');
+EOF
+  )
 }
 
 setup_all() {
@@ -236,6 +369,9 @@ case "$cmd" in
     ;;
   smoke)
     smoke_test "$TARGET_PROJECT_DIR"
+    ;;
+  check-mcp)
+    check_mcp
     ;;
   sync-auth)
     sync_auth

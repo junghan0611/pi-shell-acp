@@ -10,7 +10,7 @@ Current public value:
 - `pi-shell-acp/...` provider/model surface
 - cross-process ACP session continuity for `pi:<sessionId>`
 - Claude Code identity preserved (`~/.claude`, native skills, Claude Code settings via ACP `settingSources`)
-- explicit MCP pass-through via `piShellAcpProvider.mcpServers` — no ambient `~/.mcp.json` scanning
+- explicit pi-facing MCP injection into each ACP session via `piShellAcpProvider.mcpServers` — no ambient `~/.mcp.json` scanning, no generic MCP manager behavior
 
 ---
 
@@ -22,7 +22,7 @@ This repo owns only the narrow bridge layer:
 - ACP initialize / resume / load / new session bootstrap
 - prompt forwarding
 - ACP event -> pi event mapping
-- explicit MCP server pass-through from settings to ACP session requests
+- explicit pi-facing MCP injection (from `piShellAcpProvider.mcpServers` settings only) into every `newSession` / `resumeSession` / `loadSession` request
 - bridge-local cleanup, invalidation, diagnostics
 
 This repo does **not** own:
@@ -31,7 +31,8 @@ This repo does **not** own:
 - tool ledgers / recovery ledgers
 - Claude Code emulation
 - broad multi-agent orchestration
-- promotion of pi extension tools to Claude — build a separate MCP adapter for that and register it via `mcpServers` settings
+- generic MCP discovery / ambient MCP manager behavior (no `~/.mcp.json` scanning, no merging of arbitrary Claude-side configs)
+- promotion of pi extension tools to Claude — build a separate MCP adapter for that and register it via `piShellAcpProvider.mcpServers`
 
 If a change makes this repo feel like a second harness, it is probably wrong.
 
@@ -59,8 +60,9 @@ If a change makes this repo feel like a second harness, it is probably wrong.
    - no automatic `~/.mcp.json` or ambient MCP discovery — only what `piShellAcpProvider.mcpServers` lists
 
 5. **MCP signature in session compatibility**
-   - canonical `mcpServers` hash participates in `bridgeConfigSignature`
+   - only the SHA-256 hash of the canonical `mcpServers` shape participates in `bridgeConfigSignature` — no raw canonical JSON is persisted
    - changing the MCP list invalidates the persisted session instead of silently reusing a stale one
+   - invalid `mcpServers` input is rejected by `normalizeMcpServers()` with an aggregated `McpServerConfigError` (never silent skip)
 
 6. **Shutdown semantics**
    - ordinary process end should preserve persisted mapping
@@ -127,6 +129,7 @@ Run these after meaningful changes:
 
 ```bash
 npm run typecheck
+npm run check-mcp     # pure logic gate, no Claude/ACP subprocess
 ./run.sh smoke /home/junghan/repos/gh/agent-config
 ```
 

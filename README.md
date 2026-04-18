@@ -1,5 +1,8 @@
 # pi-shell-acp
 
+> **Status: Work in progress — pre-release.**
+> Active development, not yet published. The public surface (provider id, settings keys, persisted bridge signature shape, MCP validation behavior) may change without notice. Use at your own discretion.
+
 Thin ACP bridge provider for pi.
 
 It connects:
@@ -27,16 +30,11 @@ The goal is simple:
 - persisted bootstrap order: `resume > load > new`
 - `cwd:<cwd>` fallback sessions are **not** persisted
 - ordinary process shutdown keeps persisted mapping for the next pi process
-- explicit MCP pass-through via `piShellAcpProvider.mcpServers` — never automatic `~/.mcp.json` scanning
+- explicit pi-facing MCP injection into each ACP session via `piShellAcpProvider.mcpServers` — the bridge never scans `~/.mcp.json` or any ambient Claude config
 
-## Use and Authentication
+## Authentication
 
-This bridge uses the **user's own Claude Code authentication** (`~/.claude`, OAuth or API key already on the machine).
-
-- No credential proxying, forwarding, or resale.
-- No scraping; all traffic goes through the public `@agentclientprotocol/claude-agent-acp` subprocess.
-- No bypass of Claude Code's native safety, permission, or rate-limit machinery.
-- Tool surface exposed to Claude is entirely derived from explicit settings in this repo and the target project — there is no silent capability injection.
+Authentication is handled by Claude Code / claude-agent-acp; pi-shell-acp adds no separate auth layer.
 
 ## Non-Goals
 
@@ -126,6 +124,7 @@ When working on session bootstrap, capability detection, or resume/load behavior
 cd ~/repos/gh/pi-shell-acp
 npm install
 npm run typecheck
+npm run check-mcp                                        # deterministic MCP validation gate (no Claude/ACP subprocess)
 ./run.sh smoke /home/junghan/repos/gh/agent-config
 ```
 
@@ -152,9 +151,11 @@ pi --provider pi-shell-acp --model claude-3-5-haiku-latest -p 'ok만 답하세�
 }
 ```
 
-### MCP pass-through
+### pi-facing MCP injection
 
-`mcpServers` is an **explicit allowlist**. The bridge forwards exactly what you list here to every ACP session — nothing more, nothing less.
+`piShellAcpProvider.mcpServers` is the **only** way pi-shell-acp injects MCP servers into the ACP session. It is an explicit allowlist — the bridge forwards exactly what you list here to each ACP session (`newSession` / `resumeSession` / `loadSession`), nothing more, nothing less.
+
+Typical use: you have a single MCP (e.g. a pi-facing `session-bridge`) you want Claude to see inside the pi → ACP flow. Register it here.
 
 Stdio MCP (most common):
 
@@ -190,8 +191,9 @@ HTTP / SSE MCP:
 
 Notes:
 - `mcpServers` from global (`~/.pi/agent/settings.json`) and project (`<cwd>/.pi/settings.json`) are merged by name, project wins on conflict.
-- The canonical form of `mcpServers` participates in the bridge session signature — changing it invalidates the persisted session automatically, so Claude never runs with a stale capability set.
+- The SHA-256 hash of the canonical `mcpServers` shape participates in the bridge session signature — changing the list invalidates the persisted session automatically, so Claude never runs with a stale capability set.
 - This bridge does **not** read `~/.mcp.json` or any other ambient Claude config. If you want a server exposed, list it here.
+- Invalid `mcpServers` entries fail fast with a single aggregated error (`McpServerConfigError`) that names every offending server — no silent skips. Validate locally with `npm run check-mcp` before shipping a config.
 - pi-native extension tools (`delegate`, `session_search`, `knowledge_search`, …) are **not** auto-promoted. If you want them inside Claude, build a dedicated external MCP adapter and register it here.
 
 After updating `agent-config`, verify:

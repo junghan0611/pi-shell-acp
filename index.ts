@@ -142,7 +142,7 @@ function loadProviderSettings(cwd: string): ResolvedProviderSettings {
 		...(globalSettings.mcpServers ?? {}),
 		...(projectSettings.mcpServers ?? {}),
 	};
-	const { servers: mcpServers, signatureKey: mcpSignatureKey } = normalizeMcpServers(mergedMcpServersRaw);
+	const { servers: mcpServers, hash: mcpServersHash } = normalizeMcpServers(mergedMcpServersRaw);
 	return {
 		appendSystemPrompt,
 		settingSources,
@@ -152,7 +152,7 @@ function loadProviderSettings(cwd: string): ResolvedProviderSettings {
 			appendSystemPrompt,
 			settingSources,
 			strictMcpConfig,
-			mcpServers: mcpSignatureKey,
+			mcpServersHash,
 		}),
 	};
 }

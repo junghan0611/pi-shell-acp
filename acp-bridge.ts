@@ -63,58 +63,145 @@ export type NormalizedMcpServers = {
 	signatureKey: string;
 };
 
-function toKvArray(input: EnvKvInput | undefined): Array<{ name: string; value: string }> {
-	if (!input) return [];
+export type McpServerConfigIssue = {
+	server: string;
+	reason: string;
+};
+
+export class McpServerConfigError extends Error {
+	readonly issues: McpServerConfigIssue[];
+	constructor(issues: McpServerConfigIssue[]) {
+		const lines = issues.map((issue) => `  - ${issue.server}: ${issue.reason}`).join("\n");
+		super(`Invalid piShellAcpProvider.mcpServers:\n${lines}`);
+		this.name = "McpServerConfigError";
+		this.issues = issues;
+	}
+}
+
+function validateKvEntries(
+	server: string,
+	field: "env" | "headers",
+	input: unknown,
+	issues: McpServerConfigIssue[],
+): Array<{ name: string; value: string }> | undefined {
+	if (input === undefined) return [];
 	const entries: Array<{ name: string; value: string }> = [];
 	if (Array.isArray(input)) {
-		for (const kv of input) {
-			if (!kv || typeof kv.name !== "string" || typeof kv.value !== "string") continue;
-			entries.push({ name: kv.name, value: kv.value });
+		for (let i = 0; i < input.length; i++) {
+			const kv = input[i];
+			if (!kv || typeof kv !== "object" || Array.isArray(kv)) {
+				issues.push({ server, reason: `"${field}[${i}]" must be an object` });
+				return undefined;
+			}
+			const pair = kv as { name?: unknown; value?: unknown };
+			if (typeof pair.name !== "string" || typeof pair.value !== "string") {
+				issues.push({ server, reason: `"${field}[${i}]" must have string "name" and "value"` });
+				return undefined;
+			}
+			entries.push({ name: pair.name, value: pair.value });
 		}
 	} else if (typeof input === "object") {
-		for (const [name, value] of Object.entries(input)) {
-			if (typeof name !== "string" || typeof value !== "string") continue;
+		for (const [name, value] of Object.entries(input as Record<string, unknown>)) {
+			if (typeof value !== "string") {
+				issues.push({ server, reason: `"${field}.${name}" must be a string` });
+				return undefined;
+			}
 			entries.push({ name, value });
 		}
+	} else {
+		issues.push({ server, reason: `"${field}" must be an object or array of {name,value}` });
+		return undefined;
 	}
 	entries.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
 	return entries;
 }
 
-export function normalizeMcpServers(input: McpServerInputMap | undefined): NormalizedMcpServers {
-	const servers: McpServer[] = [];
-	const empty = {
-		servers,
-		hash: createHash("sha256").update("[]").digest("hex"),
-		signatureKey: "[]",
-	};
-	if (!input || typeof input !== "object") return empty;
-	const names = Object.keys(input).sort();
-	for (const name of names) {
-		const raw = input[name];
-		if (!raw || typeof raw !== "object") continue;
-		const declaredType = (raw as { type?: unknown }).type;
-		const type = declaredType === "http" || declaredType === "sse" ? declaredType : "stdio";
-		if (type === "http" || type === "sse") {
-			const def = raw as HttpMcpServerInput | SseMcpServerInput;
-			if (typeof def.url !== "string" || def.url.length === 0) continue;
-			servers.push({
-				type,
-				name,
-				url: def.url,
-				headers: toKvArray(def.headers),
-			} as McpServer);
-			continue;
+function normalizeMcpServerEntry(
+	name: string,
+	raw: unknown,
+	issues: McpServerConfigIssue[],
+): McpServer | undefined {
+	if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+		issues.push({ server: name, reason: "server entry must be an object" });
+		return undefined;
+	}
+	const obj = raw as Record<string, unknown>;
+	const declaredType = obj["type"];
+	let type: "stdio" | "http" | "sse";
+	if (declaredType === undefined) {
+		type = "stdio";
+	} else if (declaredType === "stdio" || declaredType === "http" || declaredType === "sse") {
+		type = declaredType;
+	} else {
+		issues.push({
+			server: name,
+			reason: `unsupported "type" ${JSON.stringify(declaredType)} (expected "stdio" | "http" | "sse")`,
+		});
+		return undefined;
+	}
+
+	if (type === "http" || type === "sse") {
+		const url = obj["url"];
+		if (typeof url !== "string" || url.length === 0) {
+			issues.push({ server: name, reason: `${type} server requires non-empty "url"` });
+			return undefined;
 		}
-		const def = raw as StdioMcpServerInput;
-		if (typeof def.command !== "string" || def.command.length === 0) continue;
-		const args = Array.isArray(def.args) ? def.args.filter((x) => typeof x === "string") : [];
-		servers.push({
-			name,
-			command: def.command,
-			args,
-			env: toKvArray(def.env),
-		} as McpServer);
+		const headers = validateKvEntries(name, "headers", obj["headers"], issues);
+		if (headers === undefined) return undefined;
+		return { type, name, url, headers } as McpServer;
+	}
+
+	const command = obj["command"];
+	if (typeof command !== "string" || command.length === 0) {
+		issues.push({ server: name, reason: `stdio server requires non-empty "command"` });
+		return undefined;
+	}
+	let args: string[] = [];
+	if (obj["args"] !== undefined) {
+		if (!Array.isArray(obj["args"])) {
+			issues.push({ server: name, reason: `"args" must be a string array` });
+			return undefined;
+		}
+		const rawArgs = obj["args"] as unknown[];
+		for (let i = 0; i < rawArgs.length; i++) {
+			if (typeof rawArgs[i] !== "string") {
+				issues.push({ server: name, reason: `"args[${i}]" must be a string` });
+				return undefined;
+			}
+		}
+		args = rawArgs as string[];
+	}
+	const env = validateKvEntries(name, "env", obj["env"], issues);
+	if (env === undefined) return undefined;
+	return { name, command, args, env } as McpServer;
+}
+
+export function normalizeMcpServers(input: McpServerInputMap | undefined): NormalizedMcpServers {
+	if (input === undefined || input === null) {
+		const empty = "[]";
+		return {
+			servers: [],
+			hash: createHash("sha256").update(empty).digest("hex"),
+			signatureKey: empty,
+		};
+	}
+	if (typeof input !== "object" || Array.isArray(input)) {
+		throw new McpServerConfigError([
+			{
+				server: "<root>",
+				reason: `mcpServers must be an object (got ${Array.isArray(input) ? "array" : typeof input})`,
+			},
+		]);
+	}
+	const issues: McpServerConfigIssue[] = [];
+	const names = Object.keys(input).sort();
+	const servers: McpServer[] = [];
+	for (const name of names) {
+		const entry = normalizeMcpServerEntry(name, (input as Record<string, unknown>)[name], issues);
+		if (entry) servers.push(entry);
+	}
+	if (issues.length > 0) {
+		throw new McpServerConfigError(issues);
 	}
 	const signatureKey = JSON.stringify(servers);
 	const hash = createHash("sha256").update(signatureKey).digest("hex");
