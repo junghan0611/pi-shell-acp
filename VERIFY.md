@@ -554,10 +554,42 @@ tail -n 40 "$SESSION_FILE"
 1. 실제 bootstrap path가 `resume`인지 `load`인지 `new`인지 외부에서 즉시 보이게 하는 것
 2. persisted session incompatibility가 발생했을 때 invalidate 이유를 operator가 빠르게 읽는 것
 3. model switch 시 `unstable_setSessionModel` 경로 vs 새 세션 fallback 경로를 명확히 관찰하는 것
-4. cancel/abort 시 bridge와 child process가 얼마나 깔끔하게 정리되는지 보는 것
+4. ~~cancel/abort 시 bridge와 child process가 얼마나 깔끔하게 정리되는지 보는 것~~ — §12.4 참조
 5. 장시간 세션에서 tool notice / thinking / text block이 누적될 때 stream shape가 안정적인지 보는 것
 
 즉, 이 문서는 완료 선언 문서가 아니라 **다음 개선 포인트를 드러내는 운영 문서**다.
+
+### 12.4 cancel / abort cleanup observability (green)
+
+cancel/abort 경로는 operator가 stderr에서 바로 읽을 수 있도록 3종 diagnostic 라인을 흘린다. bootstrap 라인과 같은 `key=value` 포맷이다.
+
+```text
+[pi-shell-acp:cancel]      sessionKey=... backend=... acpSessionId=... outcome=dispatched|unsupported|failed reason=...
+[pi-shell-acp:shutdown]    sessionKey=... backend=... acpSessionId=... closeRemote=... invalidatePersisted=... childPid=... closedRemote=ok|fail|skip childExit=exited|timeout
+[pi-shell-acp:orphan-kill] sessionKey=... backend=... pid=... signal=SIGKILL
+```
+
+Cleanup invariant (observability가 아니라 실제 규칙):
+
+- `onAbort`는 `cancelActivePrompt()`만 호출하고, bridge/child는 파괴하지 않는다 (abort 후 세션 재사용 가능해야 함)
+- `streamShellAcp` catch block에서 `stopReason === "error"`인 경우(= user abort가 아닌 실제 오류) `closeBridgeSession(..., {closeRemote:true, invalidatePersisted:false})`로 명시 정리한다
+- `destroyBridgeSession`는 child 종료를 최대 2초까지 기다리고, 필요 시 `orphan-kill` 라인을 찍는다
+
+Smoke:
+
+```bash
+./run.sh smoke-cancel /home/junghan/repos/gh/agent-config
+```
+
+Pass 기준:
+
+- `[pi-shell-acp:cancel]` 라인이 stderr에 반드시 있다
+- `outcome=dispatched` 또는 `outcome=unsupported` 는 정상, `outcome=failed`는 실패
+- abort 후 같은 sessionKey로 다음 프롬프트가 성공한다 (세션 재사용)
+- `[pi-shell-acp:shutdown]` 라인이 반드시 있다
+- 명시 `closeBridgeSession` 후 해당 backend 프로세스 delta가 0
+
+운영 기본은 resilient (stderr diagnostic만, pi 세션은 계속), smoke는 fail-fast (하나라도 어기면 전체 실패).
 
 ---
 

@@ -4,7 +4,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { applyBridgePromptEvent, finalizeAcpStreamState, type AcpPiStreamState } from "./event-mapper.js";
-import { cancelActivePrompt, cleanupBridgeSessionProcess, describeBridgeSession, ensureBridgeSession, getBridgeErrorDetails, normalizeMcpServers, sendPrompt, setActivePromptHandler, type AcpBackend, type ClaudeSettingSource, type McpServerInputMap } from "./acp-bridge.js";
+import { cancelActivePrompt, cleanupBridgeSessionProcess, closeBridgeSession, describeBridgeSession, ensureBridgeSession, getBridgeErrorDetails, normalizeMcpServers, sendPrompt, setActivePromptHandler, type AcpBackend, type ClaudeSettingSource, type McpServerInputMap } from "./acp-bridge.js";
 import type { McpServer } from "@agentclientprotocol/sdk";
 
 const PROVIDER_ID = "pi-shell-acp";
@@ -367,6 +367,16 @@ function streamShellAcp(model: Model<any>, context: Context, options?: SimpleStr
 				error: output,
 			});
 			stream.end();
+			if (output.stopReason === "error" && bridgeSession) {
+				try {
+					await closeBridgeSession(bridgeSession.key, {
+						closeRemote: true,
+						invalidatePersisted: false,
+					});
+				} catch {
+					// best-effort cleanup; already reported via stream error
+				}
+			}
 		} finally {
 			if (options?.signal) {
 				options.signal.removeEventListener("abort", onAbort);

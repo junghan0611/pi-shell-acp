@@ -714,19 +714,45 @@ async function enforceRequestedSessionModel(
 	session.modelId = requestedModelId;
 }
 
-function killProcessTree(child: ChildProcessByStdio<any, any, any>): void {
+function isChildExited(child: ChildProcessByStdio<any, any, any>): boolean {
+	return child.exitCode !== null || child.signalCode !== null;
+}
+
+function awaitChildExit(
+	child: ChildProcessByStdio<any, any, any>,
+	timeoutMs: number,
+): Promise<"exited" | "timeout"> {
+	if (isChildExited(child)) return Promise.resolve("exited");
+	return new Promise((resolve) => {
+		const timer = setTimeout(() => resolve("timeout"), timeoutMs);
+		timer.unref?.();
+		child.once("exit", () => {
+			clearTimeout(timer);
+			resolve("exited");
+		});
+	});
+}
+
+function killProcessTree(
+	child: ChildProcessByStdio<any, any, any>,
+	sessionKey: string,
+	backend: AcpBackend,
+): void {
 	const pid = child.pid;
 	if (!pid) return;
 	if (process.platform !== "win32") {
 		try {
 			process.kill(-pid, "SIGTERM");
-			setTimeout(() => {
+			const timer = setTimeout(() => {
+				if (isChildExited(child)) return;
 				try {
 					process.kill(-pid, "SIGKILL");
+					logBridgeOrphanKill(sessionKey, pid, backend);
 				} catch {
 					// ignore
 				}
-			}, 1500).unref();
+			}, 1500);
+			timer.unref?.();
 			return;
 		} catch {
 			// fall through to direct kill
@@ -751,14 +777,25 @@ async function destroyBridgeSession(
 	if (options.invalidatePersisted) {
 		deletePersistedSessionRecord(session.key);
 	}
+	let closedRemote: "ok" | "fail" | "skip" = "skip";
 	if (options.closeRemote && session.capabilities.closeSession && session.acpSessionId) {
 		try {
 			await (session.connection as any).unstable_closeSession?.({ sessionId: session.acpSessionId });
+			closedRemote = "ok";
 		} catch {
-			// ignore
+			closedRemote = "fail";
 		}
 	}
-	killProcessTree(session.child);
+	const childPid = session.child.pid;
+	killProcessTree(session.child, session.key, session.backend);
+	const childExit = await awaitChildExit(session.child, 2000);
+	logBridgeShutdown(session, {
+		closeRemote: options.closeRemote,
+		invalidatePersisted: options.invalidatePersisted,
+		childPid,
+		closedRemote,
+		childExit,
+	});
 }
 
 function formatBootstrapPayload(payload: Record<string, unknown>): string {
@@ -806,6 +843,52 @@ function logBridgeBootstrapInvalidate(
 		previousAcpSessionId,
 	});
 	console.error(`[pi-shell-acp:bootstrap-invalidate] ${line}`);
+}
+
+export type CancelOutcome = "dispatched" | "unsupported" | "failed";
+
+function logBridgeCancel(
+	session: AcpBridgeSession,
+	outcome: CancelOutcome,
+	reason?: string,
+): void {
+	const line = formatBootstrapPayload({
+		sessionKey: session.key,
+		backend: session.backend,
+		acpSessionId: session.acpSessionId,
+		outcome,
+		reason: reason ? reason.slice(0, 200) : undefined,
+	});
+	console.error(`[pi-shell-acp:cancel] ${line}`);
+}
+
+function logBridgeShutdown(
+	session: AcpBridgeSession,
+	extra: {
+		closeRemote: boolean;
+		invalidatePersisted: boolean;
+		childPid: number | undefined;
+		closedRemote: "ok" | "fail" | "skip";
+		childExit: "exited" | "timeout";
+	},
+): void {
+	const line = formatBootstrapPayload({
+		sessionKey: session.key,
+		backend: session.backend,
+		acpSessionId: session.acpSessionId,
+		...extra,
+	});
+	console.error(`[pi-shell-acp:shutdown] ${line}`);
+}
+
+function logBridgeOrphanKill(sessionKey: string, pid: number, backend: AcpBackend): void {
+	const line = formatBootstrapPayload({
+		sessionKey,
+		backend,
+		pid,
+		signal: "SIGKILL",
+	});
+	console.error(`[pi-shell-acp:orphan-kill] ${line}`);
 }
 
 function isStrictBootstrapEnabled(): boolean {
@@ -1119,8 +1202,21 @@ export async function sendPrompt(
 	});
 }
 
-export async function cancelActivePrompt(session: AcpBridgeSession): Promise<void> {
-	await (session.connection as any).cancel?.({ sessionId: session.acpSessionId });
+export async function cancelActivePrompt(session: AcpBridgeSession): Promise<CancelOutcome> {
+	const cancel = (session.connection as any).cancel;
+	if (typeof cancel !== "function") {
+		logBridgeCancel(session, "unsupported");
+		return "unsupported";
+	}
+	try {
+		await cancel.call(session.connection, { sessionId: session.acpSessionId });
+		logBridgeCancel(session, "dispatched");
+		return "dispatched";
+	} catch (error) {
+		const reason = error instanceof Error ? error.message : String(error);
+		logBridgeCancel(session, "failed", reason);
+		return "failed";
+	}
 }
 
 export async function closeBridgeSession(

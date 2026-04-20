@@ -16,6 +16,7 @@ Usage:
   ./run.sh smoke-codex [project-dir]  # explicit Codex runtime smoke
   ./run.sh smoke-all [project-dir]    # required dual-backend runtime smoke gate
   ./run.sh smoke-continuity [project-dir] # strict dual-backend persisted bootstrap gate (Claude=resume, Codex=load)
+  ./run.sh smoke-cancel [project-dir] # strict cancel/abort cleanup observability gate (Claude + Codex)
   ./run.sh check-mcp                  # local deterministic check of normalizeMcpServers() — no Claude/ACP subprocess
   ./run.sh check-backends             # local deterministic check of backend launch resolution + backend-specific _meta shape
   ./run.sh check-registration         # local deterministic check of per-runtime provider registration semantics
@@ -322,6 +323,193 @@ smoke_continuity() {
   smoke_continuity_single "$project_dir" claude claude-sonnet-4-6 resume
   smoke_continuity_single "$project_dir" codex gpt-5.4 load
   echo "[smoke-continuity] Claude(resume) + Codex(load) continuity: ok"
+}
+
+smoke_cancel_single() {
+  local project_dir=$1
+  local backend=$2
+  local model=$3
+
+  local backend_pattern
+  case "$backend" in
+    claude) backend_pattern="claude-agent-acp" ;;
+    codex)  backend_pattern="codex-acp" ;;
+    *)
+      echo "[smoke-cancel/$backend] unknown backend" >&2
+      exit 1
+      ;;
+  esac
+
+  echo "[smoke-cancel/$backend] model=$model pattern=$backend_pattern"
+
+  local before
+  before=$(pgrep -cf "$backend_pattern" 2>/dev/null) || before=0
+  echo "[smoke-cancel/$backend] baseline process count: $before"
+
+  local log_file
+  log_file=$(mktemp /tmp/pi-shell-acp-cancel-XXXXXX.log)
+
+  local rc=0
+  (
+    cd "$REPO_DIR"
+    PI_SHELL_ACP_SMOKE_BACKEND="$backend" PI_SHELL_ACP_MODEL_ID="$model" \
+      node --input-type=module 2>"$log_file" <<'EOF'
+import {
+  ensureBridgeSession,
+  sendPrompt,
+  setActivePromptHandler,
+  closeBridgeSession,
+  cancelActivePrompt,
+  normalizeMcpServers,
+} from './acp-bridge.ts';
+
+const backend = process.env.PI_SHELL_ACP_SMOKE_BACKEND;
+const modelId = process.env.PI_SHELL_ACP_MODEL_ID;
+if (!backend || !modelId) throw new Error('backend/model env required');
+
+const sessionKey = `smoke-cancel:${backend}:${modelId}`;
+const emptyMcpHash = normalizeMcpServers(undefined).hash;
+const baseParams = {
+  sessionKey,
+  cwd: process.cwd(),
+  backend,
+  modelId,
+  systemPromptAppend: '간단히 답하세요.',
+  settingSources: ['user'],
+  strictMcpConfig: false,
+  mcpServers: [],
+  bridgeConfigSignature: JSON.stringify({
+    backend,
+    appendSystemPrompt: false,
+    settingSources: ['user'],
+    strictMcpConfig: false,
+    mcpServersHash: emptyMcpHash,
+  }),
+  contextMessageSignatures: [`smoke-cancel:${backend}`],
+};
+
+const session = await ensureBridgeSession(baseParams);
+
+let firstChunkSeen = false;
+let cancelled = false;
+setActivePromptHandler(session, async (event) => {
+  if (event.type !== 'session_notification') return;
+  const update = event.notification?.update;
+  if (!update) return;
+  if (update.sessionUpdate === 'agent_message_chunk' || update.sessionUpdate === 'agent_thought_chunk') {
+    if (!firstChunkSeen) {
+      firstChunkSeen = true;
+      setTimeout(() => {
+        if (!cancelled) {
+          cancelled = true;
+          void cancelActivePrompt(session);
+        }
+      }, 50);
+    }
+  }
+});
+
+// fallback cancel in case no chunk ever arrives
+const failSafe = setTimeout(() => {
+  if (!cancelled) {
+    cancelled = true;
+    void cancelActivePrompt(session);
+  }
+}, 4000);
+failSafe.unref?.();
+
+let longResult;
+try {
+  longResult = await sendPrompt(session, [{
+    type: 'text',
+    text: '1부터 300까지 숫자를 하나씩 새 줄에 적어주세요. 각 숫자 옆에 짧은 단어도 하나 붙여주세요.',
+  }]);
+} catch (error) {
+  longResult = { stopReason: 'threw', error: error instanceof Error ? error.message : String(error) };
+}
+clearTimeout(failSafe);
+console.error(`[smoke-cancel] long prompt stopReason=${longResult.stopReason}`);
+
+// session reuse: short prompt must succeed after cancel
+setActivePromptHandler(session, () => { /* drop chunks */ });
+const reuse = await sendPrompt(session, [{ type: 'text', text: 'ok만 답하세요.' }]);
+setActivePromptHandler(session, undefined);
+if (reuse.stopReason !== 'end_turn') {
+  throw new Error(`reuse failed: stopReason=${reuse.stopReason}`);
+}
+console.error('[smoke-cancel] session reuse: ok');
+
+await closeBridgeSession(sessionKey, { closeRemote: true, invalidatePersisted: true });
+console.error('[smoke-cancel] explicit close: ok');
+EOF
+  ) || rc=$?
+
+  # drain any late exit
+  sleep 1
+
+  if ! grep -q '^\[pi-shell-acp:cancel\]' "$log_file"; then
+    echo "[smoke-cancel/$backend] missing [pi-shell-acp:cancel] log line" >&2
+    cat "$log_file" >&2
+    rm -f "$log_file"
+    exit 1
+  fi
+
+  if grep -q '^\[pi-shell-acp:cancel\] .*outcome=failed' "$log_file"; then
+    echo "[smoke-cancel/$backend] cancel outcome=failed" >&2
+    cat "$log_file" >&2
+    rm -f "$log_file"
+    exit 1
+  fi
+
+  if ! grep -qE '^\[pi-shell-acp:cancel\] .*outcome=(dispatched|unsupported)' "$log_file"; then
+    echo "[smoke-cancel/$backend] cancel outcome not in {dispatched, unsupported}" >&2
+    cat "$log_file" >&2
+    rm -f "$log_file"
+    exit 1
+  fi
+
+  if ! grep -q '^\[pi-shell-acp:shutdown\]' "$log_file"; then
+    echo "[smoke-cancel/$backend] missing [pi-shell-acp:shutdown] log line" >&2
+    cat "$log_file" >&2
+    rm -f "$log_file"
+    exit 1
+  fi
+
+  if [[ "$rc" != "0" ]]; then
+    echo "[smoke-cancel/$backend] node subprocess failed rc=$rc" >&2
+    cat "$log_file" >&2
+    rm -f "$log_file"
+    exit 1
+  fi
+
+  local after
+  after=$(pgrep -cf "$backend_pattern" 2>/dev/null) || after=0
+  local delta=$((after - before))
+  if [[ $delta -ne 0 ]]; then
+    echo "[smoke-cancel/$backend] backend process delta=$delta (before=$before after=$after)" >&2
+    pgrep -af "$backend_pattern" >&2 || true
+    cat "$log_file" >&2
+    rm -f "$log_file"
+    exit 1
+  fi
+
+  echo "[smoke-cancel/$backend] ok (cancel logged, session reused, delta=0)"
+  rm -f "$log_file"
+}
+
+smoke_cancel() {
+  local project_dir
+  project_dir=$(normalize_project_dir "$1")
+
+  require_cmd pi
+
+  echo "[smoke-cancel] strict dual-backend cancel cleanup gate"
+  echo "[smoke-cancel] project: $project_dir"
+  echo "[smoke-cancel] repo:    $REPO_DIR"
+
+  smoke_cancel_single "$project_dir" claude claude-sonnet-4-6
+  smoke_cancel_single "$project_dir" codex gpt-5.4
+  echo "[smoke-cancel] Claude + Codex cancel cleanup: ok"
 }
 
 check_mcp() {
@@ -731,6 +919,9 @@ case "$cmd" in
     ;;
   smoke-continuity)
     smoke_continuity "$TARGET_PROJECT_DIR"
+    ;;
+  smoke-cancel)
+    smoke_cancel "$TARGET_PROJECT_DIR"
     ;;
   check-mcp)
     check_mcp
