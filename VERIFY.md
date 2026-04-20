@@ -556,6 +556,7 @@ tail -n 40 "$SESSION_FILE"
 3. ~~model switch 시 `unstable_setSessionModel` 경로 vs 새 세션 fallback 경로를 명확히 관찰하는 것~~ — §12.3 참조
 4. ~~cancel/abort 시 bridge와 child process가 얼마나 깔끔하게 정리되는지 보는 것~~ — §12.4 참조
 5. 장시간 세션에서 tool notice / thinking / text block이 누적될 때 stream shape가 안정적인지 보는 것
+6. delegate-style continuity (partial, §12.5 참조) — Claude 는 real delegate-style e2e, Codex 는 shape-equivalent only. 진짜 Codex delegate orchestration parity 는 agent-config/delegate-core 쪽 follow-up 이 필요하다.
 
 즉, 이 문서는 완료 선언 문서가 아니라 **다음 개선 포인트를 드러내는 운영 문서**다.
 
@@ -625,6 +626,32 @@ Pass 기준:
 - 명시 `closeBridgeSession` 후 해당 backend 프로세스 delta가 0
 
 운영 기본은 resilient (stderr diagnostic만, pi 세션은 계속), smoke는 fail-fast (하나라도 어기면 전체 실패).
+
+### 12.5 delegate-style continuity (partial — evidence boundary 주의)
+
+delegate 가 실제로 쓰는 spawn 형태(`pi --mode json -p --no-extensions -e <repo> --provider pi-shell-acp --model <M> --session <F> <task>`)를 그대로 흉내 내어 turn1=new → turn2=resume(Claude)/load(Codex) 연속성을 확인한다. bridge diagnostic 라인(`[pi-shell-acp:bootstrap]`, `[pi-shell-acp:model-switch]`, `[pi-shell-acp:shutdown]`)과 session file assistant payload 양쪽에서 증거를 본다.
+
+Smoke:
+
+```bash
+./run.sh smoke-delegate-resume /home/junghan/repos/gh/agent-config
+```
+
+Pass 기준:
+
+- turn1 `[pi-shell-acp:bootstrap] path=new backend=<backend>` 라인 존재 + acpSessionId 추출 가능
+- turn1 session file에 `role:"assistant"` record 1개 이상
+- turn2 `[pi-shell-acp:bootstrap] path=resume|load backend=<backend>` 라인 존재 + acpSessionId 가 turn1과 동일
+- turn2 에 `bootstrap-invalidate` / `bootstrap-fallback` 라인 없음
+- session file assistant message 수 ≥ 2 이고, 마지막 assistant payload 길이 > 0
+
+**Evidence boundary (중요 — 확대 해석 금지):**
+
+- **Claude**: real delegate-style e2e. `pi-extensions/delegate.ts` 의 spawn 인자와 동일한 모양을 `pi` CLI 에 직접 전달한다. delegate async orchestration (taskId/delegate_status/delegate_resume) 을 돌리는 것은 아니지만, 실제 하위 프로세스 CLI 표면은 delegate 경로와 같다.
+- **Codex**: shape-equivalent continuity only. 동일한 spawn 표면을 Codex 모델에 적용해 pi-shell-acp 경유 continuity 를 증명하지만, **현재 `getDelegateExplicitExtensions` 는 `isClaudeModel(model)` 일 때만 `-e pi-shell-acp --provider pi-shell-acp` 를 자동 주입한다.** 즉 실제 `delegate` tool 로 Codex 를 띄우면 pi-shell-acp 를 경유하지 않고 직접 openai-codex provider 로 간다. 이 smoke 는 "pi-shell-acp 가 Codex session 을 continuity 있게 들고 갈 수 있다" 만 증명한다.
+- **true Codex delegate orchestration parity**: pending agent-config/delegate-core follow-up. `getDelegateExplicitExtensions` 쪽에서 Codex 모델도 pi-shell-acp 로 라우팅하는 변경이 들어와야 이 boundary 가 닫힌다. 이 repo 범위는 아니다.
+
+이 smoke 는 `setup` / baseline exit criteria 에 올리지 않는다. 추가 evidence gate 로만 유지한다.
 
 ---
 

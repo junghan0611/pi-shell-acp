@@ -18,6 +18,7 @@ Usage:
   ./run.sh smoke-continuity [project-dir] # strict dual-backend persisted bootstrap gate (Claude=resume, Codex=load)
   ./run.sh smoke-cancel [project-dir] # strict cancel/abort cleanup observability gate (Claude + Codex)
   ./run.sh smoke-model-switch [project-dir] # strict dual-backend model switch observability gate (reuse 3 branches)
+  ./run.sh smoke-delegate-resume [project-dir] # delegate-style continuity gate (Claude=real e2e, Codex=shape-equivalent only)
   ./run.sh check-mcp                  # local deterministic check of normalizeMcpServers() — no Claude/ACP subprocess
   ./run.sh check-backends             # local deterministic check of backend launch resolution + backend-specific _meta shape
   ./run.sh check-registration         # local deterministic check of per-runtime provider registration semantics
@@ -677,6 +678,163 @@ smoke_model_switch() {
   echo "[smoke-model-switch] Claude + Codex model switch observability: ok"
 }
 
+smoke_delegate_resume_single() {
+  local project_dir=$1
+  local backend=$2
+  local model=$3
+  local expected_path=$4
+  local label=$5
+
+  local session_file
+  session_file=$(mktemp /tmp/pi-shell-acp-delegate-resume-XXXXXX.jsonl)
+
+  echo "[smoke-delegate-resume/$backend] ${label}"
+  echo "[smoke-delegate-resume/$backend] model=$model expected-turn2=$expected_path session=$session_file"
+
+  local turn1_log turn1_rc=0
+  turn1_log=$(cd "$project_dir" && PI_SHELL_ACP_STRICT_BOOTSTRAP=1 pi \
+    --mode json -p --no-extensions \
+    -e "$REPO_DIR" \
+    --provider pi-shell-acp \
+    --model "$model" \
+    --session "$session_file" \
+    'READY 만 답해' 2>&1) || turn1_rc=$?
+  if [[ "$turn1_rc" != "0" ]]; then
+    echo "[smoke-delegate-resume/$backend] turn1 pi invocation failed rc=$turn1_rc:" >&2
+    echo "$turn1_log" >&2
+    rm -f "$session_file"
+    exit 1
+  fi
+  if ! grep -q "^\[pi-shell-acp:bootstrap\] path=new backend=$backend" <<< "$turn1_log"; then
+    echo "[smoke-delegate-resume/$backend] turn1 expected path=new, got:" >&2
+    echo "$turn1_log" >&2
+    rm -f "$session_file"
+    exit 1
+  fi
+  local turn1_acp
+  turn1_acp=$(grep -oE "^\[pi-shell-acp:bootstrap\] path=new backend=$backend [^$]*" <<< "$turn1_log" \
+    | head -1 | grep -oE 'acpSessionId=[^ ]+' | head -1 | cut -d= -f2)
+  if [[ -z "$turn1_acp" ]]; then
+    echo "[smoke-delegate-resume/$backend] turn1 acpSessionId not extractable:" >&2
+    echo "$turn1_log" >&2
+    rm -f "$session_file"
+    exit 1
+  fi
+  if ! grep -qE '"role":"assistant"' "$session_file"; then
+    echo "[smoke-delegate-resume/$backend] turn1 session file has no assistant message" >&2
+    cat "$session_file" >&2
+    rm -f "$session_file"
+    exit 1
+  fi
+  echo "[smoke-delegate-resume/$backend] turn1 path=new acpSessionId=$turn1_acp: ok"
+
+  local turn2_log turn2_rc=0
+  turn2_log=$(cd "$project_dir" && PI_SHELL_ACP_STRICT_BOOTSTRAP=1 pi \
+    --mode json -p --no-extensions \
+    -e "$REPO_DIR" \
+    --provider pi-shell-acp \
+    --model "$model" \
+    --session "$session_file" \
+    'OK 만 답해' 2>&1) || turn2_rc=$?
+  if [[ "$turn2_rc" != "0" ]]; then
+    echo "[smoke-delegate-resume/$backend] turn2 pi invocation failed rc=$turn2_rc:" >&2
+    echo "$turn2_log" >&2
+    rm -f "$session_file"
+    exit 1
+  fi
+  if ! grep -q "^\[pi-shell-acp:bootstrap\] path=$expected_path backend=$backend" <<< "$turn2_log"; then
+    echo "[smoke-delegate-resume/$backend] turn2 expected path=$expected_path, got:" >&2
+    echo "$turn2_log" >&2
+    rm -f "$session_file"
+    exit 1
+  fi
+  local turn2_acp
+  turn2_acp=$(grep -oE "^\[pi-shell-acp:bootstrap\] path=$expected_path backend=$backend [^$]*" <<< "$turn2_log" \
+    | head -1 | grep -oE 'acpSessionId=[^ ]+' | head -1 | cut -d= -f2)
+  if [[ "$turn2_acp" != "$turn1_acp" ]]; then
+    echo "[smoke-delegate-resume/$backend] acpSessionId mismatch turn1=$turn1_acp turn2=$turn2_acp" >&2
+    echo "$turn2_log" >&2
+    rm -f "$session_file"
+    exit 1
+  fi
+  if grep -q "^\[pi-shell-acp:bootstrap-invalidate\]" <<< "$turn2_log"; then
+    echo "[smoke-delegate-resume/$backend] turn2 unexpected bootstrap-invalidate:" >&2
+    echo "$turn2_log" >&2
+    rm -f "$session_file"
+    exit 1
+  fi
+  if grep -q "^\[pi-shell-acp:bootstrap-fallback\]" <<< "$turn2_log"; then
+    echo "[smoke-delegate-resume/$backend] turn2 unexpected bootstrap-fallback:" >&2
+    echo "$turn2_log" >&2
+    rm -f "$session_file"
+    exit 1
+  fi
+
+  # assistant message from turn2 must land in the same session file
+  local assistant_count
+  assistant_count=$(grep -cE '"role":"assistant"' "$session_file" || true)
+  if [[ "${assistant_count:-0}" -lt 2 ]]; then
+    echo "[smoke-delegate-resume/$backend] expected >=2 assistant messages in session file, got ${assistant_count:-0}" >&2
+    cat "$session_file" >&2
+    rm -f "$session_file"
+    exit 1
+  fi
+  # last assistant payload must be non-empty (guards against role-only or blank content records)
+  local last_assistant_len
+  last_assistant_len=$(SESSION_FILE="$session_file" node --input-type=module -e '
+    import { readFileSync } from "node:fs";
+    const lines = readFileSync(process.env.SESSION_FILE, "utf8").split("\n").filter(Boolean);
+    let last = null;
+    for (const raw of lines) {
+      try {
+        const rec = JSON.parse(raw);
+        const msg = rec && rec.message ? rec.message : rec;
+        if (msg && msg.role === "assistant") last = msg;
+      } catch {}
+    }
+    if (!last) { console.log(0); process.exit(0); }
+    const content = last.content;
+    let len = 0;
+    if (typeof content === "string") len = content.trim().length;
+    else if (Array.isArray(content)) {
+      for (const part of content) {
+        if (typeof part === "string") len += part.trim().length;
+        else if (part && typeof part.text === "string") len += part.text.trim().length;
+      }
+    } else if (content && typeof content.text === "string") len = content.text.trim().length;
+    console.log(len);
+  ' 2>/dev/null || echo 0)
+  if [[ "${last_assistant_len:-0}" -lt 1 ]]; then
+    echo "[smoke-delegate-resume/$backend] last assistant payload is empty (len=${last_assistant_len:-0})" >&2
+    cat "$session_file" >&2
+    rm -f "$session_file"
+    exit 1
+  fi
+  echo "[smoke-delegate-resume/$backend] turn2 path=$expected_path acpSessionId=$turn2_acp (same as turn1, last-assistant-len=$last_assistant_len): ok"
+
+  rm -f "$session_file"
+}
+
+smoke_delegate_resume() {
+  local project_dir
+  project_dir=$(normalize_project_dir "$1")
+
+  require_cmd pi
+
+  echo "[smoke-delegate-resume] strict dual-backend delegate-style continuity gate"
+  echo "[smoke-delegate-resume] project: $project_dir"
+  echo "[smoke-delegate-resume] repo:    $REPO_DIR"
+  echo "[smoke-delegate-resume] scope:"
+  echo "  - Claude: real delegate-style e2e (same spawn shape pi-extensions/delegate.ts uses)"
+  echo "  - Codex:  shape-equivalent continuity only (current delegate orchestration does not route Codex through pi-shell-acp;"
+  echo "            true Codex delegate orchestration parity pending agent-config/delegate-core follow-up)"
+
+  smoke_delegate_resume_single "$project_dir" claude claude-sonnet-4-6 resume "real delegate-style e2e"
+  smoke_delegate_resume_single "$project_dir" codex  gpt-5.4           load   "shape-equivalent continuity"
+
+  echo "[smoke-delegate-resume] Claude(real e2e) + Codex(shape-equivalent) continuity: ok"
+}
+
 check_mcp() {
   (cd "$REPO_DIR" && node --input-type=module <<'EOF'
 import { normalizeMcpServers, McpServerConfigError } from './acp-bridge.ts';
@@ -1090,6 +1248,9 @@ case "$cmd" in
     ;;
   smoke-model-switch)
     smoke_model_switch "$TARGET_PROJECT_DIR"
+    ;;
+  smoke-delegate-resume)
+    smoke_delegate_resume "$TARGET_PROJECT_DIR"
     ;;
   check-mcp)
     check_mcp
