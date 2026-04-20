@@ -761,6 +761,58 @@ async function destroyBridgeSession(
 	killProcessTree(session.child);
 }
 
+function formatBootstrapPayload(payload: Record<string, unknown>): string {
+	return Object.entries(payload)
+		.filter(([, v]) => v !== undefined && v !== null && v !== "")
+		.map(([k, v]) => {
+			const str = typeof v === "string" ? v : String(v);
+			return /[\s"]/.test(str) ? `${k}="${str.replace(/"/g, '\\"')}"` : `${k}=${str}`;
+		})
+		.join(" ");
+}
+
+type BootstrapInvalidationReason = "incompatible_config" | "bootstrap_exhausted";
+
+function logBridgeBootstrap(session: AcpBridgeSession, extra?: Record<string, unknown>): void {
+	const line = formatBootstrapPayload({
+		path: session.bootstrapPath,
+		backend: session.backend,
+		sessionKey: session.key,
+		acpSessionId: session.acpSessionId,
+		persistedAcpSessionId: session.persistedAcpSessionId,
+		...(extra || {}),
+	});
+	console.error(`[pi-shell-acp:bootstrap] ${line}`);
+}
+
+function logBridgeBootstrapFallback(sessionKey: string, from: "resume" | "load", error: unknown): void {
+	const reason = error instanceof Error ? error.message : String(error);
+	const line = formatBootstrapPayload({
+		from,
+		sessionKey,
+		reason: reason.slice(0, 200),
+	});
+	console.error(`[pi-shell-acp:bootstrap-fallback] ${line}`);
+}
+
+function logBridgeBootstrapInvalidate(
+	sessionKey: string,
+	reason: BootstrapInvalidationReason,
+	previousAcpSessionId?: string,
+): void {
+	const line = formatBootstrapPayload({
+		sessionKey,
+		reason,
+		previousAcpSessionId,
+	});
+	console.error(`[pi-shell-acp:bootstrap-invalidate] ${line}`);
+}
+
+function isStrictBootstrapEnabled(): boolean {
+	const v = process.env.PI_SHELL_ACP_STRICT_BOOTSTRAP?.trim().toLowerCase();
+	return v === "1" || v === "true" || v === "yes";
+}
+
 async function createBridgeProcess(params: EnsureBridgeSessionParams): Promise<AcpBridgeSession> {
 	const adapter = resolveAcpBackendAdapter(params.backend);
 	const launch = adapter.resolveLaunch();
@@ -860,7 +912,10 @@ async function createBridgeProcess(params: EnsureBridgeSessionParams): Promise<A
 	return session;
 }
 
-async function startNewBridgeSession(params: EnsureBridgeSessionParams): Promise<AcpBridgeSession> {
+async function startNewBridgeSession(
+	params: EnsureBridgeSessionParams,
+	invalidationHint?: { reason: BootstrapInvalidationReason; previousAcpSessionId: string },
+): Promise<AcpBridgeSession> {
 	const session = await createBridgeProcess(params);
 	try {
 		const meta = buildSessionMeta(params, session.systemPromptAppend);
@@ -875,9 +930,16 @@ async function startNewBridgeSession(params: EnsureBridgeSessionParams): Promise
 		session.acpSessionId = created.sessionId;
 		session.modelId = resolveModelIdFromSessionResponse(created, params.modelId);
 		session.bootstrapPath = "new";
+		if (invalidationHint) {
+			session.persistedAcpSessionId = invalidationHint.previousAcpSessionId;
+		}
 		await enforceRequestedSessionModel(session, params.modelId);
 		bridgeSessions.set(params.sessionKey, session);
 		persistBridgeSessionRecord(session);
+		logBridgeBootstrap(
+			session,
+			invalidationHint ? { invalidated: true, invalidationReason: invalidationHint.reason } : undefined,
+		);
 		return session;
 	} catch (error) {
 		await destroyBridgeSession(session, {
@@ -911,9 +973,11 @@ async function bootstrapPersistedBridgeSession(
 				await enforceRequestedSessionModel(session, params.modelId);
 				bridgeSessions.set(params.sessionKey, session);
 				persistBridgeSessionRecord(session);
+				logBridgeBootstrap(session);
 				return session;
-			} catch {
+			} catch (error) {
 				shouldInvalidatePersisted = true;
+				logBridgeBootstrapFallback(params.sessionKey, "resume", error);
 			}
 		}
 
@@ -932,14 +996,22 @@ async function bootstrapPersistedBridgeSession(
 				await enforceRequestedSessionModel(session, params.modelId);
 				bridgeSessions.set(params.sessionKey, session);
 				persistBridgeSessionRecord(session);
+				logBridgeBootstrap(session);
 				return session;
-			} catch {
+			} catch (error) {
 				shouldInvalidatePersisted = true;
+				logBridgeBootstrapFallback(params.sessionKey, "load", error);
 			}
 		}
 
 		if (shouldInvalidatePersisted) {
+			logBridgeBootstrapInvalidate(params.sessionKey, "bootstrap_exhausted", record.acpSessionId);
 			deletePersistedSessionRecord(params.sessionKey);
+			if (isStrictBootstrapEnabled()) {
+				throw new Error(
+					`[pi-shell-acp] bootstrap_exhausted: resume and load both failed for sessionKey=${params.sessionKey} previousAcpSessionId=${record.acpSessionId}`,
+				);
+			}
 		}
 
 		const created = await session.connection.newSession({
@@ -957,6 +1029,12 @@ async function bootstrapPersistedBridgeSession(
 		await enforceRequestedSessionModel(session, params.modelId);
 		bridgeSessions.set(params.sessionKey, session);
 		persistBridgeSessionRecord(session);
+		logBridgeBootstrap(
+			session,
+			shouldInvalidatePersisted
+				? { invalidated: true, invalidationReason: "bootstrap_exhausted" }
+				: undefined,
+		);
 		return session;
 	} catch (error) {
 		await destroyBridgeSession(session, {
@@ -997,6 +1075,7 @@ export async function ensureBridgeSession(params: EnsureBridgeSessionParams): Pr
 		existing.contextMessageSignatures = [...params.contextMessageSignatures];
 		existing.bootstrapPath = "reuse";
 		persistBridgeSessionRecord(existing);
+		logBridgeBootstrap(existing);
 		return existing;
 	}
 
@@ -1010,10 +1089,14 @@ export async function ensureBridgeSession(params: EnsureBridgeSessionParams): Pr
 	const persisted = readPersistedSessionRecord(params.sessionKey);
 	if (persisted) {
 		if (!isPersistedSessionCompatible(persisted, normalizedParams, normalizedSystemPrompt)) {
+			logBridgeBootstrapInvalidate(params.sessionKey, "incompatible_config", persisted.acpSessionId);
 			deletePersistedSessionRecord(params.sessionKey);
-		} else {
-			return await bootstrapPersistedBridgeSession(normalizedParams, persisted);
+			return await startNewBridgeSession(normalizedParams, {
+				reason: "incompatible_config",
+				previousAcpSessionId: persisted.acpSessionId,
+			});
 		}
+		return await bootstrapPersistedBridgeSession(normalizedParams, persisted);
 	}
 
 	return await startNewBridgeSession(normalizedParams);

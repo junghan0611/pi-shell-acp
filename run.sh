@@ -15,6 +15,7 @@ Usage:
   ./run.sh smoke-claude [project-dir] # explicit Claude runtime smoke
   ./run.sh smoke-codex [project-dir]  # explicit Codex runtime smoke
   ./run.sh smoke-all [project-dir]    # required dual-backend runtime smoke gate
+  ./run.sh smoke-continuity [project-dir] # strict dual-backend persisted bootstrap gate (Claude=resume, Codex=load)
   ./run.sh check-mcp                  # local deterministic check of normalizeMcpServers() — no Claude/ACP subprocess
   ./run.sh check-backends             # local deterministic check of backend launch resolution + backend-specific _meta shape
   ./run.sh check-registration         # local deterministic check of per-runtime provider registration semantics
@@ -256,6 +257,71 @@ smoke_all() {
   smoke_test "$project_dir" claude
   smoke_test "$project_dir" codex
   echo "[smoke-all] Claude + Codex runtime smokes: ok"
+}
+
+smoke_continuity_single() {
+  local project_dir=$1
+  local backend=$2
+  local model=$3
+  local expected_path=$4
+
+  local session_file
+  session_file=$(mktemp /tmp/pi-shell-acp-continuity-XXXXXX.jsonl)
+
+  echo "[smoke-continuity/$backend] model=$model expected-turn2=$expected_path session=$session_file"
+
+  local turn1_log
+  if ! turn1_log=$(cd "$project_dir" && PI_SHELL_ACP_STRICT_BOOTSTRAP=1 pi -e "$REPO_DIR" --session "$session_file" --provider pi-shell-acp --model "$model" -p 'READY 만 답해' 2>&1); then
+    echo "[smoke-continuity/$backend] turn1 pi invocation failed:" >&2
+    echo "$turn1_log" >&2
+    rm -f "$session_file"
+    exit 1
+  fi
+  if ! grep -q "^\[pi-shell-acp:bootstrap\] path=new backend=$backend" <<< "$turn1_log"; then
+    echo "[smoke-continuity/$backend] turn1 expected path=new, got:" >&2
+    echo "$turn1_log" >&2
+    rm -f "$session_file"
+    exit 1
+  fi
+  echo "[smoke-continuity/$backend] turn1 path=new: ok"
+
+  local turn2_log
+  if ! turn2_log=$(cd "$project_dir" && PI_SHELL_ACP_STRICT_BOOTSTRAP=1 pi -e "$REPO_DIR" --session "$session_file" --provider pi-shell-acp --model "$model" -p 'OK 만 답해' 2>&1); then
+    echo "[smoke-continuity/$backend] turn2 pi invocation failed (strict bootstrap throw?):" >&2
+    echo "$turn2_log" >&2
+    rm -f "$session_file"
+    exit 1
+  fi
+  if ! grep -q "^\[pi-shell-acp:bootstrap\] path=$expected_path backend=$backend" <<< "$turn2_log"; then
+    echo "[smoke-continuity/$backend] turn2 expected path=$expected_path, got:" >&2
+    echo "$turn2_log" >&2
+    rm -f "$session_file"
+    exit 1
+  fi
+  if grep -q "^\[pi-shell-acp:bootstrap-invalidate\]" <<< "$turn2_log"; then
+    echo "[smoke-continuity/$backend] turn2 unexpected invalidation on happy continuity:" >&2
+    echo "$turn2_log" >&2
+    rm -f "$session_file"
+    exit 1
+  fi
+  echo "[smoke-continuity/$backend] turn2 path=$expected_path: ok"
+
+  rm -f "$session_file"
+}
+
+smoke_continuity() {
+  local project_dir
+  project_dir=$(normalize_project_dir "$1")
+
+  require_cmd pi
+
+  echo "[smoke-continuity] strict dual-backend persisted bootstrap gate"
+  echo "[smoke-continuity] project: $project_dir"
+  echo "[smoke-continuity] repo:    $REPO_DIR"
+
+  smoke_continuity_single "$project_dir" claude claude-sonnet-4-6 resume
+  smoke_continuity_single "$project_dir" codex gpt-5.4 load
+  echo "[smoke-continuity] Claude(resume) + Codex(load) continuity: ok"
 }
 
 check_mcp() {
@@ -662,6 +728,9 @@ case "$cmd" in
     ;;
   smoke-all)
     smoke_all "$TARGET_PROJECT_DIR"
+    ;;
+  smoke-continuity)
+    smoke_continuity "$TARGET_PROJECT_DIR"
     ;;
   check-mcp)
     check_mcp
