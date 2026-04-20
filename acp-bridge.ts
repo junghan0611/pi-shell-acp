@@ -705,13 +705,39 @@ async function enforceRequestedSessionModel(
 	requestedModelId: string | undefined,
 ): Promise<void> {
 	if (!requestedModelId) return;
+	const fromModel = session.modelId;
 	const setModel = (session.connection as any).unstable_setSessionModel;
-	if (typeof setModel !== "function") return;
-	await setModel.call(session.connection, {
-		sessionId: session.acpSessionId,
-		modelId: requestedModelId,
-	});
-	session.modelId = requestedModelId;
+	if (typeof setModel !== "function") {
+		logBridgeModelSwitch(session, {
+			path: "bootstrap",
+			outcome: "unsupported",
+			fromModel,
+			toModel: requestedModelId,
+		});
+		return;
+	}
+	try {
+		await setModel.call(session.connection, {
+			sessionId: session.acpSessionId,
+			modelId: requestedModelId,
+		});
+		session.modelId = requestedModelId;
+		logBridgeModelSwitch(session, {
+			path: "bootstrap",
+			outcome: "applied",
+			fromModel,
+			toModel: requestedModelId,
+		});
+	} catch (error) {
+		logBridgeModelSwitch(session, {
+			path: "bootstrap",
+			outcome: "failed",
+			fromModel,
+			toModel: requestedModelId,
+			reason: error instanceof Error ? error.message : String(error),
+		});
+		throw error;
+	}
 }
 
 function isChildExited(child: ChildProcessByStdio<any, any, any>): boolean {
@@ -846,6 +872,34 @@ function logBridgeBootstrapInvalidate(
 }
 
 export type CancelOutcome = "dispatched" | "unsupported" | "failed";
+
+export type ModelSwitchOutcome = "applied" | "unsupported" | "failed";
+export type ModelSwitchPath = "bootstrap" | "reuse";
+
+function logBridgeModelSwitch(
+	session: AcpBridgeSession,
+	extra: {
+		path: ModelSwitchPath;
+		outcome: ModelSwitchOutcome;
+		fromModel?: string;
+		toModel?: string;
+		reason?: string;
+		fallback?: "new_session" | "none";
+	},
+): void {
+	const line = formatBootstrapPayload({
+		path: extra.path,
+		outcome: extra.outcome,
+		sessionKey: session.key,
+		backend: session.backend,
+		acpSessionId: session.acpSessionId,
+		fromModel: extra.fromModel,
+		toModel: extra.toModel,
+		fallback: extra.fallback,
+		reason: extra.reason ? extra.reason.slice(0, 200) : undefined,
+	});
+	console.error(`[pi-shell-acp:model-switch] ${line}`);
+}
 
 function logBridgeCancel(
 	session: AcpBridgeSession,
@@ -1140,14 +1194,41 @@ export async function ensureBridgeSession(params: EnsureBridgeSessionParams): Pr
 		: false;
 	if (existing && existingCompatible && !existing.closed && isChildAlive(existing.child)) {
 		if (params.modelId && existing.modelId !== params.modelId) {
+			const fromModel = existing.modelId;
+			const toModel = params.modelId;
 			const setModel = (existing.connection as any).unstable_setSessionModel;
-			if (typeof setModel === "function") {
+			if (typeof setModel !== "function") {
+				logBridgeModelSwitch(existing, {
+					path: "reuse",
+					outcome: "unsupported",
+					fromModel,
+					toModel,
+					fallback: "new_session",
+				});
+				await closeBridgeSession(params.sessionKey);
+				return await startNewBridgeSession(normalizedParams);
+			}
+			try {
 				await setModel.call(existing.connection, {
 					sessionId: existing.acpSessionId,
-					modelId: params.modelId,
+					modelId: toModel,
 				});
-				existing.modelId = params.modelId;
-			} else {
+				existing.modelId = toModel;
+				logBridgeModelSwitch(existing, {
+					path: "reuse",
+					outcome: "applied",
+					fromModel,
+					toModel,
+				});
+			} catch (error) {
+				logBridgeModelSwitch(existing, {
+					path: "reuse",
+					outcome: "failed",
+					fromModel,
+					toModel,
+					fallback: "new_session",
+					reason: error instanceof Error ? error.message : String(error),
+				});
 				await closeBridgeSession(params.sessionKey);
 				return await startNewBridgeSession(normalizedParams);
 			}

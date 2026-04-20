@@ -553,11 +553,46 @@ tail -n 40 "$SESSION_FILE"
 
 1. 실제 bootstrap path가 `resume`인지 `load`인지 `new`인지 외부에서 즉시 보이게 하는 것
 2. persisted session incompatibility가 발생했을 때 invalidate 이유를 operator가 빠르게 읽는 것
-3. model switch 시 `unstable_setSessionModel` 경로 vs 새 세션 fallback 경로를 명확히 관찰하는 것
+3. ~~model switch 시 `unstable_setSessionModel` 경로 vs 새 세션 fallback 경로를 명확히 관찰하는 것~~ — §12.3 참조
 4. ~~cancel/abort 시 bridge와 child process가 얼마나 깔끔하게 정리되는지 보는 것~~ — §12.4 참조
 5. 장시간 세션에서 tool notice / thinking / text block이 누적될 때 stream shape가 안정적인지 보는 것
 
 즉, 이 문서는 완료 선언 문서가 아니라 **다음 개선 포인트를 드러내는 운영 문서**다.
+
+### 12.3 model switch observability (green)
+
+`unstable_setSessionModel` 경로는 operator가 stderr에서 바로 읽을 수 있도록 단일 diagnostic 라인을 흘린다. bootstrap/cancel 라인과 같은 `key=value` 포맷이다.
+
+```text
+[pi-shell-acp:model-switch] path=bootstrap|reuse outcome=applied|unsupported|failed sessionKey=... backend=... acpSessionId=... fromModel=... toModel=... reason=... fallback=new_session|none
+```
+
+의미 (observability가 아니라 실제 규칙):
+
+- `path=bootstrap` — new/resume/load 직후 `enforceRequestedSessionModel` 경로. `requestedModelId`가 있으면 무조건 enforcement를 시도한다. `resolveModelIdFromSessionResponse()`가 backend가 currentModelId를 돌려주지 않는 경우 requested를 fallback으로 쓰므로 "current == requested"로 판정해 건너뛰면 안 된다. 여기서는 `outcome=failed`는 지금도 그대로 throw되어 bootstrap 전체가 실패한다 (fail-fast 유지).
+- `path=reuse` — `ensureBridgeSession`의 compatible existing session에서 `modelId`가 바뀐 경우. 
+  - `outcome=applied`: `setModel` 성공, 같은 세션 유지
+  - `outcome=unsupported fallback=new_session`: `setModel` not a function → `closeBridgeSession` + `startNewBridgeSession`
+  - `outcome=failed fallback=new_session reason=...`: `setModel` throw → `closeBridgeSession` + `startNewBridgeSession`
+  - 두 fallback 경로는 직후 `[pi-shell-acp:bootstrap] path=new`로 이어진다.
+
+Smoke:
+
+```bash
+./run.sh smoke-model-switch /home/junghan/repos/gh/agent-config
+```
+
+Pass 기준 (backend별로 Claude/Codex 모두):
+
+- `[pi-shell-acp:model-switch] path=reuse outcome=applied` 라인 존재
+- `[pi-shell-acp:model-switch] path=reuse outcome=unsupported fallback=new_session` 라인 존재
+- `[pi-shell-acp:model-switch] path=reuse outcome=failed fallback=new_session reason=...` 라인 존재
+- 두 fallback 뒤에 `[pi-shell-acp:bootstrap] path=new`가 한 번씩 더 찍혀 새 세션 재부팅이 실제 일어남
+- fallback 후 새 세션으로 짧은 한 턴 프롬프트가 `stopReason=end_turn`으로 성공
+
+bootstrap 분기는 로그만 추가되어 있고, deterministic smoke는 reuse 3분기 중심이다. bootstrap `unsupported` / `failed`는 현재 운영 기본으로 보수적으로 유지한다 (unsupported는 skip, failed는 throw).
+
+운영 기본은 resilient (reuse는 stderr diagnostic + new-session fallback, pi 세션은 계속), smoke는 fail-fast (하나라도 어기면 전체 실패).
 
 ### 12.4 cancel / abort cleanup observability (green)
 

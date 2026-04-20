@@ -17,6 +17,7 @@ Usage:
   ./run.sh smoke-all [project-dir]    # required dual-backend runtime smoke gate
   ./run.sh smoke-continuity [project-dir] # strict dual-backend persisted bootstrap gate (Claude=resume, Codex=load)
   ./run.sh smoke-cancel [project-dir] # strict cancel/abort cleanup observability gate (Claude + Codex)
+  ./run.sh smoke-model-switch [project-dir] # strict dual-backend model switch observability gate (reuse 3 branches)
   ./run.sh check-mcp                  # local deterministic check of normalizeMcpServers() — no Claude/ACP subprocess
   ./run.sh check-backends             # local deterministic check of backend launch resolution + backend-specific _meta shape
   ./run.sh check-registration         # local deterministic check of per-runtime provider registration semantics
@@ -512,6 +513,170 @@ smoke_cancel() {
   echo "[smoke-cancel] Claude + Codex cancel cleanup: ok"
 }
 
+smoke_model_switch_single() {
+  local project_dir=$1
+  local backend=$2
+  local model_a=$3
+  local model_b=$4
+
+  echo "[smoke-model-switch/$backend] models: $model_a -> $model_b"
+
+  local log_file
+  log_file=$(mktemp /tmp/pi-shell-acp-model-switch-XXXXXX.log)
+
+  local rc=0
+  (
+    cd "$REPO_DIR"
+    PI_SHELL_ACP_SMOKE_BACKEND="$backend" \
+    PI_SHELL_ACP_MODEL_A="$model_a" \
+    PI_SHELL_ACP_MODEL_B="$model_b" \
+      node --input-type=module 2>"$log_file" <<'EOF'
+import {
+  ensureBridgeSession,
+  sendPrompt,
+  setActivePromptHandler,
+  closeBridgeSession,
+  normalizeMcpServers,
+} from './acp-bridge.ts';
+
+const backend = process.env.PI_SHELL_ACP_SMOKE_BACKEND;
+const modelA = process.env.PI_SHELL_ACP_MODEL_A;
+const modelB = process.env.PI_SHELL_ACP_MODEL_B;
+if (!backend || !modelA || !modelB) throw new Error('backend/modelA/modelB required');
+
+const emptyMcpHash = normalizeMcpServers(undefined).hash;
+const makeParams = (sessionKey, modelId) => ({
+  sessionKey,
+  cwd: process.cwd(),
+  backend,
+  modelId,
+  systemPromptAppend: '간단히 답하세요.',
+  settingSources: ['user'],
+  strictMcpConfig: false,
+  mcpServers: [],
+  bridgeConfigSignature: JSON.stringify({
+    backend,
+    appendSystemPrompt: false,
+    settingSources: ['user'],
+    strictMcpConfig: false,
+    mcpServersHash: emptyMcpHash,
+  }),
+  contextMessageSignatures: [`smoke-model-switch:${backend}`],
+});
+
+async function runOneTurn(session, label) {
+  setActivePromptHandler(session, () => {});
+  const result = await sendPrompt(session, [{ type: 'text', text: 'ok만 답하세요.' }]);
+  setActivePromptHandler(session, undefined);
+  if (result.stopReason !== 'end_turn') {
+    throw new Error(`${label} turn stopReason=${result.stopReason}`);
+  }
+  console.error(`[smoke-model-switch] ${label} turn ok`);
+}
+
+// --- scenario 1: reuse applied ---
+{
+  const sessionKey = `smoke-ms-applied:${backend}`;
+  const sessionA = await ensureBridgeSession(makeParams(sessionKey, modelA));
+  await runOneTurn(sessionA, 'applied/turn1');
+  // second call on same key with different modelId -> reuse branch
+  await ensureBridgeSession(makeParams(sessionKey, modelB));
+  await closeBridgeSession(sessionKey, { closeRemote: true, invalidatePersisted: true });
+  console.error('[smoke-model-switch] applied scenario done');
+}
+
+// --- scenario 2: reuse unsupported -> new_session fallback ---
+{
+  const sessionKey = `smoke-ms-unsupported:${backend}`;
+  const sessionA = await ensureBridgeSession(makeParams(sessionKey, modelA));
+  await runOneTurn(sessionA, 'unsupported/turn1');
+  // force unsupported by shadowing the prototype method with a non-function own property
+  Object.defineProperty(sessionA.connection, 'unstable_setSessionModel', {
+    value: undefined,
+    configurable: true,
+    writable: true,
+  });
+  const sessionB = await ensureBridgeSession(makeParams(sessionKey, modelB));
+  if (sessionB === sessionA) {
+    throw new Error('unsupported scenario: expected new session but got same reference');
+  }
+  await runOneTurn(sessionB, 'unsupported/turn2-post-fallback');
+  await closeBridgeSession(sessionKey, { closeRemote: true, invalidatePersisted: true });
+  console.error('[smoke-model-switch] unsupported scenario done');
+}
+
+// --- scenario 3: reuse failed -> new_session fallback ---
+{
+  const sessionKey = `smoke-ms-failed:${backend}`;
+  const sessionA = await ensureBridgeSession(makeParams(sessionKey, modelA));
+  await runOneTurn(sessionA, 'failed/turn1');
+  sessionA.connection.unstable_setSessionModel = async () => {
+    throw new Error('smoke-forced-setmodel-failure');
+  };
+  const sessionB = await ensureBridgeSession(makeParams(sessionKey, modelB));
+  if (sessionB === sessionA) {
+    throw new Error('failed scenario: expected new session but got same reference');
+  }
+  await runOneTurn(sessionB, 'failed/turn2-post-fallback');
+  await closeBridgeSession(sessionKey, { closeRemote: true, invalidatePersisted: true });
+  console.error('[smoke-model-switch] failed scenario done');
+}
+
+console.error('[smoke-model-switch] all scenarios ok');
+EOF
+  ) || rc=$?
+
+  if [[ "$rc" != "0" ]]; then
+    echo "[smoke-model-switch/$backend] node subprocess failed rc=$rc" >&2
+    cat "$log_file" >&2
+    rm -f "$log_file"
+    exit 1
+  fi
+
+  # required reuse branches, all with matching backend
+  local required=(
+    "^\[pi-shell-acp:model-switch\] path=reuse outcome=applied .*backend=$backend .*toModel=$model_b"
+    "^\[pi-shell-acp:model-switch\] path=reuse outcome=unsupported .*backend=$backend .*fallback=new_session"
+    "^\[pi-shell-acp:model-switch\] path=reuse outcome=failed .*backend=$backend .*fallback=new_session .*reason=smoke-forced-setmodel-failure"
+  )
+  for pattern in "${required[@]}"; do
+    if ! grep -qE "$pattern" "$log_file"; then
+      echo "[smoke-model-switch/$backend] missing log matching: $pattern" >&2
+      cat "$log_file" >&2
+      rm -f "$log_file"
+      exit 1
+    fi
+  done
+
+  # fallback must produce a new bootstrap path=new after unsupported/failed
+  local fallback_bootstraps
+  fallback_bootstraps=$(grep -cE "^\[pi-shell-acp:bootstrap\] path=new backend=$backend" "$log_file" || true)
+  if [[ "$fallback_bootstraps" -lt 4 ]]; then
+    echo "[smoke-model-switch/$backend] expected >=4 bootstrap path=new lines, got $fallback_bootstraps" >&2
+    cat "$log_file" >&2
+    rm -f "$log_file"
+    exit 1
+  fi
+
+  echo "[smoke-model-switch/$backend] ok (applied+unsupported+failed logged, fallbacks re-bootstrapped)"
+  rm -f "$log_file"
+}
+
+smoke_model_switch() {
+  local project_dir
+  project_dir=$(normalize_project_dir "$1")
+
+  require_cmd pi
+
+  echo "[smoke-model-switch] strict dual-backend model switch observability gate"
+  echo "[smoke-model-switch] project: $project_dir"
+  echo "[smoke-model-switch] repo:    $REPO_DIR"
+
+  smoke_model_switch_single "$project_dir" claude claude-sonnet-4-6 claude-haiku-4-5-20251001
+  smoke_model_switch_single "$project_dir" codex gpt-5.4 gpt-5.4-mini
+  echo "[smoke-model-switch] Claude + Codex model switch observability: ok"
+}
+
 check_mcp() {
   (cd "$REPO_DIR" && node --input-type=module <<'EOF'
 import { normalizeMcpServers, McpServerConfigError } from './acp-bridge.ts';
@@ -922,6 +1087,9 @@ case "$cmd" in
     ;;
   smoke-cancel)
     smoke_cancel "$TARGET_PROJECT_DIR"
+    ;;
+  smoke-model-switch)
+    smoke_model_switch "$TARGET_PROJECT_DIR"
     ;;
   check-mcp)
     check_mcp
