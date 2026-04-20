@@ -112,20 +112,29 @@ The CLI itself is managed separately (via npm, pnpm, or NixOS). `claude --resume
 
 The codex backend runtime is also resolved from `PATH` unless `CODEX_ACP_COMMAND` overrides it.
 
+**Pinned version: `0.11.1`**
+
+```bash
+pnpm add -g @zed-industries/codex-acp@0.11.1
+```
+
 Verify:
 ```bash
 which codex-acp
 codex-acp --help >/dev/null 2>&1 || true
+pnpm list -g --depth=0 | grep codex-acp
 ```
 
 ### Why two ACP references exist
 
 | Reference | Version | Purpose |
 |-----------|---------|---------|
-| pnpm global `claude-agent-acp` | `0.29.2` | Runtime bridge binary (spawned by pi) |
-| local `node_modules/@agentclientprotocol/claude-agent-acp` | `0.29.2` | SDK import for `check-claude-sessions` diagnostics |
+| pnpm global `claude-agent-acp` | `0.29.2` | Claude runtime bridge binary (spawned by pi) |
+| local `node_modules/@agentclientprotocol/claude-agent-acp` | `0.29.2` | Claude SDK import for diagnostics |
+| pnpm global `codex-acp` | `0.11.1` | Codex runtime bridge binary (spawned by pi) |
+| local `node_modules/@zed-industries/codex-acp` | `0.11.1` | Codex version pin / local reference for repo-managed compatibility |
 
-Both must be the **same version** to avoid confusion. `npm install` keeps local in sync; pnpm global must be updated manually.
+Pinned versions should stay aligned with what operators actually install. `npm install` keeps local references in sync; pnpm global runtimes must be updated manually.
 
 ---
 
@@ -206,6 +215,8 @@ Expected: second process returns `test-token-123`.
 For fallback boundary, ensure `cwd:` sessions do not create persisted cache records.
 
 Known current limitation: when a backend session is continued outside pi (for example in agent-shell), pi may later re-attach to the same remote session successfully but will not replay those external turns into pi-local transcript/history. Treat this as a deliberate thin-bridge boundary unless we find a strictly minimal ACP-native improvement.
+
+Strategic direction: backend choice must not change pi's role as the primary harness. The long-term goal is to expose the same pi-owned MCP/tool surface through either ACP backend without making backend transcript stores the source of truth for pi history.
 
 ---
 

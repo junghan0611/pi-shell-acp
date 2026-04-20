@@ -222,10 +222,19 @@ cd ~/repos/gh/agent-config
 
 `backend: "codex"` is intentionally minimal in this slice:
 - launch path: `CODEX_ACP_COMMAND` override first, then `codex-acp` from `PATH`
+- pinned runtime/version target: `@zed-industries/codex-acp@0.11.1`
 - no Claude-specific `_meta` payload is sent
 - model selection still flows through the generic ACP session model path when the backend supports it
 - `settingSources` / `strictMcpConfig` remain Claude-oriented settings and are ignored by the codex backend path in this slice
 - if `backend` is omitted and an OpenAI model such as `gpt-5.4` is selected, pi-shell-acp infers `codex` automatically
+
+Install / verify:
+
+```bash
+pnpm add -g @zed-industries/codex-acp@0.11.1
+which codex-acp
+pnpm list -g --depth=0 | grep codex-acp
+```
 
 ### Known limitation: reverse-direction transcript visibility
 
@@ -239,6 +248,19 @@ Reverse direction is only partial today:
 - later reopening the same session in agent-shell shows those turns again because they remain in the backend-owned session store
 
 This is currently considered a **UX/observability limitation**, not a continuity failure. The bridge intentionally avoids reading backend transcript JSONL stores just to reconstruct pi history.
+
+### Architectural choice: pi stays primary
+
+This repo deliberately treats **pi session state** as the source of truth for pi UX.
+
+That means:
+- ACP backends may keep their own transcript/session stores (`~/.claude/...`, `~/.codex/...`)
+- those stores are useful for interoperability with tools like Claude Code or agent-shell
+- but pi-shell-acp does **not** read them back just to rebuild pi-local history
+
+This boundary is intentional. It keeps the bridge small and avoids turning backend-owned JSONL/session stores into a second session authority.
+
+The long-term direction is backend-agnostic capability parity: if pi exposes MCP/tool context into ACP sessions, it should do so consistently whether the selected backend is Claude or Codex.
 
 ## Cross-Process Continuity Test
 

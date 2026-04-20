@@ -538,19 +538,34 @@ verify_resume() {
   check_claude_sessions "$project_dir"
 }
 
-ACP_REQUIRED_VERSION="0.29.2"
+CLAUDE_ACP_REQUIRED_VERSION="0.29.2"
+CODEX_ACP_REQUIRED_VERSION="0.11.1"
 
-check_global_acp() {
+check_global_claude_acp() {
   local installed
   installed=$(pnpm list -g --depth=0 2>/dev/null | grep -oE '@agentclientprotocol/claude-agent-acp@[0-9.]+' | grep -oE '[0-9.]+$' || true)
-  if [[ "$installed" == "$ACP_REQUIRED_VERSION" ]]; then
+  if [[ "$installed" == "$CLAUDE_ACP_REQUIRED_VERSION" ]]; then
     echo "[setup] claude-agent-acp global: $installed (ok)"
   elif [[ -n "$installed" ]]; then
-    echo "[setup] warning: claude-agent-acp global is $installed, expected $ACP_REQUIRED_VERSION" >&2
-    echo "[setup] run: pnpm add -g @agentclientprotocol/claude-agent-acp@$ACP_REQUIRED_VERSION" >&2
+    echo "[setup] warning: claude-agent-acp global is $installed, expected $CLAUDE_ACP_REQUIRED_VERSION" >&2
+    echo "[setup] run: pnpm add -g @agentclientprotocol/claude-agent-acp@$CLAUDE_ACP_REQUIRED_VERSION" >&2
   else
     echo "[setup] warning: claude-agent-acp not found in pnpm global" >&2
-    echo "[setup] run: pnpm add -g @agentclientprotocol/claude-agent-acp@$ACP_REQUIRED_VERSION" >&2
+    echo "[setup] run: pnpm add -g @agentclientprotocol/claude-agent-acp@$CLAUDE_ACP_REQUIRED_VERSION" >&2
+  fi
+}
+
+check_global_codex_acp() {
+  local installed
+  installed=$(pnpm list -g --depth=0 2>/dev/null | grep -oE '@zed-industries/codex-acp@[0-9.]+' | grep -oE '[0-9.]+$' || true)
+  if [[ "$installed" == "$CODEX_ACP_REQUIRED_VERSION" ]]; then
+    echo "[setup] codex-acp global: $installed (ok)"
+  elif [[ -n "$installed" ]]; then
+    echo "[setup] warning: codex-acp global is $installed, expected $CODEX_ACP_REQUIRED_VERSION" >&2
+    echo "[setup] run: pnpm add -g @zed-industries/codex-acp@$CODEX_ACP_REQUIRED_VERSION" >&2
+  else
+    echo "[setup] warning: codex-acp not found in pnpm global" >&2
+    echo "[setup] run: pnpm add -g @zed-industries/codex-acp@$CODEX_ACP_REQUIRED_VERSION" >&2
   fi
 }
 
@@ -566,7 +581,8 @@ setup_all() {
   echo "[setup] project: $project_dir"
 
   (cd "$REPO_DIR" && npm install)
-  check_global_acp
+  check_global_claude_acp
+  check_global_codex_acp
   sync_auth
   install_local_package "$project_dir"
 
