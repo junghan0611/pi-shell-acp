@@ -381,6 +381,12 @@ pi -e "$REPO_DIR" --provider pi-shell-acp --model claude-sonnet-4-6 -p 'session_
 
 즉 현재 기본값(설정 없음)에서는 **Claude Code native tool은 보이지만 pi custom tool은 안 보이는 상태**가 정상이다.
 
+이 boundary 판정은 Claude뿐 아니라 Codex에도 동일하게 적용한다. 다만 MCP tool 이름 표기는 백엔드별로 약간 다를 수 있다.
+- Claude 예: `mcp__pi-tools-bridge__session_search`
+- Codex 예: `mcp__pi_tools_bridge__session_search`
+
+따라서 검증 기준은 **브리지 이름(`pi-tools-bridge` / `pi_tools_bridge`) + tool suffix**가 함께 보이는지로 잡는 편이 안전하다.
+
 이 항목의 의미:
 - 기본값은 "Claude-native only" 로 선언됐다
 - pi 하네스 parity는 **별도 MCP adapter**를 만들어 `piShellAcpProvider.mcpServers` 로 주입할 때만 생긴다
@@ -446,6 +452,8 @@ pi -e "$REPO_DIR" --session "$SESSION_FILE" --provider pi-shell-acp --model clau
 ```
 
 Pass: 새 설정이 즉시 반영됨 (stale capability 없음).
+
+현재 운영 기준에서는 이 visibility 확인을 **Claude + Codex 둘 다** 돌리고, 최소 1개의 bridged MCP tool 호출도 실제로 통과시킨다. 가장 안정적인 자동화 경로는 `send_to_session` negative-path 호출이다. 존재하지 않는 target에 대해 `No pi control socket ...` 오류가 surface되면, `ACP host → MCP bridge → pi-side RPC` 호출 경로가 실제로 살아 있음을 의미한다.
 
 ---
 
