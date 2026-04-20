@@ -10,27 +10,32 @@ It connects:
 ```text
 pi
   -> pi-shell-acp
-    -> claude-agent-acp
-      -> Claude Code
+    -> claude-agent-acp | codex-acp
+      -> Claude Code | Codex
 ```
 
 The goal is simple:
 - keep **pi** as the harness
-- keep **Claude Code** as Claude Code
+- keep each ACP backend as itself
 - keep this repo as a **small bridge**, not a second harness
 
 ## Current Guarantees
 
 - provider/model surface: `pi-shell-acp/...`
-- Claude Code native identity preserved
+- single provider surface, backend selected explicitly or inferred from the selected model
+- Claude Code native identity preserved when `backend: "claude"`
   - `~/.claude`
   - native skills / PATH tools
   - Claude Code settings loaded via ACP `settingSources`
+- Codex native identity preserved when `backend: "codex"`
+  - `~/.codex`
+  - codex session store / model catalogue / access modes remain backend-owned
 - cross-process ACP session continuity for `pi:<sessionId>`
 - persisted bootstrap order: `resume > load > new`
 - `cwd:<cwd>` fallback sessions are **not** persisted
 - ordinary process shutdown keeps persisted mapping for the next pi process
-- explicit pi-facing MCP injection into each ACP session via `piShellAcpProvider.mcpServers` — the bridge never scans `~/.mcp.json` or any ambient Claude config
+- explicit pi-facing MCP injection into each ACP session via `piShellAcpProvider.mcpServers` — the bridge never scans ambient backend config files
+- **pi session remains the source of truth for pi UX**; backend transcript stores are interoperability side effects, not the canonical history for pi
 
 ## Authentication
 
@@ -40,8 +45,9 @@ Authentication is handled by Claude Code / claude-agent-acp; pi-shell-acp adds n
 
 This repo should not grow into:
 - full-history prompt reconstruction
+- backend transcript hydration into pi history
 - tool result ledgers
-- Claude Code emulation
+- Claude Code / Codex emulation
 - broad multi-agent orchestration
 - a second session model competing with pi
 
@@ -79,6 +85,8 @@ Persisted data is intentionally minimal:
 - bridge config signature
 - context message signatures
 - timestamp / version / provider marker
+
+This is a deliberate architectural choice: `pi-shell-acp` persists only enough to re-attach pi to the same remote ACP session. It does **not** ingest backend transcript files to rebuild pi-local conversation history.
 
 ## Repository Layout
 
@@ -124,8 +132,12 @@ When working on session bootstrap, capability detection, or resume/load behavior
 cd ~/repos/gh/pi-shell-acp
 npm install
 npm run typecheck
+npm run check-registration                               # deterministic per-runtime provider registration gate
 npm run check-mcp                                        # deterministic MCP validation gate (no Claude/ACP subprocess)
+npm run check-backends                                   # deterministic backend launch/meta gate (no ACP subprocess)
+npm run check-claude-sessions -- /home/junghan/repos/gh/agent-config  # verify pi persisted sessions are visible to Claude SDK
 ./run.sh smoke /home/junghan/repos/gh/agent-config
+./run.sh verify-resume /home/junghan/repos/gh/agent-config             # exact pi -> ACP -> Claude continuity check with acpSessionId diagnostics
 ```
 
 ### Use from pi
@@ -143,6 +155,7 @@ pi --provider pi-shell-acp --model claude-3-5-haiku-latest -p 'ok만 답하세�
 ```json
 {
   "piShellAcpProvider": {
+    "backend": "claude",
     "appendSystemPrompt": false,
     "settingSources": ["user"],
     "strictMcpConfig": false,
@@ -190,9 +203,11 @@ HTTP / SSE MCP:
 ```
 
 Notes:
+- If `backend` is omitted, pi-shell-acp infers it from the selected model: Anthropic models → `claude`, OpenAI models → `codex`.
+- Set `backend` explicitly only when you want to pin the backend regardless of the selected model.
 - `mcpServers` from global (`~/.pi/agent/settings.json`) and project (`<cwd>/.pi/settings.json`) are merged by name, project wins on conflict.
-- The SHA-256 hash of the canonical `mcpServers` shape participates in the bridge session signature — changing the list invalidates the persisted session automatically, so Claude never runs with a stale capability set.
-- This bridge does **not** read `~/.mcp.json` or any other ambient Claude config. If you want a server exposed, list it here.
+- The bridge session signature includes the selected backend and the SHA-256 hash of the canonical `mcpServers` shape — changing either invalidates the persisted session automatically, so the bridge never silently reuses a stale backend/config combination.
+- This bridge does **not** read `~/.mcp.json` or any other ambient backend config. If you want a server exposed, list it here.
 - Invalid `mcpServers` entries fail fast with a single aggregated error (`McpServerConfigError`) that names every offending server — no silent skips. Validate locally with `npm run check-mcp` before shipping a config.
 - pi-native extension tools (`delegate`, `session_search`, `knowledge_search`, …) are **not** auto-promoted. If you want them inside Claude, build a dedicated external MCP adapter and register it here.
 
@@ -202,6 +217,28 @@ After updating `agent-config`, verify:
 cd ~/repos/gh/agent-config
 ./run.sh setup
 ```
+
+### Codex backend notes
+
+`backend: "codex"` is intentionally minimal in this slice:
+- launch path: `CODEX_ACP_COMMAND` override first, then `codex-acp` from `PATH`
+- no Claude-specific `_meta` payload is sent
+- model selection still flows through the generic ACP session model path when the backend supports it
+- `settingSources` / `strictMcpConfig` remain Claude-oriented settings and are ignored by the codex backend path in this slice
+- if `backend` is omitted and an OpenAI model such as `gpt-5.4` is selected, pi-shell-acp infers `codex` automatically
+
+### Known limitation: reverse-direction transcript visibility
+
+Forward interoperability is verified:
+- pi can create a Codex-backed ACP session
+- agent-shell can resume that session and continue it
+
+Reverse direction is only partial today:
+- pi can re-attach to the same remote session and continue using it
+- but turns added outside pi (for example in agent-shell) are **not** hydrated back into pi's local transcript/history
+- later reopening the same session in agent-shell shows those turns again because they remain in the backend-owned session store
+
+This is currently considered a **UX/observability limitation**, not a continuity failure. The bridge intentionally avoids reading backend transcript JSONL stores just to reconstruct pi history.
 
 ## Cross-Process Continuity Test
 
@@ -218,6 +255,32 @@ Expected:
 READY
 test-token-123
 ```
+
+For operator-facing identity verification, run:
+
+```bash
+cd ~/repos/gh/pi-shell-acp
+./run.sh verify-resume /home/junghan/repos/gh/agent-config
+```
+
+What to look for:
+- first turn logs `[pi-shell-acp] session ...` with `bootstrapPath:"new"` and an `acpSessionId`
+- second turn logs `bootstrapPath:"resume"` or `bootstrapPath:"load"`
+- the second turn should keep the same `acpSessionId` when Claude-side session continuity is working
+- `./run.sh check-claude-sessions ...` output should show that same `acpSessionId` as `VISIBLE`
+
+For a first codex path check from pi configuration, switch the settings block to:
+
+```json
+{
+  "piShellAcpProvider": {
+    "backend": "codex",
+    "mcpServers": {}
+  }
+}
+```
+
+and make sure `codex-acp` is resolvable, or set `CODEX_ACP_COMMAND='...'` explicitly.
 
 ## Status
 

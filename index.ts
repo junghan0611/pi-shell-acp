@@ -4,14 +4,38 @@ import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { applyBridgePromptEvent, finalizeAcpStreamState, type AcpPiStreamState } from "./event-mapper.js";
-import { cancelActivePrompt, cleanupBridgeSessionProcess, ensureBridgeSession, getBridgeErrorDetails, normalizeMcpServers, sendPrompt, setActivePromptHandler, type ClaudeSettingSource, type McpServerInputMap } from "./acp-bridge.js";
+import { cancelActivePrompt, cleanupBridgeSessionProcess, describeBridgeSession, ensureBridgeSession, getBridgeErrorDetails, normalizeMcpServers, sendPrompt, setActivePromptHandler, type AcpBackend, type ClaudeSettingSource, type McpServerInputMap } from "./acp-bridge.js";
 import type { McpServer } from "@agentclientprotocol/sdk";
 
 const PROVIDER_ID = "pi-shell-acp";
 const REGISTERED_SYMBOL = Symbol.for("pi-shell-acp:registered");
+
+function debugLoggingEnabled(): boolean {
+	const value = process.env.PI_SHELL_ACP_DEBUG?.trim().toLowerCase();
+	return value === "1" || value === "true" || value === "yes";
+}
+
+function logBridgeDiagnostic(label: string, payload: Record<string, unknown>): void {
+	if (!debugLoggingEnabled()) return;
+	console.error(`[pi-shell-acp] ${label} ${JSON.stringify(payload)}`);
+}
+
+function isRegisteredOnRuntime(pi: ExtensionAPI): boolean {
+	return Boolean((pi as unknown as Record<PropertyKey, unknown>)[REGISTERED_SYMBOL]);
+}
+
+function markRegisteredOnRuntime(pi: ExtensionAPI): void {
+	Object.defineProperty(pi as object, REGISTERED_SYMBOL, {
+		value: true,
+		configurable: false,
+		enumerable: false,
+		writable: false,
+	});
+}
 const GLOBAL_SETTINGS_PATH = join(homedir(), ".pi", "agent", "settings.json");
 
 type ProviderSettings = {
+	backend?: AcpBackend;
 	appendSystemPrompt?: boolean;
 	settingSources?: ClaudeSettingSource[];
 	strictMcpConfig?: boolean;
@@ -19,6 +43,8 @@ type ProviderSettings = {
 };
 
 type ResolvedProviderSettings = {
+	backend: AcpBackend;
+	backendSource: "explicit" | "inferred";
 	appendSystemPrompt: boolean;
 	settingSources: ClaudeSettingSource[];
 	strictMcpConfig: boolean;
@@ -26,15 +52,25 @@ type ResolvedProviderSettings = {
 	bridgeConfigSignature: string;
 };
 
-const MODELS = getModels("anthropic").map((model) => ({
-	id: model.id,
-	name: model.name,
-	reasoning: model.reasoning,
-	input: model.input,
-	cost: model.cost,
-	contextWindow: model.contextWindow,
-	maxTokens: model.maxTokens,
-}));
+const ANTHROPIC_MODEL_IDS = new Set(getModels("anthropic").map((model) => model.id));
+const OPENAI_MODEL_IDS = new Set(getModels("openai").map((model) => model.id));
+
+const MODELS = Array.from(
+	new Map(
+		[...getModels("anthropic"), ...getModels("openai")].map((model) => [
+			model.id,
+			{
+				id: model.id,
+				name: model.name,
+				reasoning: model.reasoning,
+				input: model.input,
+				cost: model.cost,
+				contextWindow: model.contextWindow,
+				maxTokens: model.maxTokens,
+			},
+		]),
+	).values(),
+);
 
 function createEmptyUsage() {
 	return {
@@ -99,6 +135,8 @@ function readSettingsFile(filePath: string): ProviderSettings {
 		const settingsBlock =
 			(parsed["piShellAcpProvider"] as Record<string, unknown> | undefined);
 		if (!settingsBlock || typeof settingsBlock !== "object") return {};
+		const backend = settingsBlock["backend"];
+		const resolvedBackend = backend === "claude" || backend === "codex" ? backend : undefined;
 		const appendSystemPrompt =
 			typeof settingsBlock["appendSystemPrompt"] === "boolean"
 				? (settingsBlock["appendSystemPrompt"] as boolean)
@@ -121,6 +159,7 @@ function readSettingsFile(filePath: string): ProviderSettings {
 				? (mcpServersRaw as McpServerInputMap)
 				: undefined;
 		return {
+			backend: resolvedBackend,
 			appendSystemPrompt,
 			settingSources,
 			strictMcpConfig,
@@ -131,10 +170,20 @@ function readSettingsFile(filePath: string): ProviderSettings {
 	}
 }
 
-function loadProviderSettings(cwd: string): ResolvedProviderSettings {
+function inferBackendFromModel(model: Model<any>): AcpBackend {
+	if (OPENAI_MODEL_IDS.has(model.id)) return "codex";
+	if (ANTHROPIC_MODEL_IDS.has(model.id)) return "claude";
+	return model.id.startsWith("gpt-") || model.id.startsWith("o") || model.id.startsWith("codex")
+		? "codex"
+		: "claude";
+}
+
+function loadProviderSettings(cwd: string, model: Model<any>): ResolvedProviderSettings {
 	const globalSettings = readSettingsFile(GLOBAL_SETTINGS_PATH);
 	const projectSettings = readSettingsFile(join(cwd, ".pi", "settings.json"));
 	const merged = { ...globalSettings, ...projectSettings };
+	const backend = merged.backend ?? inferBackendFromModel(model);
+	const backendSource = merged.backend ? "explicit" : "inferred";
 	const appendSystemPrompt = merged.appendSystemPrompt ?? false;
 	const settingSources = merged.settingSources ?? (appendSystemPrompt ? [] : ["user"]);
 	const strictMcpConfig = merged.strictMcpConfig ?? false;
@@ -144,11 +193,14 @@ function loadProviderSettings(cwd: string): ResolvedProviderSettings {
 	};
 	const { servers: mcpServers, hash: mcpServersHash } = normalizeMcpServers(mergedMcpServersRaw);
 	return {
+		backend,
+		backendSource,
 		appendSystemPrompt,
 		settingSources,
 		strictMcpConfig,
 		mcpServers,
 		bridgeConfigSignature: JSON.stringify({
+			backend,
 			appendSystemPrompt,
 			settingSources,
 			strictMcpConfig,
@@ -229,14 +281,14 @@ function mapPromptStopReason(stopReason: string | undefined): AssistantMessage["
 	}
 }
 
-function streamClaudeAcp(model: Model<any>, context: Context, options?: SimpleStreamOptions): AssistantMessageEventStream {
+function streamShellAcp(model: Model<any>, context: Context, options?: SimpleStreamOptions): AssistantMessageEventStream {
 	const stream = createAssistantMessageEventStream();
 
 	(async () => {
 		const output = createOutputMessage(model);
 		const cwd = (options as { cwd?: string } | undefined)?.cwd ?? process.cwd();
 		const sessionKey = resolveSessionKey(options, cwd);
-		const providerSettings = loadProviderSettings(cwd);
+		const providerSettings = loadProviderSettings(cwd, model);
 		let bridgeSession: Awaited<ReturnType<typeof ensureBridgeSession>> | undefined;
 		let aborted = false;
 
@@ -263,6 +315,7 @@ function streamClaudeAcp(model: Model<any>, context: Context, options?: SimpleSt
 			bridgeSession = await ensureBridgeSession({
 				sessionKey,
 				cwd,
+				backend: providerSettings.backend,
 				modelId: model.id,
 				systemPromptAppend: providerSettings.appendSystemPrompt ? context.systemPrompt : undefined,
 				settingSources: providerSettings.settingSources,
@@ -270,6 +323,10 @@ function streamClaudeAcp(model: Model<any>, context: Context, options?: SimpleSt
 				mcpServers: providerSettings.mcpServers,
 				bridgeConfigSignature: providerSettings.bridgeConfigSignature,
 				contextMessageSignatures: getContextMessageSignatures(context),
+			});
+			logBridgeDiagnostic("session", {
+				...describeBridgeSession(bridgeSession),
+				backendSource: providerSettings.backendSource,
 			});
 
 			setActivePromptHandler(bridgeSession, async (event) => {
@@ -324,10 +381,10 @@ function streamClaudeAcp(model: Model<any>, context: Context, options?: SimpleSt
 }
 
 export default function (pi: ExtensionAPI) {
-	if ((globalThis as any)[REGISTERED_SYMBOL]) {
+	if (isRegisteredOnRuntime(pi)) {
 		return;
 	}
-	(globalThis as any)[REGISTERED_SYMBOL] = true;
+	markRegisteredOnRuntime(pi);
 
 	const on = pi.on as unknown as (
 		event: string,
@@ -345,6 +402,6 @@ export default function (pi: ExtensionAPI) {
 		apiKey: "ANTHROPIC_API_KEY",
 		api: "pi-shell-acp",
 		models: MODELS,
-		streamSimple: streamClaudeAcp,
+		streamSimple: streamShellAcp,
 	});
 }

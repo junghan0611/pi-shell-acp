@@ -32,6 +32,7 @@ export type BridgePromptEvent =
 type PendingPromptHandler = (event: BridgePromptEvent) => Promise<void> | void;
 
 export type ClaudeSettingSource = "user" | "project" | "local";
+export type AcpBackend = "claude" | "codex";
 
 type EnvKvInput = Record<string, string> | Array<{ name: string; value: string }>;
 
@@ -214,6 +215,21 @@ type BridgeSessionCapabilities = {
 	closeSession: boolean;
 };
 
+type AcpLaunchSpec = {
+	command: string;
+	args: string[];
+	source: string;
+};
+
+type BackendSessionMetaParams = Pick<EnsureBridgeSessionParams, "modelId" | "settingSources" | "strictMcpConfig">;
+
+type AcpBackendAdapter = {
+	id: AcpBackend;
+	stderrLabel: string;
+	resolveLaunch(): AcpLaunchSpec;
+	buildSessionMeta(params: BackendSessionMetaParams, normalizedSystemPrompt: string | undefined): Record<string, any> | undefined;
+};
+
 type PersistedBridgeSessionRecord = {
 	sessionKey: string;
 	acpSessionId: string;
@@ -231,9 +247,14 @@ type CloseBridgeSessionOptions = {
 	invalidatePersisted?: boolean;
 };
 
+export type BridgeBootstrapPath = "reuse" | "resume" | "load" | "new";
+
 export type AcpBridgeSession = {
 	key: string;
 	cwd: string;
+	backend: AcpBackend;
+	launchSource: string;
+	stderrLabel: string;
 	child: ChildProcessByStdio<any, any, any>;
 	connection: ClientSideConnection;
 	initializeResult: InitializeResponse;
@@ -248,12 +269,15 @@ export type AcpBridgeSession = {
 	contextMessageSignatures: string[];
 	stderrTail: string[];
 	closed: boolean;
+	bootstrapPath: BridgeBootstrapPath;
+	persistedAcpSessionId?: string;
 	activePromptHandler?: PendingPromptHandler;
 };
 
 export type EnsureBridgeSessionParams = {
 	sessionKey: string;
 	cwd: string;
+	backend: AcpBackend;
 	modelId?: string;
 	systemPromptAppend?: string;
 	settingSources: ClaudeSettingSource[];
@@ -403,7 +427,7 @@ function resolvePermissionResponse(params: RequestPermissionRequest): RequestPer
 	return { outcome: { outcome: "selected", optionId: options[0].optionId } };
 }
 
-function resolveClaudeAcpLaunch(): { command: string; args: string[]; source: string } {
+function resolveClaudeAcpLaunch(): AcpLaunchSpec {
 	const override = process.env.CLAUDE_AGENT_ACP_COMMAND?.trim();
 	if (override) {
 		return {
@@ -439,6 +463,81 @@ function resolveClaudeAcpLaunch(): { command: string; args: string[]; source: st
 		args: [],
 		source: "PATH:claude-agent-acp",
 	};
+}
+
+function resolveCodexAcpLaunch(): AcpLaunchSpec {
+	const override = process.env.CODEX_ACP_COMMAND?.trim();
+	if (override) {
+		return {
+			command: "bash",
+			args: ["-lc", override],
+			source: "env:CODEX_ACP_COMMAND",
+		};
+	}
+
+	return {
+		command: "codex-acp",
+		args: [],
+		source: "PATH:codex-acp",
+	};
+}
+
+function buildClaudeSessionMeta(
+	params: BackendSessionMetaParams,
+	normalizedSystemPrompt: string | undefined,
+): Record<string, any> {
+	const claudeCodeOptions: Record<string, any> = {
+		...(params.modelId ? { model: params.modelId } : {}),
+		tools: { type: "preset", preset: "claude_code" },
+		settingSources: [...params.settingSources],
+	};
+	if (params.strictMcpConfig) {
+		claudeCodeOptions.extraArgs = {
+			...(claudeCodeOptions.extraArgs ?? {}),
+			"strict-mcp-config": null,
+		};
+	}
+
+	const meta: Record<string, any> = {
+		claudeCode: {
+			options: claudeCodeOptions,
+		},
+	};
+	if (normalizedSystemPrompt) {
+		meta.systemPrompt = { append: normalizedSystemPrompt };
+	}
+	return meta;
+}
+
+const ACP_BACKEND_ADAPTERS: Record<AcpBackend, AcpBackendAdapter> = {
+	claude: {
+		id: "claude",
+		stderrLabel: "claude-agent-acp stderr",
+		resolveLaunch: resolveClaudeAcpLaunch,
+		buildSessionMeta: buildClaudeSessionMeta,
+	},
+	codex: {
+		id: "codex",
+		stderrLabel: "codex-acp stderr",
+		resolveLaunch: resolveCodexAcpLaunch,
+		buildSessionMeta: () => undefined,
+	},
+};
+
+export function resolveAcpBackendAdapter(backend: AcpBackend): AcpBackendAdapter {
+	return ACP_BACKEND_ADAPTERS[backend];
+}
+
+export function resolveAcpBackendLaunch(backend: AcpBackend): AcpLaunchSpec {
+	return resolveAcpBackendAdapter(backend).resolveLaunch();
+}
+
+export function buildSessionMetaForBackend(
+	backend: AcpBackend,
+	params: BackendSessionMetaParams,
+	normalizedSystemPrompt: string | undefined,
+): Record<string, any> | undefined {
+	return resolveAcpBackendAdapter(backend).buildSessionMeta(params, normalizedSystemPrompt);
 }
 
 function hasPrefix<T>(prefix: T[], value: T[]): boolean {
@@ -559,12 +658,13 @@ function detectSessionCapabilities(initializeResult: InitializeResponse): Bridge
 }
 
 function isSessionCompatible(
-	session: Pick<AcpBridgeSession, "cwd" | "systemPromptAppend" | "bridgeConfigSignature" | "contextMessageSignatures">,
+	session: Pick<AcpBridgeSession, "cwd" | "backend" | "systemPromptAppend" | "bridgeConfigSignature" | "contextMessageSignatures">,
 	params: EnsureBridgeSessionParams,
 	normalizedSystemPrompt: string | undefined,
 ): boolean {
 	return (
 		session.cwd === params.cwd &&
+		session.backend === params.backend &&
 		session.systemPromptAppend === normalizedSystemPrompt &&
 		session.bridgeConfigSignature === params.bridgeConfigSignature &&
 		hasPrefix(session.contextMessageSignatures, params.contextMessageSignatures)
@@ -584,33 +684,27 @@ function isPersistedSessionCompatible(
 	);
 }
 
-function buildSessionMeta(params: EnsureBridgeSessionParams, normalizedSystemPrompt: string | undefined): Record<string, any> {
-	const claudeCodeOptions: Record<string, any> = {
-		...(params.modelId ? { model: params.modelId } : {}),
-		tools: { type: "preset", preset: "claude_code" },
-		settingSources: [...params.settingSources],
-	};
-	if (params.strictMcpConfig) {
-		claudeCodeOptions.extraArgs = {
-			...(claudeCodeOptions.extraArgs ?? {}),
-			"strict-mcp-config": null,
-		};
-	}
-
-	const meta: Record<string, any> = {
-		claudeCode: {
-			options: claudeCodeOptions,
-		},
-	};
-	if (normalizedSystemPrompt) {
-		meta.systemPrompt = { append: normalizedSystemPrompt };
-	}
-	return meta;
+function buildSessionMeta(params: EnsureBridgeSessionParams, normalizedSystemPrompt: string | undefined): Record<string, any> | undefined {
+	return buildSessionMetaForBackend(params.backend, params, normalizedSystemPrompt);
 }
 
 function resolveModelIdFromSessionResponse(response: any, fallback?: string): string | undefined {
 	const currentModelId = response?.models?.currentModelId;
 	return typeof currentModelId === "string" && currentModelId.length > 0 ? currentModelId : fallback;
+}
+
+async function enforceRequestedSessionModel(
+	session: AcpBridgeSession,
+	requestedModelId: string | undefined,
+): Promise<void> {
+	if (!requestedModelId) return;
+	const setModel = (session.connection as any).unstable_setSessionModel;
+	if (typeof setModel !== "function") return;
+	await setModel.call(session.connection, {
+		sessionId: session.acpSessionId,
+		modelId: requestedModelId,
+	});
+	session.modelId = requestedModelId;
 }
 
 function killProcessTree(child: ChildProcessByStdio<any, any, any>): void {
@@ -661,7 +755,8 @@ async function destroyBridgeSession(
 }
 
 async function createBridgeProcess(params: EnsureBridgeSessionParams): Promise<AcpBridgeSession> {
-	const launch = resolveClaudeAcpLaunch();
+	const adapter = resolveAcpBackendAdapter(params.backend);
+	const launch = adapter.resolveLaunch();
 	const child = spawn(launch.command, launch.args, {
 		cwd: params.cwd,
 		env: process.env,
@@ -708,6 +803,9 @@ async function createBridgeProcess(params: EnsureBridgeSessionParams): Promise<A
 	session = {
 		key: params.sessionKey,
 		cwd: params.cwd,
+		backend: params.backend,
+		launchSource: launch.source,
+		stderrLabel: adapter.stderrLabel,
 		child,
 		connection,
 		initializeResult: undefined as any,
@@ -726,6 +824,7 @@ async function createBridgeProcess(params: EnsureBridgeSessionParams): Promise<A
 		contextMessageSignatures: [...params.contextMessageSignatures],
 		stderrTail,
 		closed: false,
+		bootstrapPath: "new",
 	};
 
 	child.once("exit", () => {
@@ -757,16 +856,19 @@ async function createBridgeProcess(params: EnsureBridgeSessionParams): Promise<A
 async function startNewBridgeSession(params: EnsureBridgeSessionParams): Promise<AcpBridgeSession> {
 	const session = await createBridgeProcess(params);
 	try {
+		const meta = buildSessionMeta(params, session.systemPromptAppend);
 		const created = await session.connection.newSession({
 			cwd: params.cwd,
 			mcpServers: [...params.mcpServers],
-			_meta: buildSessionMeta(params, session.systemPromptAppend),
+			...(meta ? { _meta: meta } : {}),
 		});
 		if (!created?.sessionId) {
-			throw new Error(`ACP newSession returned no sessionId (${resolveClaudeAcpLaunch().source})`);
+			throw new Error(`ACP newSession returned no sessionId (${session.launchSource})`);
 		}
 		session.acpSessionId = created.sessionId;
 		session.modelId = resolveModelIdFromSessionResponse(created, params.modelId);
+		session.bootstrapPath = "new";
+		await enforceRequestedSessionModel(session, params.modelId);
 		bridgeSessions.set(params.sessionKey, session);
 		persistBridgeSessionRecord(session);
 		return session;
@@ -793,10 +895,13 @@ async function bootstrapPersistedBridgeSession(
 					sessionId: record.acpSessionId,
 					cwd: params.cwd,
 					mcpServers: [...params.mcpServers],
-					_meta: meta,
+					...(meta ? { _meta: meta } : {}),
 				});
 				session.acpSessionId = record.acpSessionId;
 				session.modelId = resolveModelIdFromSessionResponse(resumed, params.modelId);
+				session.bootstrapPath = "resume";
+				session.persistedAcpSessionId = record.acpSessionId;
+				await enforceRequestedSessionModel(session, params.modelId);
 				bridgeSessions.set(params.sessionKey, session);
 				persistBridgeSessionRecord(session);
 				return session;
@@ -811,10 +916,13 @@ async function bootstrapPersistedBridgeSession(
 					sessionId: record.acpSessionId,
 					cwd: params.cwd,
 					mcpServers: [...params.mcpServers],
-					_meta: meta,
+					...(meta ? { _meta: meta } : {}),
 				});
 				session.acpSessionId = record.acpSessionId;
 				session.modelId = resolveModelIdFromSessionResponse(loaded, params.modelId);
+				session.bootstrapPath = "load";
+				session.persistedAcpSessionId = record.acpSessionId;
+				await enforceRequestedSessionModel(session, params.modelId);
 				bridgeSessions.set(params.sessionKey, session);
 				persistBridgeSessionRecord(session);
 				return session;
@@ -830,13 +938,16 @@ async function bootstrapPersistedBridgeSession(
 		const created = await session.connection.newSession({
 			cwd: params.cwd,
 			mcpServers: [...params.mcpServers],
-			_meta: meta,
+			...(meta ? { _meta: meta } : {}),
 		});
 		if (!created?.sessionId) {
-			throw new Error(`ACP newSession returned no sessionId (${resolveClaudeAcpLaunch().source})`);
+			throw new Error(`ACP newSession returned no sessionId (${session.launchSource})`);
 		}
 		session.acpSessionId = created.sessionId;
 		session.modelId = resolveModelIdFromSessionResponse(created, params.modelId);
+		session.bootstrapPath = "new";
+		session.persistedAcpSessionId = shouldInvalidatePersisted ? record.acpSessionId : undefined;
+		await enforceRequestedSessionModel(session, params.modelId);
 		bridgeSessions.set(params.sessionKey, session);
 		persistBridgeSessionRecord(session);
 		return session;
@@ -877,6 +988,7 @@ export async function ensureBridgeSession(params: EnsureBridgeSessionParams): Pr
 		existing.strictMcpConfig = params.strictMcpConfig;
 		existing.bridgeConfigSignature = params.bridgeConfigSignature;
 		existing.contextMessageSignatures = [...params.contextMessageSignatures];
+		existing.bootstrapPath = "reuse";
 		persistBridgeSessionRecord(existing);
 		return existing;
 	}
@@ -945,8 +1057,28 @@ export async function cleanupBridgeSessionProcess(sessionKey: string): Promise<v
 	});
 }
 
+export function describeBridgeSession(session: AcpBridgeSession): Record<string, unknown> {
+	return {
+		sessionKey: session.key,
+		cwd: session.cwd,
+		bootstrapPath: session.bootstrapPath,
+		acpSessionId: session.acpSessionId,
+		persistedAcpSessionId: session.persistedAcpSessionId,
+		backend: session.backend,
+		launchSource: session.launchSource,
+		modelId: session.modelId,
+		capabilities: {
+			resumeSession: session.capabilities.resumeSession,
+			loadSession: session.capabilities.loadSession,
+			closeSession: session.capabilities.closeSession,
+		},
+	};
+}
+
 export function getBridgeErrorDetails(error: unknown, session?: AcpBridgeSession): string {
 	const message = error instanceof Error ? error.message : String(error);
+	const diagnostic = session ? `\n\n[pi-shell-acp session]\n${JSON.stringify(describeBridgeSession(session), null, 2)}` : "";
 	const stderrTail = session?.stderrTail?.slice(-20)?.join("\n");
-	return stderrTail ? `${message}\n\n[claude-agent-acp stderr]\n${stderrTail}` : message;
+	const stderrBlock = stderrTail ? `\n\n[${session?.stderrLabel ?? "acp stderr"}]\n${stderrTail}` : "";
+	return `${message}${diagnostic}${stderrBlock}`;
 }

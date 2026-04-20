@@ -4,13 +4,15 @@
 
 `pi-shell-acp` is the **ACP bridge provider for pi**.
 
-It should let pi talk to Claude Code through `claude-agent-acp` while keeping the bridge **thin, observable, and restart-safe**.
+It should let pi talk to ACP backends such as Claude Code (`claude-agent-acp`) and codex (`codex-acp`) while keeping the bridge **thin, observable, and restart-safe**.
 
 Current public value:
 - `pi-shell-acp/...` provider/model surface
+- backend selection via `piShellAcpProvider.backend` or model-based inference
 - cross-process ACP session continuity for `pi:<sessionId>`
-- Claude Code identity preserved (`~/.claude`, native skills, Claude Code settings via ACP `settingSources`)
-- explicit pi-facing MCP injection into each ACP session via `piShellAcpProvider.mcpServers` — no ambient `~/.mcp.json` scanning, no generic MCP manager behavior
+- Claude Code identity preserved (`~/.claude`, native skills, Claude Code settings via ACP `settingSources`) when using the Claude backend
+- Codex identity preserved (`~/.codex`, Codex-native session/model UX) when using the codex backend
+- explicit pi-facing MCP injection into each ACP session via `piShellAcpProvider.mcpServers` — no ambient backend config scanning, no generic MCP manager behavior
 
 ---
 
@@ -23,16 +25,18 @@ This repo owns only the narrow bridge layer:
 - prompt forwarding
 - ACP event -> pi event mapping
 - explicit pi-facing MCP injection (from `piShellAcpProvider.mcpServers` settings only) into every `newSession` / `resumeSession` / `loadSession` request
+- minimal backend adapter selection for ACP launch + backend-specific session metadata
 - bridge-local cleanup, invalidation, diagnostics
 
 This repo does **not** own:
 - pi session UX conventions
 - prompt reconstruction from full pi history
+- hydration of backend transcript stores back into pi-local history
 - tool ledgers / recovery ledgers
-- Claude Code emulation
+- Claude Code / Codex emulation
 - broad multi-agent orchestration
-- generic MCP discovery / ambient MCP manager behavior (no `~/.mcp.json` scanning, no merging of arbitrary Claude-side configs)
-- promotion of pi extension tools to Claude — build a separate MCP adapter for that and register it via `piShellAcpProvider.mcpServers`
+- generic MCP discovery / ambient MCP manager behavior (no `~/.mcp.json` scanning, no merging of arbitrary backend-side configs)
+- promotion of pi extension tools to Claude/Codex — build a separate MCP adapter for that and register it via `piShellAcpProvider.mcpServers`
 
 If a change makes this repo feel like a second harness, it is probably wrong.
 
@@ -55,13 +59,14 @@ If a change makes this repo feel like a second harness, it is probably wrong.
 
 4. **Keep the bridge thin**
    - no full-history prompt rebuild
+   - no backend transcript ingestion just to reconstruct pi history
    - no tool result ledger
-   - no custom Claude behavior emulation
-   - no automatic `~/.mcp.json` or ambient MCP discovery — only what `piShellAcpProvider.mcpServers` lists
+   - no custom backend behavior emulation
+   - no automatic ambient MCP discovery — only what `piShellAcpProvider.mcpServers` lists
 
-5. **MCP signature in session compatibility**
-   - only the SHA-256 hash of the canonical `mcpServers` shape participates in `bridgeConfigSignature` — no raw canonical JSON is persisted
-   - changing the MCP list invalidates the persisted session instead of silently reusing a stale one
+5. **MCP/backend signature in session compatibility**
+   - only the selected backend and the SHA-256 hash of the canonical `mcpServers` shape participate in `bridgeConfigSignature` — no raw canonical JSON is persisted
+   - changing the backend or MCP list invalidates the persisted session instead of silently reusing a stale one
    - invalid `mcpServers` input is rejected by `normalizeMcpServers()` with an aggregated `McpServerConfigError` (never silent skip)
 
 6. **Shutdown semantics**
@@ -70,6 +75,57 @@ If a change makes this repo feel like a second harness, it is probably wrong.
 
 7. **Fast failure is better than silent compatibility**
    - wrong names / wrong settings should fail early
+
+---
+
+## External Runtime Dependencies
+
+These are **not** in `node_modules`. They must be installed globally before setup.
+
+### claude-agent-acp (runtime bridge binary)
+
+The actual ACP subprocess that pi-shell-acp spawns is resolved from `PATH` — not from local `node_modules`.
+
+**Pinned version: `0.29.2`**
+
+```bash
+pnpm add -g @agentclientprotocol/claude-agent-acp@0.29.2
+```
+
+Verify:
+```bash
+which claude-agent-acp
+claude-agent-acp --version 2>/dev/null || true
+pnpm list -g --depth=0 | grep claude-agent-acp
+```
+
+### Claude Code CLI
+
+The CLI itself is managed separately (via npm, pnpm, or NixOS). `claude --resume` in the terminal may not list `sdk-ts` entrypoint sessions — this is a known CLI UI limitation, not a bridge bug.
+
+**Recommended**: keep CLI version ≥ `2.1.96`. Auto-updates should be disabled in `~/.claude/settings.json`:
+```json
+{ "autoUpdates": false }
+```
+
+### codex-acp
+
+The codex backend runtime is also resolved from `PATH` unless `CODEX_ACP_COMMAND` overrides it.
+
+Verify:
+```bash
+which codex-acp
+codex-acp --help >/dev/null 2>&1 || true
+```
+
+### Why two ACP references exist
+
+| Reference | Version | Purpose |
+|-----------|---------|---------|
+| pnpm global `claude-agent-acp` | `0.29.2` | Runtime bridge binary (spawned by pi) |
+| local `node_modules/@agentclientprotocol/claude-agent-acp` | `0.29.2` | SDK import for `check-claude-sessions` diagnostics |
+
+Both must be the **same version** to avoid confusion. `npm install` keeps local in sync; pnpm global must be updated manually.
 
 ---
 
@@ -118,6 +174,7 @@ Use them as semantic references for:
 - capability detection
 - `resume > load > new`
 - session bootstrap discipline
+- why agent-shell can feel smoother on resume UX even when pi intentionally does not hydrate backend transcripts
 
 Do not import their UI/transcript/session-browser machinery unless there is a very strong reason.
 
@@ -129,7 +186,9 @@ Run these after meaningful changes:
 
 ```bash
 npm run typecheck
+npm run check-registration
 npm run check-mcp     # pure logic gate, no Claude/ACP subprocess
+npm run check-claude-sessions -- /home/junghan/repos/gh/agent-config
 ./run.sh smoke /home/junghan/repos/gh/agent-config
 ```
 
@@ -145,6 +204,8 @@ pi --session "$SESSION_FILE" --provider pi-shell-acp --model claude-3-5-haiku-la
 Expected: second process returns `test-token-123`.
 
 For fallback boundary, ensure `cwd:` sessions do not create persisted cache records.
+
+Known current limitation: when a backend session is continued outside pi (for example in agent-shell), pi may later re-attach to the same remote session successfully but will not replay those external turns into pi-local transcript/history. Treat this as a deliberate thin-bridge boundary unless we find a strictly minimal ACP-native improvement.
 
 ---
 
