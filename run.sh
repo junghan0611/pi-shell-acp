@@ -10,20 +10,24 @@ PROVIDER_ID="pi-shell-acp"
 usage() {
   cat <<'EOF'
 Usage:
-  ./run.sh setup [project-dir]   # npm install + sync auth alias + install this local package into project .pi/settings.json
-  ./run.sh smoke [project-dir]   # smoke test provider/model loading and a simple prompt
-  ./run.sh check-mcp             # local deterministic check of normalizeMcpServers() — no Claude/ACP subprocess
-  ./run.sh check-backends        # local deterministic check of backend launch resolution + backend-specific _meta shape
-  ./run.sh check-registration    # local deterministic check of per-runtime provider registration semantics
+  ./run.sh setup [project-dir]        # npm install + sync auth alias + install package + smoke-all (Claude + Codex)
+  ./run.sh smoke [project-dir]        # Claude runtime smoke (backward-compatible default)
+  ./run.sh smoke-claude [project-dir] # explicit Claude runtime smoke
+  ./run.sh smoke-codex [project-dir]  # explicit Codex runtime smoke
+  ./run.sh smoke-all [project-dir]    # required dual-backend runtime smoke gate
+  ./run.sh check-mcp                  # local deterministic check of normalizeMcpServers() — no Claude/ACP subprocess
+  ./run.sh check-backends             # local deterministic check of backend launch resolution + backend-specific _meta shape
+  ./run.sh check-registration         # local deterministic check of per-runtime provider registration semantics
   ./run.sh check-claude-sessions [project-dir]  # compare pi persisted sessions vs Claude SDK session visibility
   ./run.sh verify-resume [project-dir] # exact pi -> ACP -> Claude continuity check with visible acpSessionId diagnostics
-  ./run.sh sync-auth             # copy ~/.pi/agent/auth.json anthropic OAuth credentials to pi-shell-acp alias
-  ./run.sh install [project-dir] # install this local package into project .pi/settings.json
-  ./run.sh remove [project-dir]  # remove pi-shell-acp entries from project .pi/settings.json
+  ./run.sh sync-auth                  # copy ~/.pi/agent/auth.json anthropic OAuth credentials to pi-shell-acp alias
+  ./run.sh install [project-dir]      # install this local package into project .pi/settings.json
+  ./run.sh remove [project-dir]       # remove pi-shell-acp entries from project .pi/settings.json
 
 Notes:
   - project-dir defaults to current directory
   - Claude Code login should already exist (e.g. ~/.claude.json)
+  - smoke-all is the operator-facing dual-backend verification path and is what setup runs
   - API key is optional; this bridge is intended to work with Claude Code auth
 EOF
 }
@@ -156,34 +160,67 @@ PY
 }
 
 smoke_test() {
-  local project_dir model
+  local project_dir backend model model_id session_key
   project_dir=$(normalize_project_dir "$1")
-  model=${PI_SHELL_ACP_MODEL:-pi-shell-acp/claude-sonnet-4-6}
+  backend=${2:-${PI_SHELL_ACP_BACKEND:-claude}}
+  model=${3:-${PI_SHELL_ACP_MODEL:-}}
+
+  if [[ -z "$model" ]]; then
+    case "$backend" in
+      claude)
+        model="pi-shell-acp/claude-sonnet-4-6"
+        ;;
+      codex)
+        model="pi-shell-acp/gpt-5.4"
+        ;;
+      *)
+        echo "[smoke] unknown backend: $backend" >&2
+        exit 1
+        ;;
+    esac
+  fi
+
+  model_id=${PI_SHELL_ACP_MODEL_ID:-$model}
+  if [[ "$model_id" == "$PROVIDER_ID/"* ]]; then
+    model_id=${model_id#${PROVIDER_ID}/}
+  fi
+  session_key="run-sh-smoke:${backend}:${model_id}"
 
   require_cmd pi
 
-  echo "[smoke] project: $project_dir"
-  echo "[smoke] repo:    $REPO_DIR"
-  echo "[smoke] model:   $model"
+  echo "[smoke] project:     $project_dir"
+  echo "[smoke] repo:        $REPO_DIR"
+  echo "[smoke] backend:     $backend"
+  echo "[smoke] model:       $model"
+  echo "[smoke] model-id:    $model_id"
+  echo "[smoke] session-key: $session_key"
 
   (cd "$project_dir" && pi -e "$REPO_DIR" --list-models pi-shell-acp >/dev/null)
   echo "[smoke] provider models: ok"
 
-  (cd "$REPO_DIR" && node --input-type=module <<'EOF'
+  (
+    cd "$REPO_DIR"
+    PI_SHELL_ACP_SMOKE_BACKEND="$backend" PI_SHELL_ACP_MODEL_ID="$model_id" PI_SHELL_ACP_SMOKE_SESSION_KEY="$session_key" node --input-type=module <<'EOF'
 import { ensureBridgeSession, sendPrompt, setActivePromptHandler, closeBridgeSession, normalizeMcpServers } from './acp-bridge.ts';
 
-const sessionKey = 'run-sh-smoke';
+const sessionKey = process.env.PI_SHELL_ACP_SMOKE_SESSION_KEY || 'run-sh-smoke';
+const backend = process.env.PI_SHELL_ACP_SMOKE_BACKEND;
+const modelId = process.env.PI_SHELL_ACP_MODEL_ID || 'claude-sonnet-4-6';
+if (!backend) {
+  throw new Error('PI_SHELL_ACP_SMOKE_BACKEND is required for direct ensureBridgeSession smoke.');
+}
 const emptyMcpHash = normalizeMcpServers(undefined).hash;
 const session = await ensureBridgeSession({
   sessionKey,
   cwd: process.cwd(),
-  modelId: process.env.PI_SHELL_ACP_MODEL_ID || 'claude-sonnet-4-6',
+  backend,
+  modelId,
   systemPromptAppend: '간단히 답하세요.',
   settingSources: ['user'],
   strictMcpConfig: false,
   mcpServers: [],
-  bridgeConfigSignature: JSON.stringify({ appendSystemPrompt: false, settingSources: ['user'], strictMcpConfig: false, mcpServersHash: emptyMcpHash }),
-  contextMessageSignatures: ['smoke:user:ok만 답하세요.'],
+  bridgeConfigSignature: JSON.stringify({ backend, appendSystemPrompt: false, settingSources: ['user'], strictMcpConfig: false, mcpServersHash: emptyMcpHash }),
+  contextMessageSignatures: [`smoke:${backend}:user:ok만 답하세요.`],
 });
 
 let text = '';
@@ -205,10 +242,20 @@ if (result.stopReason !== 'end_turn') {
 if (!text.trim()) {
   throw new Error('empty bridge response');
 }
-console.log(`[smoke] bridge response: ${text.trim()}`);
+console.log(`[smoke] bridge response (${backend}/${modelId}): ${text.trim()}`);
 EOF
   )
   echo "[smoke] bridge prompt: ok"
+}
+
+smoke_all() {
+  local project_dir
+  project_dir=$(normalize_project_dir "$1")
+
+  echo "[smoke-all] required dual-backend runtime verification starting"
+  smoke_test "$project_dir" claude
+  smoke_test "$project_dir" codex
+  echo "[smoke-all] Claude + Codex runtime smokes: ok"
 }
 
 check_mcp() {
@@ -384,7 +431,10 @@ try {
   }, 'system prompt');
   assert.equal(codexMeta, undefined);
 
-  console.log('[check-backends] 10 assertions ok');
+  assert.throws(() => resolveAcpBackendLaunch(undefined), /ACP backend is required\./);
+  assert.throws(() => resolveAcpBackendLaunch('bogus'), /Unknown ACP backend: bogus\./);
+
+  console.log('[check-backends] 12 assertions ok');
 } finally {
   if (prevClaude === undefined) delete process.env.CLAUDE_AGENT_ACP_COMMAND;
   else process.env.CLAUDE_AGENT_ACP_COMMAND = prevClaude;
@@ -579,6 +629,7 @@ setup_all() {
 
   echo "[setup] repo:    $REPO_DIR"
   echo "[setup] project: $project_dir"
+  echo "[setup] verification: smoke-all (Claude + Codex)"
 
   (cd "$REPO_DIR" && npm install)
   check_global_claude_acp
@@ -592,7 +643,7 @@ setup_all() {
     echo "[setup] warning: ~/.claude.json not found. Run 'npx @anthropic-ai/claude-code' first if needed." >&2
   fi
 
-  smoke_test "$project_dir"
+  smoke_all "$project_dir"
 }
 
 cmd=${1:-}
@@ -601,7 +652,16 @@ case "$cmd" in
     setup_all "$TARGET_PROJECT_DIR"
     ;;
   smoke)
-    smoke_test "$TARGET_PROJECT_DIR"
+    smoke_test "$TARGET_PROJECT_DIR" claude
+    ;;
+  smoke-claude)
+    smoke_test "$TARGET_PROJECT_DIR" claude
+    ;;
+  smoke-codex)
+    smoke_test "$TARGET_PROJECT_DIR" codex
+    ;;
+  smoke-all)
+    smoke_all "$TARGET_PROJECT_DIR"
     ;;
   check-mcp)
     check_mcp

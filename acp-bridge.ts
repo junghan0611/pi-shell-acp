@@ -525,7 +525,14 @@ const ACP_BACKEND_ADAPTERS: Record<AcpBackend, AcpBackendAdapter> = {
 };
 
 export function resolveAcpBackendAdapter(backend: AcpBackend): AcpBackendAdapter {
-	return ACP_BACKEND_ADAPTERS[backend];
+	if (backend == null) {
+		throw new Error("ACP backend is required.");
+	}
+	const adapter = ACP_BACKEND_ADAPTERS[backend];
+	if (!adapter) {
+		throw new Error(`Unknown ACP backend: ${String(backend)}. Expected one of: claude, codex`);
+	}
+	return adapter;
 }
 
 export function resolveAcpBackendLaunch(backend: AcpBackend): AcpLaunchSpec {

@@ -76,6 +76,16 @@ If a change makes this repo feel like a second harness, it is probably wrong.
 7. **Fast failure is better than silent compatibility**
    - wrong names / wrong settings should fail early
 
+8. **Dual-backend claims require dual-backend runtime verification**
+   - if this repo publicly claims support for both Claude and Codex, operator-facing verification must exercise both backends at runtime, not just deterministic adapter checks
+   - a single-backend smoke is insufficient evidence for dual-backend readiness
+   - do not wait for the user to request symmetry explicitly; infer it from the public claim and add the verification yourself
+
+9. **Operator entrypoints are product surface**
+   - `run.sh setup` and `run.sh smoke` are not helper scraps; regressions there are release blockers
+   - if setup depends on smoke, smoke regressions are setup regressions
+   - any change to bridge bootstrap/backend selection must be checked against the operator entrypoints, not only unit-style checks
+
 ---
 
 ## External Runtime Dependencies
@@ -197,9 +207,32 @@ Run these after meaningful changes:
 npm run typecheck
 npm run check-registration
 npm run check-mcp     # pure logic gate, no Claude/ACP subprocess
+npm run check-backends
 npm run check-claude-sessions -- /home/junghan/repos/gh/agent-config
 ./run.sh smoke /home/junghan/repos/gh/agent-config
 ```
+
+### Exit Criteria — backend-related changes
+
+For any change that touches backend selection, launch resolution, session bootstrap, smoke/setup scripts, or public dual-backend claims, the work is **not done** until all of the following are satisfied:
+
+1. deterministic checks pass
+   - `npm run typecheck`
+   - `npm run check-registration`
+   - `npm run check-mcp`
+   - `npm run check-backends`
+2. operator-facing runtime smoke passes for **Claude**
+   - `./run.sh smoke /home/junghan/repos/gh/agent-config`
+3. operator-facing runtime smoke passes for **Codex**
+   - either a dedicated `./run.sh smoke-codex ...` / `./run.sh smoke-all ...`
+   - or an equivalent explicit Codex smoke path with the exact command recorded in the result
+4. `setup` must not be left behind
+   - if `setup` calls smoke internally, the smoke path it depends on must also be verified
+5. docs must match reality
+   - README operator commands
+   - AGENTS.md invariants / pinned runtime versions / known limitations
+
+If one backend is only covered by deterministic checks but not runtime smoke, do **not** present the repo as fully verified dual-backend support.
 
 For cross-process continuity, verify with the same pi session file:
 

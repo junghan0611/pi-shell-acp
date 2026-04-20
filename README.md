@@ -93,7 +93,7 @@ This is a deliberate architectural choice: `pi-shell-acp` persists only enough t
 - `index.ts` — provider registration, settings load, shutdown hook
 - `acp-bridge.ts` — ACP lifecycle, cache, capability detection, `resume > load > new`
 - `event-mapper.ts` — ACP updates -> pi events
-- `run.sh` — install / smoke helper
+- `run.sh` — install / operator-facing verification helper (`smoke`, `smoke-codex`, `smoke-all`)
 - `bench.sh` — benchmark helper
 
 ## Reference Implementations and Upstream Projects
@@ -136,7 +136,9 @@ npm run check-registration                               # deterministic per-run
 npm run check-mcp                                        # deterministic MCP validation gate (no Claude/ACP subprocess)
 npm run check-backends                                   # deterministic backend launch/meta gate (no ACP subprocess)
 npm run check-claude-sessions -- /home/junghan/repos/gh/agent-config  # verify pi persisted sessions are visible to Claude SDK
-./run.sh smoke /home/junghan/repos/gh/agent-config
+./run.sh smoke /home/junghan/repos/gh/agent-config       # Claude runtime smoke (backward-compatible default)
+./run.sh smoke-codex /home/junghan/repos/gh/agent-config # Codex runtime smoke
+./run.sh smoke-all /home/junghan/repos/gh/agent-config   # required dual-backend runtime smoke gate
 ./run.sh verify-resume /home/junghan/repos/gh/agent-config             # exact pi -> ACP -> Claude continuity check with acpSessionId diagnostics
 ```
 
@@ -218,6 +220,8 @@ cd ~/repos/gh/agent-config
 ./run.sh setup
 ```
 
+`setup` now runs the explicit dual-backend operator smoke gate (`smoke-all`) after install/sync, so a setup result is no longer Claude-only by accident.
+
 ### Codex backend notes
 
 `backend: "codex"` is intentionally minimal in this slice:
@@ -234,7 +238,10 @@ Install / verify:
 pnpm add -g @zed-industries/codex-acp@0.11.1
 which codex-acp
 pnpm list -g --depth=0 | grep codex-acp
+./run.sh smoke-codex /home/junghan/repos/gh/agent-config
 ```
+
+The first-class Codex smoke defaults to `gpt-5.4`, which is a more reliable operator-facing runtime check than `codex-mini-latest` on ChatGPT-backed Codex accounts.
 
 ### Known limitation: reverse-direction transcript visibility
 
@@ -303,6 +310,19 @@ For a first codex path check from pi configuration, switch the settings block to
 ```
 
 and make sure `codex-acp` is resolvable, or set `CODEX_ACP_COMMAND='...'` explicitly.
+
+## Operator-facing smoke commands
+
+Use first-class command paths instead of hidden env overrides:
+
+```bash
+./run.sh smoke /home/junghan/repos/gh/agent-config        # Claude runtime smoke (kept for backward compatibility)
+./run.sh smoke-claude /home/junghan/repos/gh/agent-config # explicit Claude runtime smoke
+./run.sh smoke-codex /home/junghan/repos/gh/agent-config  # explicit Codex runtime smoke (default model: gpt-5.4)
+./run.sh smoke-all /home/junghan/repos/gh/agent-config    # required dual-backend runtime verification
+```
+
+`smoke-all` is the review/setup quality gate for a repo that publicly claims Claude + Codex support.
 
 ## Status
 

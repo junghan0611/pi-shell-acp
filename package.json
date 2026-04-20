@@ -23,6 +23,9 @@
   "scripts": {
     "setup": "./run.sh setup",
     "smoke": "./run.sh smoke",
+    "smoke-claude": "./run.sh smoke-claude",
+    "smoke-codex": "./run.sh smoke-codex",
+    "smoke-all": "./run.sh smoke-all",
     "check-mcp": "./run.sh check-mcp",
     "check-backends": "./run.sh check-backends",
     "check-registration": "./run.sh check-registration",
