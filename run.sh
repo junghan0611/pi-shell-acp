@@ -1,4 +1,16 @@
 #!/usr/bin/env bash
+#
+# Model id convention (see AGENTS.md Hard Rule #1):
+#   - User-facing examples use the qualified form `pi-shell-acp/<backend-model>`
+#     (e.g. `pi-shell-acp/claude-sonnet-4-6`); the prefix routes to this provider
+#     so `--provider` is redundant and is dropped in docs.
+#   - Smoke helpers that feed `ensureBridgeSession({modelId})` directly (cancel,
+#     model-switch) pass BARE backend ids (`claude-sonnet-4-6`, `gpt-5.4`)
+#     because the bridge library contract is bare. Smoke helpers that invoke pi
+#     via the CLI still pin `--provider pi-shell-acp` and can accept either
+#     bare or qualified model, but we keep bare here to match the bridge-level
+#     dispatch tables.
+#
 set -euo pipefail
 
 REPO_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
@@ -826,13 +838,15 @@ smoke_delegate_resume() {
   echo "[smoke-delegate-resume] repo:    $REPO_DIR"
   echo "[smoke-delegate-resume] scope:"
   echo "  - Claude: real delegate-style e2e (same spawn shape pi-extensions/delegate.ts uses)"
-  echo "  - Codex:  shape-equivalent continuity only (current delegate orchestration does not route Codex through pi-shell-acp;"
-  echo "            true Codex delegate orchestration parity pending agent-config/delegate-core follow-up)"
+  echo "  - Codex:  shape-equivalent continuity (bare gpt-5.4 via pinned --provider pi-shell-acp);"
+  echo "            real opt-in e2e is exercised in agent-config delegate-core with"
+  echo "            PI_DELEGATE_ACP_FOR_CODEX=1 + openai-codex/gpt-5.4 (normalization happens there,"
+  echo "            not here — this smoke stays on the bridge-level bare-model path)"
 
   smoke_delegate_resume_single "$project_dir" claude claude-sonnet-4-6 resume "real delegate-style e2e"
-  smoke_delegate_resume_single "$project_dir" codex  gpt-5.4           load   "shape-equivalent continuity"
+  smoke_delegate_resume_single "$project_dir" codex  gpt-5.4           load   "shape-equivalent (bridge-level bare)"
 
-  echo "[smoke-delegate-resume] Claude(real e2e) + Codex(shape-equivalent) continuity: ok"
+  echo "[smoke-delegate-resume] Claude(real e2e) + Codex(bridge-level bare): ok"
 }
 
 check_mcp() {

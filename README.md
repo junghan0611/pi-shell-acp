@@ -147,7 +147,7 @@ npm run check-claude-sessions -- /home/junghan/repos/gh/agent-config  # verify p
 ```bash
 cd ~/repos/gh/agent-config
 pi --list-models pi-shell-acp
-pi --provider pi-shell-acp --model claude-3-5-haiku-latest -p 'ok만 답하세요'
+pi --model pi-shell-acp/claude-sonnet-4-6 -p 'ok만 답하세요'
 ```
 
 ## agent-config Integration
@@ -274,8 +274,8 @@ The long-term direction is backend-agnostic capability parity: if pi exposes MCP
 ```bash
 cd ~/repos/gh/agent-config
 SESSION_FILE=$(mktemp /tmp/pi-shell-acp-XXXXXX.jsonl)
-pi --session "$SESSION_FILE" --provider pi-shell-acp --model claude-3-5-haiku-latest -p 'Remember this exact secret token for later: test-token-123. Reply only READY.'
-pi --session "$SESSION_FILE" --provider pi-shell-acp --model claude-3-5-haiku-latest -p 'What was the secret token? Reply with the token only.'
+pi --session "$SESSION_FILE" --model pi-shell-acp/claude-sonnet-4-6 -p 'Remember this exact secret token for later: test-token-123. Reply only READY.'
+pi --session "$SESSION_FILE" --model pi-shell-acp/claude-sonnet-4-6 -p 'What was the secret token? Reply with the token only.'
 ```
 
 Expected:
