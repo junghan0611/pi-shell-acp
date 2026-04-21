@@ -19,6 +19,8 @@ The goal is simple:
 - keep each ACP backend as itself
 - keep this repo as a **small bridge**, not a second harness
 
+> **Product boundary.** pi-shell-acp is the thin ACP bridge product. It guarantees backend continuity and explicit MCP injection. Delegate / resume / async orchestration belongs to the **consuming harness** (currently [agent-config](https://github.com/junghan0611/agent-config)), not to this bridge repo. `./run.sh setup` in this repo installs the bridge only; the consuming harness has its own setup that additionally builds the MCP adapter that promotes pi-side tools to ACP hosts.
+
 ## Current Guarantees
 
 - provider/model surface: `pi-shell-acp/...`

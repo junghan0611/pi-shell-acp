@@ -1210,6 +1210,16 @@ check_global_codex_acp() {
   fi
 }
 
+# setup_all — standalone bridge install only.
+#
+# This installs pi-shell-acp (the thin ACP bridge) into a target project and
+# verifies it end-to-end against both ACP backends. It deliberately does NOT:
+#   - build or install any consuming harness (e.g. agent-config)
+#   - build or wire agent-config/mcp/pi-tools-bridge
+#   - touch delegate orchestration / async registry / pi extensions
+#
+# If you want the full harness install (bridge + MCP adapter + wiring + full
+# validation), run `agent-config/run.sh setup` instead. See AGENTS.md §Boundary.
 setup_all() {
   local project_dir
   project_dir=$(normalize_project_dir "$1")
@@ -1220,6 +1230,7 @@ setup_all() {
 
   echo "[setup] repo:    $REPO_DIR"
   echo "[setup] project: $project_dir"
+  echo "[setup] scope:   standalone bridge install (consuming harness has its own setup)"
   echo "[setup] verification: smoke-all (Claude + Codex)"
 
   (cd "$REPO_DIR" && npm install)

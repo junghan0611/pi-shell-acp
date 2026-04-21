@@ -16,6 +16,33 @@ Current public value:
 
 ---
 
+## Boundary — Bridge vs Consuming Harness
+
+**Public thesis (English):**
+
+> pi-shell-acp is the thin ACP bridge product. It guarantees backend continuity and explicit MCP injection. Delegate/resume/async orchestration belongs to the consuming harness (currently agent-config), not to this bridge repo.
+
+**운영 원칙 (Korean):**
+
+> pi-shell-acp는 얇은 ACP 브리지다. delegate/resume/async 자체를 소유하지 않는다. 그 위의 MCP 표면과 orchestration은 소비 하네스(agent-config)의 책임이다.
+
+### What this repo is NOT
+
+- ❌ a delegate orchestration layer — `agent-config/pi-extensions/delegate.ts` is the source of truth for delegate / delegate_status / delegate_resume and async task lifecycle.
+- ❌ the owner of MCP Phase-2 tools (`delegate_status`, `delegate_resume`, `list_sessions`) — those belong to `agent-config/mcp/pi-tools-bridge`.
+- ❌ an async task registry or completion-notification system.
+- ❌ a pi extension semantic emulation layer.
+- ❌ a second harness. If a change makes this repo feel like a harness, it is probably wrong.
+
+### Install / setup boundary
+
+- `./run.sh setup` (this repo) — **standalone bridge install only**. Builds, wires, and smoke-tests `pi-shell-acp` against a target project. It does not install or build the consuming harness or its MCP adapter.
+- `agent-config/run.sh setup` (consuming harness) — full harness install: brings in `pi-shell-acp` as a dependency, then additionally builds `mcp/pi-tools-bridge`, wires `piShellAcpProvider.mcpServers`, and validates the full delegate orchestration surface.
+
+Version and release are tracked independently: the bridge evolves on its own cadence, and the consuming harness pins the bridge version it consumes.
+
+---
+
 ## Scope
 
 This repo owns only the narrow bridge layer:
