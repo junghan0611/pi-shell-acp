@@ -30,7 +30,7 @@ Usage:
   ./run.sh smoke-continuity [project-dir] # strict dual-backend persisted bootstrap gate (Claude=resume, Codex=load)
   ./run.sh smoke-cancel [project-dir] # strict cancel/abort cleanup observability gate (Claude + Codex)
   ./run.sh smoke-model-switch [project-dir] # strict dual-backend model switch observability gate (reuse 3 branches)
-  ./run.sh smoke-delegate-resume [project-dir] # delegate-style continuity gate (Claude=real e2e, Codex=shape-equivalent only)
+  ./run.sh smoke-delegate-resume [project-dir] # bridge-level delegate-style continuity gate (Claude=resume, Codex=load)
   ./run.sh check-mcp                  # local deterministic check of normalizeMcpServers() — no Claude/ACP subprocess
   ./run.sh check-backends             # local deterministic check of backend launch resolution + backend-specific _meta shape
   ./run.sh check-registration         # local deterministic check of per-runtime provider registration semantics
@@ -833,20 +833,18 @@ smoke_delegate_resume() {
 
   require_cmd pi
 
-  echo "[smoke-delegate-resume] strict dual-backend delegate-style continuity gate"
+  echo "[smoke-delegate-resume] bridge-level dual-backend continuity gate"
   echo "[smoke-delegate-resume] project: $project_dir"
   echo "[smoke-delegate-resume] repo:    $REPO_DIR"
-  echo "[smoke-delegate-resume] scope:"
-  echo "  - Claude: real delegate-style e2e (same spawn shape pi-extensions/delegate.ts uses)"
-  echo "  - Codex:  shape-equivalent continuity (bare gpt-5.4 via pinned --provider pi-shell-acp);"
-  echo "            real opt-in e2e is exercised in agent-config delegate-core with"
-  echo "            PI_DELEGATE_ACP_FOR_CODEX=1 + openai-codex/gpt-5.4 (normalization happens there,"
-  echo "            not here — this smoke stays on the bridge-level bare-model path)"
+  echo "[smoke-delegate-resume] scope:   bridge carries same-session turn1->turn2 via resume(Claude) / load(Codex)"
+  echo "                       — delegate spawn authority / target selection / parent×target matrix"
+  echo "                         all live in agent-config (delegate-targets.json registry + pi-tools-bridge),"
+  echo "                         not here. This smoke does not validate orchestration, only bridge carry."
 
-  smoke_delegate_resume_single "$project_dir" claude claude-sonnet-4-6 resume "real delegate-style e2e"
-  smoke_delegate_resume_single "$project_dir" codex  gpt-5.4           load   "shape-equivalent (bridge-level bare)"
+  smoke_delegate_resume_single "$project_dir" claude claude-sonnet-4-6 resume "bridge continuity (Claude → resumeSession)"
+  smoke_delegate_resume_single "$project_dir" codex  gpt-5.4           load   "bridge continuity (Codex → loadSession)"
 
-  echo "[smoke-delegate-resume] Claude(real e2e) + Codex(bridge-level bare): ok"
+  echo "[smoke-delegate-resume] Claude(resume) + Codex(load) bridge continuity: ok"
 }
 
 check_mcp() {

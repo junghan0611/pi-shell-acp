@@ -34,6 +34,17 @@ Current public value:
 - ❌ a pi extension semantic emulation layer.
 - ❌ a second harness. If a change makes this repo feel like a harness, it is probably wrong.
 
+### Spawn authority lives in the consuming harness
+
+Which (provider, model) a delegate call is allowed to spawn to — and which combinations auto-resolve from a bare model name — is owned by the **delegate target registry** in agent-config:
+
+- File: `agent-config/pi/delegate-targets.json`
+- Consumers: `agent-config/pi-extensions/lib/delegate-core.ts` (spawn path) and `agent-config/mcp/pi-tools-bridge/src/index.ts` (MCP surface).
+
+This bridge deliberately does **not** read that registry. Once pi hands us a `(provider=pi-shell-acp, model, session)` triple we carry it; the decision of whether that triple was allowed lives upstream.
+
+Historical note: there used to be a `PI_DELEGATE_ACP_FOR_CODEX=1` environment switch that controlled whether Codex delegates were routed through this bridge. That was a pre-registry heuristic. The registry is now the spawn authority; the env var is being retired in agent-config. If you see it referenced in older notes, treat it as legacy.
+
 ### Install / setup boundary
 
 - `./run.sh setup` (this repo) — **standalone bridge install only**. Builds, wires, and smoke-tests `pi-shell-acp` against a target project. It does not install or build the consuming harness or its MCP adapter.

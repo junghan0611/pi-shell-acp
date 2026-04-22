@@ -556,7 +556,7 @@ tail -n 40 "$SESSION_FILE"
 3. ~~model switch 시 `unstable_setSessionModel` 경로 vs 새 세션 fallback 경로를 명확히 관찰하는 것~~ — §12.3 참조
 4. ~~cancel/abort 시 bridge와 child process가 얼마나 깔끔하게 정리되는지 보는 것~~ — §12.4 참조
 5. 장시간 세션에서 tool notice / thinking / text block이 누적될 때 stream shape가 안정적인지 보는 것
-6. delegate-style continuity (partial, §12.5 참조) — Claude 는 real delegate-style e2e, Codex 는 shape-equivalent only. 진짜 Codex delegate orchestration parity 는 agent-config/delegate-core 쪽 follow-up 이 필요하다.
+6. delegate-style continuity (§12.5 참조) — Claude / Codex 양쪽 backend 에서 bridge 의 resume / load 경로가 delegate 와 동일한 spawn shape 에 대해 이어진다. delegate orchestration 자체 (어느 target 으로 spawn 할지, taskId / async completion / resume identity lock) 는 이 repo 의 범위 밖이다. spawn 결정권은 `agent-config/pi/delegate-targets.json` registry 에 있다.
 
 즉, 이 문서는 완료 선언 문서가 아니라 **다음 개선 포인트를 드러내는 운영 문서**다.
 
@@ -627,9 +627,11 @@ Pass 기준:
 
 운영 기본은 resilient (stderr diagnostic만, pi 세션은 계속), smoke는 fail-fast (하나라도 어기면 전체 실패).
 
-### 12.5 delegate-style continuity (partial — evidence boundary 주의)
+### 12.5 delegate-style continuity (bridge-level)
 
-delegate 가 실제로 쓰는 spawn 형태(`pi --mode json -p --no-extensions -e <repo> --provider pi-shell-acp --model <M> --session <F> <task>`)를 그대로 흉내 내어 turn1=new → turn2=resume(Claude)/load(Codex) 연속성을 확인한다. bridge diagnostic 라인(`[pi-shell-acp:bootstrap]`, `[pi-shell-acp:model-switch]`, `[pi-shell-acp:shutdown]`)과 session file assistant payload 양쪽에서 증거를 본다.
+이 smoke 는 delegate 가 실제로 쓰는 spawn 형태(`pi --mode json -p --no-extensions -e <repo> --provider pi-shell-acp --model <M> --session <F> <task>`)를 그대로 흉내 내어 turn1=new → turn2=resume(Claude)/load(Codex) 연속성을 확인한다. bridge diagnostic 라인(`[pi-shell-acp:bootstrap]`, `[pi-shell-acp:model-switch]`, `[pi-shell-acp:shutdown]`)과 session file assistant payload 양쪽에서 증거를 본다.
+
+이 smoke 가 증명하는 것은 **bridge-level continuity** 다. 즉 "pi-shell-acp 가 주어진 (backend, session file, model) 조합에 대해 resume / load 경로로 세션을 이어 들 수 있다" 까지다. **어느 target 으로 spawn 할지 / async orchestration / resume identity lock / matrix coverage** 는 `agent-config` 의 책임이며 거기 `delegate-targets.json` registry 와 pi-tools-bridge 가 담당한다.
 
 Smoke:
 
@@ -645,14 +647,11 @@ Pass 기준:
 - turn2 에 `bootstrap-invalidate` / `bootstrap-fallback` 라인 없음
 - session file assistant message 수 ≥ 2 이고, 마지막 assistant payload 길이 > 0
 
-**Evidence boundary (중요 — 확대 해석 금지):**
+**Scope (retired narrative 주의):**
 
-- **Claude**: real delegate-style e2e. `pi-extensions/delegate.ts` 의 spawn 인자와 동일한 모양을 `pi` CLI 에 직접 전달한다. delegate async orchestration (taskId/delegate_status/delegate_resume) 을 돌리는 것은 아니지만, 실제 하위 프로세스 CLI 표면은 delegate 경로와 같다. 외부 marker-recall 검증 (semantic continuity) 까지 확인됨 — 단순 shape 일치가 아니라 대화 기억이 resume 경로로 살아 넘어간다.
-- **Codex** (sync mode 기준):
-  - *default direct path* (`--provider openai-codex --model openai-codex/gpt-5.4`): pi-shell-acp 를 거치지 않고 openai-codex provider 로 직행. 이 smoke 의 범위 밖.
-  - *opt-in ACP path* (`PI_DELEGATE_ACP_FOR_CODEX=1` + `openai-codex/gpt-5.4`): agent-config `delegate-core.ts` 의 `getDelegateExplicitExtensions` 가 `-e pi-shell-acp --provider pi-shell-acp` 를 자동 주입하고, `normalizeCodexDelegateModelForAcp()` 가 model id 를 `openai-codex/gpt-5.4` → `gpt-5.4` 로 벗겨서 codex-acp 가 ChatGPT 계정에서도 수락하도록 한다. marker-recall 로 real e2e 확인됨.
-  - *이 repo 의 smoke*: `smoke_delegate_resume_single` 은 bare `gpt-5.4` 를 그대로 써서 pi-shell-acp 가 Codex 세션을 load 경로로 이어 들 수 있음 (shape-equivalent continuity) 을 검증한다. 실제 `delegate` tool 이 opt-in 조건에서 같은 경로로 가는지는 agent-config 쪽 `delegate-core.ts` 변경과 함께 본다.
-- **async delegate orchestration** (taskId, delegate_status, delegate_resume): 여전히 별도 Phase. MCP pi-tools-bridge 에는 sync 만 노출되어 있고, async surface 는 pi native extension 에서만 사용 가능. VERIFY 승격 대상이 아니다.
+- Claude / Codex 둘 다 bridge 는 backend-native 방식으로 세션을 이어 든다. Claude 는 ACP `resumeSession` 을, Codex 는 `loadSession` 을 쓴다 (codex-acp 의 capability 차이 — `resumeSession: false, loadSession: true`). 이 smoke 는 두 경로 모두 bridge 가 올바르게 태우는지만 검증한다.
+- 이 smoke 는 "shape-equivalent vs real e2e" 같은 라벨을 더 이상 쓰지 않는다. 그 구분은 delegate spawn authority 가 env 변수 (`PI_DELEGATE_ACP_FOR_CODEX=1`) 기반이던 과거 상태에서 나온 표현이다. 현재 spawn authority 는 `agent-config/pi/delegate-targets.json` registry 이며, bridge 는 registry 를 읽지 않는다. 해당 env 변수는 agent-config 쪽에서 legacy 로 표시되어 있고 registry 정착과 함께 정리될 예정이다.
+- delegate orchestration 전체 (parent × target positive matrix, async completion, resume identity lock) 는 agent-config 가 책임진다 — bridge smoke 는 거기에 올라타지 않는다.
 
 이 smoke 는 `setup` / baseline exit criteria 에 올리지 않는다. 추가 evidence gate 로만 유지한다.
 
