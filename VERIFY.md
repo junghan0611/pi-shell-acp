@@ -50,6 +50,32 @@
 - 각 단계마다 **stdout/stderr 전체**를 남긴다.
 - 문제가 나면 다음 단계로 넘어가지 말고 **중단 → 대기(hold)** 한다. (필요하면 세션/캐시/프로세스 상태를 먼저 보존)
 
+### 검증 프롬프트 wording — safety 해석 오염 피하기
+
+continuity 검증에서 사실을 주입하고 다시 회수할 때, **모델 safety 해석이 끼어들지 않는 평문 사실**을 쓴다. 다음 어휘는 피한다.
+
+- ✗ `secret token`, `test-token-123`, `password`, `API key`, `credential`
+- ✗ "비밀", "민감", "유출하지 마라" 같은 메타지시
+
+이런 wording은 Claude가 prompt injection / secret exfiltration / safety violation으로 해석해서 "모른다", "공유하지 않겠다" 같은 응답을 만든다. 그러면 **continuity는 살아 있는데도 회수 실패로 보인다** — 즉 safety 거부가 continuity 붕괴를 가장한다. 실제로 이 사고가 한 번 있었다 (`test-token-123` 검증이 거부 응답을 받아 위임 로직 실패로 오진).
+
+대신 **비민감 평문**을 쓴다.
+
+- ✓ `비밀번호는 올빼미다 → 한 단어로 답해 → 올빼미`
+- ✓ 코드네임 / 색 / 동물 이름 / 평범한 단어 / 임의의 영숫자 토큰 (의미적 신호 없는)
+- ✓ 첫 turn 응답은 짧은 ack(`READY` 등)로 강제
+
+요점: continuity 검증과 safety 행동 검증을 한 프롬프트에 섞지 않는다.
+
+### bridge continuity vs semantic continuity — 같은 것으로 취급하지 말 것
+
+다음 두 층은 별개로 본다.
+
+- **bridge continuity**: same `sessionKey` / persisted record hit / same `acpSessionId` / `bootstrap path=resume|load`
+- **semantic continuity**: 이전 turn에서 준 사실을 다음 turn에서 회수 가능
+
+bridge continuity가 살아 있어도 semantic continuity가 깨질 수 있다 (위 wording 오염 케이스). 반대도 마찬가지로 가능. 한 층의 통과를 다른 층의 통과로 외삽하지 말 것. bootstrap path 관찰성(§12 1번)이 약하면 두 층을 혼동해 wording 오염을 continuity 붕괴로 오진하기 쉬우니, 의심될 때는 wording을 바꿔 다시 한 번 더 보고, bridge stderr의 `[pi-shell-acp:bootstrap]` 라인도 함께 본다.
+
 ## 0. 품질 기준
 
 우리가 원하는 것은 단순한 "Claude Code를 부른다"가 아니다.
@@ -260,21 +286,26 @@ Pass:
 
 이 단계부터가 중요하다. 실행 shape는 §0A 그대로 — 첫 turn `delegate(provider="pi-shell-acp", model="claude-sonnet-4-6", mode="sync")`로 시작하고, 같은 taskId로 `delegate_resume`을 이어 던진다.
 
+검증용 사실은 §0A의 wording 가이드를 따른다 — `secret token` / `password` / `API key` 류 금지, 비민감 평문(코드네임 / 색 / 동물 이름 등)만.
+
 ### 4.1 사실 주입 → 회수 → 갱신
 
 세 단계의 의도만 적는다.
 
-1. 첫 turn: 검증용 토큰 한 개를 주입하고 짧은 ack(`READY`)만 받는다.
-2. 두 번째 turn (`delegate_resume`): 방금 준 토큰을 그대로 회수.
-3. 세 번째 turn (`delegate_resume`): 토큰을 다른 값으로 갱신하고 `CHANGED` 받기. 네 번째 turn에서 갱신된 값을 회수.
+1. 첫 turn: 비민감 사실 한 개를 주입하고 짧은 ack(`READY`)만 받는다. 예: "비밀번호는 올빼미다. 설명 없이 READY만 답하세요."
+2. 두 번째 turn (`delegate_resume`): 방금 준 사실을 그대로 회수. 예: "방금 내가 말한 비밀번호가 뭐였는지 한 단어로만 답하세요." → `올빼미`
+3. 세 번째 turn (`delegate_resume`): 사실을 다른 값으로 갱신하고 `CHANGED` 받기. 네 번째 turn에서 갱신된 값을 회수.
 
 Pass:
-- 두 번째 turn이 정확한 토큰을 답한다
-- 갱신 후 마지막 turn이 갱신된 토큰을 답한다
+- 두 번째 turn이 정확한 값을 답한다
+- 갱신 후 마지막 turn이 갱신된 값을 답한다
 - 텍스트 뭉치 재투척 없이 자연스럽게 이어지는 형태 (delegate orchestration이 ACP resume/load로 이어줌)
 
 Fail:
-- 토큰을 잊거나, 첫 turn 내용을 통째로 다시 보내야만 답하거나, 갱신이 반영되지 않는다
+- 사실을 잊거나, 첫 turn 내용을 통째로 다시 보내야만 답하거나, 갱신이 반영되지 않는다
+
+Fail로 보이지만 의심해볼 것:
+- 응답이 "공유하지 않겠다", "모른다" 같은 거부조라면 wording이 safety를 끌어들였을 가능성. §0A의 wording 가이드대로 평범한 사실로 다시 던져 본다 — 그래도 회수 실패면 진짜 continuity 문제, 회수되면 wording 오염이었다는 증거.
 
 ---
 
@@ -528,12 +559,13 @@ Pass:
 
 아래는 현재 문서화는 해두되, 아직 관찰성/자동화가 덜 된 부분이다.
 
-1. 실제 bootstrap path가 `resume`인지 `load`인지 `new`인지 외부에서 즉시 보이게 하는 것
+1. 실제 bootstrap path가 `resume`인지 `load`인지 `new`인지 외부에서 즉시 보이게 하는 것 — 현재 stderr `[pi-shell-acp:bootstrap]` 라인으로만 확인 가능. delegate orchestration 경로에서는 그 stderr가 사용자 앞단까지 surface되지 않아, 박살 진단 시 `bridge continuity` 통과 여부를 즉답하기 어렵다. 이 관찰성 부족이 wording 오염을 continuity 붕괴로 오진하게 만든다 (§0A "bridge vs semantic continuity" 참조).
 2. persisted session incompatibility가 발생했을 때 invalidate 이유를 operator가 빠르게 읽는 것
 3. ~~model switch 시 `unstable_setSessionModel` 경로 vs 새 세션 fallback 경로를 명확히 관찰하는 것~~ — §12.3 참조
 4. ~~cancel/abort 시 bridge와 child process가 얼마나 깔끔하게 정리되는지 보는 것~~ — §12.4 참조
 5. 장시간 세션에서 tool notice / thinking / text block이 누적될 때 stream shape가 안정적인지 보는 것
 6. delegate-style continuity (§12.5 참조) — Claude / Codex 양쪽 backend 에서 bridge 의 resume / load 경로가 delegate 와 동일한 spawn shape 에 대해 이어진다. delegate orchestration 자체 (어느 target 으로 spawn 할지, taskId / async completion / resume identity lock) 는 이 repo 의 범위 밖이다. spawn 결정권은 `agent-config/pi/delegate-targets.json` registry 에 있다.
+7. `bridge continuity`(sessionKey/acpSessionId/bootstrap path)와 `semantic continuity`(이전 turn 사실 회수)를 관찰성에서 분리하는 것 — 두 층은 별개로 통과/실패할 수 있다. §0A에 룰만 박아두었지만, 자동 smoke가 둘을 분리해서 판정하는 형태는 아직 없다.
 
 즉, 이 문서는 완료 선언 문서가 아니라 **다음 개선 포인트를 드러내는 운영 문서**다.
 
@@ -655,11 +687,14 @@ find "$CACHE_DIR" -maxdepth 1 -type f | sort
 ```text
 [verify] multi-turn continuity failed
 - call: delegate(provider="pi-shell-acp", model="claude-sonnet-4-6", mode="sync") → taskId=...
-        then delegate_resume(taskId=..., task="회수 프롬프트")
-- expected: second turn returns test-token-123
+        then delegate_resume(taskId=..., task="방금 내가 말한 비밀번호가 뭐였는지 한 단어로만 답하세요.")
+- injected: "비밀번호는 올빼미다. 설명 없이 READY만 답하세요."
+- expected: second turn returns "올빼미"
 - actual: model says it does not remember
 - cache: persisted file existed
+- bridge stderr: [pi-shell-acp:bootstrap] line not captured
 - process: no orphan / or orphan 1 left
+- wording-recheck: tried again with "코드네임은 펭귄이다" → still fails (rules out wording oil)
 - suspicion: resume/load path broken or session compatibility gate too strict
 ```
 
