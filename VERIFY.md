@@ -559,7 +559,7 @@ Pass:
 
 아래는 현재 문서화는 해두되, 아직 관찰성/자동화가 덜 된 부분이다.
 
-1. 실제 bootstrap path가 `resume`인지 `load`인지 `new`인지 외부에서 즉시 보이게 하는 것 — 현재 stderr `[pi-shell-acp:bootstrap]` 라인으로만 확인 가능. delegate orchestration 경로에서는 그 stderr가 사용자 앞단까지 surface되지 않아, 박살 진단 시 `bridge continuity` 통과 여부를 즉답하기 어렵다. 이 관찰성 부족이 wording 오염을 continuity 붕괴로 오진하게 만든다 (§0A "bridge vs semantic continuity" 참조).
+1. 실제 bootstrap path가 `resume`인지 `load`인지 `new`인지 외부에서 즉시 보이게 하는 것 — 현재 stderr `[pi-shell-acp:bootstrap]` 라인으로만 확인 가능. delegate orchestration 경로에서는 그 stderr가 사용자 앞단까지 surface되지 않아, 박살 진단 시 `bridge continuity` 통과 여부를 즉답하기 어렵다. 이 관찰성 부족이 wording 오염을 continuity 붕괴로 오진하게 만든다 (§0A "bridge vs semantic continuity" 참조). **integration 측 보강**: agent-config sentinel runner가 `PI_DELEGATE_CHILD_STDERR_LOG` opt-in env로 child stderr를 파일에 미러링해 S6(spawn `path=new`)/R4(resume `path=resume|load`) gate를 자동으로 검증한다 (agent-config 커밋 9ee39aa). bridge unit smoke는 우리 측이, integration path 검증은 거기서 — 상호 보완.
 2. persisted session incompatibility가 발생했을 때 invalidate 이유를 operator가 빠르게 읽는 것
 3. ~~model switch 시 `unstable_setSessionModel` 경로 vs 새 세션 fallback 경로를 명확히 관찰하는 것~~ — §12.3 참조
 4. ~~cancel/abort 시 bridge와 child process가 얼마나 깔끔하게 정리되는지 보는 것~~ — §12.4 참조
