@@ -108,6 +108,28 @@ Incoming with the artifacts above, already established upstream:
 
 Practical consequence at ingestion: `send_to_session` and `list_sessions` move here; `wait_until` is intentionally not bridged to MCP. Blocking is a design smell in this model.
 
+### Ingestion Gates
+
+"Migration complete" is not a file-move event. Content moving into this repo must pass **both verification axes** (see `## Verification § Two axes`) at the new home before the migration markers are removed.
+
+**Axis 1 — Protocol smoke (inherited from agent-config).** The smoke paths that validated entwurf in agent-config must pass against the same surfaces hosted here.
+
+- `mcp/pi-tools-bridge/test.sh` — full protocol tests (15/15 baseline at `e5aa5a1`)
+- entwurf spawn sentinel cell (sync + async variants) — the same sentinel artifact shape agent-config used at `e5aa5a1` (`/tmp/sentinel-phase05-cell1.json`)
+- `send_to_session` 3-way matrix once step 4 of the ordering completes
+
+These are deterministic gates. They fail fast and are cheap to re-run.
+
+**Axis 2 — Agent interview (local to this repo's VERIFY.md).** A real `pi-shell-acp/<model>` session must answer VERIFY.md §1A Layer 0–4 with the new in-repo entwurf surface, not the agent-config one.
+
+- Layer 0 — does the session read the engraving (`## Engraving`) and recognize entwurf as a first-class tool in this repo, not a referenced one?
+- Layer 2 — does pi-facing MCP (now including `pi-tools-bridge` hosted here) actually reach the turn? Can the agent see and call entwurf/session_search/knowledge_search?
+- Layer 3 — does identity preservation (the Resume Lock) hold when the entwurf resume is invoked from an in-session agent, not from a command-line `pi -p`?
+
+Passing Axis 1 alone is not enough. Pre-Phase-0.5 we saw a green protocol smoke next to a broken interview; that failure mode is specifically what the two-axis rule exists to catch.
+
+**Evidence requirement.** Each ingestion commit records Axis 1 sentinel artifacts + Axis 2 interview transcript summary in the commit body, the same way agent-config `e5aa5a1` recorded its smoke evidence. "It worked on my machine" is not evidence; artifact paths and token echoes are.
+
 ### Superseded Boundary
 
 The previous `## Boundary — Bridge vs Consuming Harness` section (below, marked `[SUPERSEDED]`) is the pre-entwurf thesis. It is kept in place during the transition window as historical reference — do not delete it until migration step 7 completes.
@@ -340,6 +362,24 @@ Do not import their UI/transcript/session-browser machinery unless there is a ve
 
 ## Verification
 
+### Two axes — both required
+
+pi-shell-acp's verification has two distinct axes and **neither subsumes the other**.
+
+| Axis | Shape | What it catches | Where |
+|------|-------|-----------------|-------|
+| **Protocol / command-line smoke** | `pi … -p '…'` invocations, `run.sh smoke*`, `test.sh` for MCP, tsc / check-* gates | wire-level regressions: ACP bootstrap order, backend selection, MCP validation, session continuity at the persistence layer, tool registration | inline here, `run.sh`, `mcp/pi-tools-bridge/test.sh` |
+| **Agent interview** | a real Claude/Codex session inside `pi-shell-acp/...` answers [VERIFY.md](./VERIFY.md) Layer 0–4 questions | semantic-level regressions: does the agent *see* its tools, does it *read* the engraving, does pi-facing MCP surface actually reach the turn, does identity hold across turns | [VERIFY.md](./VERIFY.md) §1A |
+
+**Why both.** A protocol smoke proves the pipes are connected. An agent interview proves the water arrives tasting like water. Each misses what the other catches:
+
+- Protocol smoke can pass while the agent inside the session sees no MCP tools, no skills, and no engraving — because MCP injection fired at the bridge layer but the backend turn never surfaced them. An interview catches this immediately; a smoke never does.
+- An interview can pass on one run and fail on another for reasons a smoke would have caught deterministically (version skew, `bootstrap path=new` when it should have been `resume`, MCP signature invalidation). An interview alone doesn't close the regression window.
+
+**This is the lesson from the pre-Phase-0.5 VERIFY attempt.** A command-line smoke path was invoked with the correct token and the right flags, and everything looked green at the wire level — but the agent session inside had no working pi MCP surface and nothing caught it until we ran the interview. The fix (Phase 0.5) was a real one, not a test artifact. Do not regress this lesson by dropping the interview axis once protocol smokes become easy again.
+
+### Axis 1 — protocol / command-line smoke
+
 Run these after meaningful changes:
 
 ```bash
@@ -350,6 +390,18 @@ npm run check-backends
 npm run check-claude-sessions -- /home/junghan/repos/gh/agent-config
 ./run.sh smoke /home/junghan/repos/gh/agent-config
 ```
+
+This axis is cheap, fast, deterministic. Run on every meaningful change.
+
+### Axis 2 — agent interview (VERIFY.md)
+
+[VERIFY.md](./VERIFY.md) carries the interview script. Its §1A Layer 0–4 is the canonical interview: a real `pi-shell-acp/<model>` session answers about its environment, tools, pi-facing MCP boundary, multi-turn focus, and comparison to direct Claude Code. Pass criteria are in §1A.6.
+
+- Run this axis at minimum: before cutting a release, after any change to bridge bootstrap / MCP injection / session continuity / engraving surface, after any ingestion from agent-config (see `## Entwurf Orchestration § Ingestion Gates`).
+- Do **not** substitute a command-line smoke for the interview. The interview is the only path that proves what the agent *sees* once it is inside the session.
+- Follow VERIFY §0A operating discipline: one command at a time, short sync turns via `delegate` / `delegate_resume`, never splice a manual `pi --session` uncovered boundary-check into the interview path.
+
+A protocol smoke passing without the interview = "pipes connected." A full pass = both axes green.
 
 ### Exit Criteria — backend-related changes
 
