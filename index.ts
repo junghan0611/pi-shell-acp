@@ -55,6 +55,24 @@ type ResolvedProviderSettings = {
 const ANTHROPIC_MODEL_IDS = new Set(getModels("anthropic").map((model) => model.id));
 const OPENAI_MODEL_IDS = new Set(getModels("openai").map((model) => model.id));
 
+// Anthropic's model registry hardcodes contextWindow: 1_000_000 for Claude 4.6+
+// (opus-4-6, opus-4-7, sonnet-4-6). That capacity is only delivered when the
+// caller sends the `context-1m-2025-08-07` beta header on a tier-4/enterprise
+// account. pi-shell-acp is an ACP router and does NOT inject that header —
+// Claude Code decides. On standard accounts the effective limit stays at 200K,
+// and forcing the 1M tier without it being delivered would bill as extra usage.
+// So we cap declared context to 200K by default. Users on an environment where
+// 1M is actually delivered (e.g. an Anthropic-provisioned host) can opt in by
+// setting PI_SHELL_ACP_CLAUDE_CONTEXT=1000000.
+const CLAUDE_CONTEXT_DEFAULT = 200_000;
+function resolveClaudeContextCap(): number {
+	const raw = process.env.PI_SHELL_ACP_CLAUDE_CONTEXT?.trim();
+	if (!raw) return CLAUDE_CONTEXT_DEFAULT;
+	const parsed = Number.parseInt(raw, 10);
+	return Number.isFinite(parsed) && parsed > 0 ? parsed : CLAUDE_CONTEXT_DEFAULT;
+}
+const CLAUDE_CONTEXT_CAP = resolveClaudeContextCap();
+
 const MODELS = Array.from(
 	new Map(
 		[...getModels("anthropic"), ...getModels("openai")].map((model) => [
@@ -65,7 +83,9 @@ const MODELS = Array.from(
 				reasoning: model.reasoning,
 				input: model.input,
 				cost: model.cost,
-				contextWindow: model.contextWindow,
+				contextWindow: ANTHROPIC_MODEL_IDS.has(model.id)
+					? Math.min(model.contextWindow, CLAUDE_CONTEXT_CAP)
+					: model.contextWindow,
 				maxTokens: model.maxTokens,
 			},
 		]),

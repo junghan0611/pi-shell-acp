@@ -87,7 +87,7 @@ If a change makes this repo feel like a second harness, it is probably wrong.
    - model prefix: `pi-shell-acp/...`
    - settings key: `piShellAcpProvider`
    - do not reintroduce legacy aliases
-   - **docs/examples use the qualified form** `--model pi-shell-acp/claude-sonnet-4-6` (prefix routes to this provider — `--provider` becomes redundant and is dropped in examples). Internal smoke helpers that feed `ensureBridgeSession({modelId})` keep bare backend ids (`claude-sonnet-4-6`, `gpt-5.4`) because the bridge library contract is bare.
+   - **docs/examples use the qualified form** `--model pi-shell-acp/claude-sonnet-4-6` (prefix routes to this provider — `--provider` becomes redundant and is dropped in examples). Internal smoke helpers that feed `ensureBridgeSession({modelId})` keep bare backend ids (`claude-sonnet-4-6`, `gpt-5.2`) because the bridge library contract is bare.
 
 2. **Session continuity boundary**
    - persist only `pi:<sessionId>` mappings

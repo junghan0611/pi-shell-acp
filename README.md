@@ -232,7 +232,7 @@ cd ~/repos/gh/agent-config
 - no Claude-specific `_meta` payload is sent
 - model selection still flows through the generic ACP session model path when the backend supports it
 - `settingSources` / `strictMcpConfig` remain Claude-oriented settings and are ignored by the codex backend path in this slice
-- if `backend` is omitted and an OpenAI model such as `gpt-5.4` is selected, pi-shell-acp infers `codex` automatically
+- if `backend` is omitted and an OpenAI model such as `gpt-5.2` is selected, pi-shell-acp infers `codex` automatically
 
 Install / verify:
 
@@ -243,7 +243,7 @@ pnpm list -g --depth=0 | grep codex-acp
 ./run.sh smoke-codex /home/junghan/repos/gh/agent-config
 ```
 
-The first-class Codex smoke defaults to `gpt-5.4`, which is a more reliable operator-facing runtime check than `codex-mini-latest` on ChatGPT-backed Codex accounts.
+The first-class Codex smoke defaults to `gpt-5.2`, which is a more reliable operator-facing runtime check than `codex-mini-latest` on ChatGPT-backed Codex accounts. (`gpt-5.4` was the previous default but has been observed to be service-unstable in practice.)
 
 ### Known limitation: reverse-direction transcript visibility
 
@@ -320,7 +320,7 @@ Use first-class command paths instead of hidden env overrides:
 ```bash
 ./run.sh smoke /home/junghan/repos/gh/agent-config        # Claude runtime smoke (kept for backward compatibility)
 ./run.sh smoke-claude /home/junghan/repos/gh/agent-config # explicit Claude runtime smoke
-./run.sh smoke-codex /home/junghan/repos/gh/agent-config  # explicit Codex runtime smoke (default model: gpt-5.4)
+./run.sh smoke-codex /home/junghan/repos/gh/agent-config  # explicit Codex runtime smoke (default model: gpt-5.2)
 ./run.sh smoke-all /home/junghan/repos/gh/agent-config    # required dual-backend runtime verification
 ```
 

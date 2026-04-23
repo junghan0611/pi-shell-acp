@@ -5,7 +5,7 @@
 #     (e.g. `pi-shell-acp/claude-sonnet-4-6`); the prefix routes to this provider
 #     so `--provider` is redundant and is dropped in docs.
 #   - Smoke helpers that feed `ensureBridgeSession({modelId})` directly (cancel,
-#     model-switch) pass BARE backend ids (`claude-sonnet-4-6`, `gpt-5.4`)
+#     model-switch) pass BARE backend ids (`claude-sonnet-4-6`, `gpt-5.2`)
 #     because the bridge library contract is bare. Smoke helpers that invoke pi
 #     via the CLI still pin `--provider pi-shell-acp` and can accept either
 #     bare or qualified model, but we keep bare here to match the bridge-level
@@ -34,6 +34,7 @@ Usage:
   ./run.sh check-mcp                  # local deterministic check of normalizeMcpServers() — no Claude/ACP subprocess
   ./run.sh check-backends             # local deterministic check of backend launch resolution + backend-specific _meta shape
   ./run.sh check-registration         # local deterministic check of per-runtime provider registration semantics
+  ./run.sh check-models               # local deterministic check of MODELS contextWindow cap (default 200K + opt-in override)
   ./run.sh check-claude-sessions [project-dir]  # compare pi persisted sessions vs Claude SDK session visibility
   ./run.sh verify-resume [project-dir] # exact pi -> ACP -> Claude continuity check with visible acpSessionId diagnostics
   ./run.sh sync-auth                  # copy ~/.pi/agent/auth.json anthropic OAuth credentials to pi-shell-acp alias
@@ -187,7 +188,7 @@ smoke_test() {
         model="pi-shell-acp/claude-sonnet-4-6"
         ;;
       codex)
-        model="pi-shell-acp/gpt-5.4"
+        model="pi-shell-acp/gpt-5.2"
         ;;
       *)
         echo "[smoke] unknown backend: $backend" >&2
@@ -335,7 +336,7 @@ smoke_continuity() {
   echo "[smoke-continuity] repo:    $REPO_DIR"
 
   smoke_continuity_single "$project_dir" claude claude-sonnet-4-6 resume
-  smoke_continuity_single "$project_dir" codex gpt-5.4 load
+  smoke_continuity_single "$project_dir" codex gpt-5.2 load
   echo "[smoke-continuity] Claude(resume) + Codex(load) continuity: ok"
 }
 
@@ -522,7 +523,7 @@ smoke_cancel() {
   echo "[smoke-cancel] repo:    $REPO_DIR"
 
   smoke_cancel_single "$project_dir" claude claude-sonnet-4-6
-  smoke_cancel_single "$project_dir" codex gpt-5.4
+  smoke_cancel_single "$project_dir" codex gpt-5.2
   echo "[smoke-cancel] Claude + Codex cancel cleanup: ok"
 }
 
@@ -686,7 +687,7 @@ smoke_model_switch() {
   echo "[smoke-model-switch] repo:    $REPO_DIR"
 
   smoke_model_switch_single "$project_dir" claude claude-sonnet-4-6 claude-haiku-4-5-20251001
-  smoke_model_switch_single "$project_dir" codex gpt-5.4 gpt-5.4-mini
+  smoke_model_switch_single "$project_dir" codex gpt-5.2 gpt-5.2-codex
   echo "[smoke-model-switch] Claude + Codex model switch observability: ok"
 }
 
@@ -842,7 +843,7 @@ smoke_delegate_resume() {
   echo "                         not here. This smoke does not validate orchestration, only bridge carry."
 
   smoke_delegate_resume_single "$project_dir" claude claude-sonnet-4-6 resume "bridge continuity (Claude → resumeSession)"
-  smoke_delegate_resume_single "$project_dir" codex  gpt-5.4           load   "bridge continuity (Codex → loadSession)"
+  smoke_delegate_resume_single "$project_dir" codex  gpt-5.2           load   "bridge continuity (Codex → loadSession)"
 
   echo "[smoke-delegate-resume] Claude(resume) + Codex(load) bridge continuity: ok"
 }
@@ -1035,6 +1036,147 @@ EOF
   )
 }
 
+check_models() {
+  local verify_dir
+  verify_dir="$REPO_DIR/.tmp-verify-models"
+
+  rm -rf "$verify_dir"
+  mkdir -p "$verify_dir"
+  (
+    cd "$REPO_DIR"
+    ./node_modules/.bin/tsc \
+      --project tsconfig.json \
+      --outDir "$verify_dir" \
+      --rootDir "$REPO_DIR"
+  )
+
+  # Run twice: once with default cap (200K), once with override (1M).
+  # Each run imports a FRESH module URL so the top-level CLAUDE_CONTEXT_CAP
+  # constant is recomputed from the env seen at import time.
+  (cd "$REPO_DIR" && VERIFY_DIR="$verify_dir" node --input-type=module <<'EOF'
+import { strict as assert } from 'node:assert';
+import { pathToFileURL } from 'node:url';
+
+const verifyDir = process.env.VERIFY_DIR;
+if (!verifyDir) throw new Error('VERIFY_DIR is required');
+
+// The model list is embedded in index.js by the registerProvider call.
+// We capture it by mocking the runtime and letting the extension hand us
+// `provider.models`. Override env before import to force a fresh read.
+
+async function collectModels(envOverride) {
+  if (envOverride === undefined) {
+    delete process.env.PI_SHELL_ACP_CLAUDE_CONTEXT;
+  } else {
+    process.env.PI_SHELL_ACP_CLAUDE_CONTEXT = envOverride;
+  }
+  // Cache-bust: query string forces a fresh module evaluation so the
+  // top-level `CLAUDE_CONTEXT_CAP` constant picks up the new env.
+  const moduleUrl = pathToFileURL(`${verifyDir}/index.js`).href + `?cap=${envOverride ?? 'default'}`;
+  const mod = await import(moduleUrl);
+  let captured;
+  const runtime = {
+    registerProvider(_id, provider) { captured = provider; },
+    on() {},
+  };
+  mod.default(runtime);
+  if (!captured || !Array.isArray(captured.models)) {
+    throw new Error('registerProvider did not receive a models array');
+  }
+  return new Map(captured.models.map((m) => [m.id, m]));
+}
+
+// --- Pass 1: default cap (200K) ---
+{
+  const models = await collectModels(undefined);
+
+  // Known Claude models that pi-ai declares as 1M-capable.
+  // These MUST be capped to 200K without the env override.
+  const oneMClaude = ['claude-sonnet-4-6', 'claude-opus-4-6', 'claude-opus-4-7'];
+  for (const id of oneMClaude) {
+    const m = models.get(id);
+    if (!m) continue; // tolerate model removed from pi-ai registry
+    assert.equal(
+      m.contextWindow,
+      200000,
+      `default: ${id} contextWindow should be capped at 200000, got ${m.contextWindow}`,
+    );
+  }
+
+  // Claude models that pi-ai declares at 200K must stay at 200K
+  // (cap should not *raise* any value).
+  const nativeClaude200k = ['claude-sonnet-4-5', 'claude-haiku-4-5'];
+  for (const id of nativeClaude200k) {
+    const m = models.get(id);
+    if (!m) continue;
+    assert.equal(m.contextWindow, 200000, `${id} should remain 200000`);
+  }
+
+  // OpenAI models must NOT be capped. We don't care what the exact number is
+  // (pi-ai updates it), only that:
+  //   1. it is not equal to the 200K cap (proves the cap branch was skipped)
+  //   2. it is greater than 200K (all listed OpenAI large-context models are)
+  const openaiLarge = ['gpt-5.2', 'gpt-4.1', 'gpt-4.1-mini'];
+  let openaiChecked = 0;
+  for (const id of openaiLarge) {
+    const m = models.get(id);
+    if (!m) continue;
+    assert.notEqual(
+      m.contextWindow,
+      200000,
+      `${id} must not be capped at the Anthropic 200K default`,
+    );
+    assert.ok(
+      m.contextWindow > 200000,
+      `${id} contextWindow should be > 200000, got ${m.contextWindow}`,
+    );
+    openaiChecked += 1;
+  }
+  assert.ok(openaiChecked > 0, 'expected at least one OpenAI large-context model to be present');
+
+  console.log('[check-models] pass 1 (default 200K cap): ok');
+}
+
+// --- Pass 2: explicit 1M opt-in ---
+{
+  const models = await collectModels('1000000');
+  const id = 'claude-sonnet-4-6';
+  const m = models.get(id);
+  if (m) {
+    assert.equal(
+      m.contextWindow,
+      1_000_000,
+      `override: ${id} contextWindow should be 1000000 with PI_SHELL_ACP_CLAUDE_CONTEXT=1000000, got ${m.contextWindow}`,
+    );
+    console.log('[check-models] pass 2 (PI_SHELL_ACP_CLAUDE_CONTEXT=1000000 opt-in): ok');
+  } else {
+    console.log('[check-models] pass 2 skipped (claude-sonnet-4-6 not in registry)');
+  }
+}
+
+// --- Pass 3: bogus override falls back to default ---
+{
+  const models = await collectModels('not-a-number');
+  const id = 'claude-sonnet-4-6';
+  const m = models.get(id);
+  if (m) {
+    assert.equal(
+      m.contextWindow,
+      200000,
+      `bogus override: ${id} should fall back to 200000, got ${m.contextWindow}`,
+    );
+    console.log('[check-models] pass 3 (bogus override falls back): ok');
+  }
+}
+
+delete process.env.PI_SHELL_ACP_CLAUDE_CONTEXT;
+console.log('[check-models] all passes ok');
+EOF
+  )
+
+  rm -rf "$verify_dir"
+}
+
 check_registration() {
   local verify_dir
   verify_dir="$REPO_DIR/.tmp-verify"
@@ -1177,7 +1319,7 @@ verify_resume() {
   check_claude_sessions "$project_dir"
 }
 
-CLAUDE_ACP_REQUIRED_VERSION="0.29.2"
+CLAUDE_ACP_REQUIRED_VERSION="0.30.0"
 CODEX_ACP_REQUIRED_VERSION="0.11.1"
 
 check_global_claude_acp() {
@@ -1243,6 +1385,15 @@ setup_all() {
     echo "[setup] warning: ~/.claude.json not found. Run 'npx @anthropic-ai/claude-code' first if needed." >&2
   fi
 
+  # Deterministic preflight — cheap local gates run before any ACP/Claude
+  # subprocess. Catches static-contract regressions (MCP shape, backend launch,
+  # provider registration, model contextWindow cap) without waiting for smoke.
+  echo "[setup] preflight: local deterministic checks"
+  check_mcp
+  check_backends
+  check_registration
+  check_models
+
   smoke_all "$project_dir"
 }
 
@@ -1283,6 +1434,9 @@ case "$cmd" in
     ;;
   check-registration)
     check_registration
+    ;;
+  check-models)
+    check_models
     ;;
   check-claude-sessions)
     check_claude_sessions "$TARGET_PROJECT_DIR"
