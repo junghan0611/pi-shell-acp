@@ -19,7 +19,7 @@ The goal is simple:
 - keep each ACP backend as itself
 - keep this repo as a **small bridge**, not a second harness
 
-> **Product boundary.** pi-shell-acp is the thin ACP bridge product. It guarantees backend continuity and explicit MCP injection. Delegate / resume / async orchestration belongs to the **consuming harness** (currently [agent-config](https://github.com/junghan0611/agent-config)), not to this bridge repo. `./run.sh setup` in this repo installs the bridge only; the consuming harness has its own setup that additionally builds the MCP adapter that promotes pi-side tools to ACP hosts.
+> **Product boundary — under revision.** The earlier thesis ("thin bridge; orchestration stays in the consuming harness") is being superseded: delegate / resume / registry / cross-session bridges are migrating **into this repo** (renamed `entwurf`). Until the migration completes, those surfaces still live in [agent-config](https://github.com/junghan0611/agent-config). See AGENTS.md `## Entwurf Orchestration` for the migration plan, and the `## Entwurf Orchestration — [INCOMING: from agent-config]` section below for the incoming artifacts list.
 
 ## Current Guarantees
 
@@ -50,7 +50,7 @@ This repo should not grow into:
 - backend transcript hydration into pi history
 - tool result ledgers
 - Claude Code / Codex emulation
-- broad multi-agent orchestration
+- broad multi-agent orchestration *(under revision for the entwurf migration — entwurf spawn is an intentional exception, not a drift)*
 - a second session model competing with pi
 
 ## Design Rules
@@ -89,6 +89,26 @@ Persisted data is intentionally minimal:
 - timestamp / version / provider marker
 
 This is a deliberate architectural choice: `pi-shell-acp` persists only enough to re-attach pi to the same remote ACP session. It does **not** ingest backend transcript files to rebuild pi-local conversation history.
+
+## Entwurf Orchestration — [INCOMING: from agent-config]
+
+> **Mirror of the carving in [agent-config `22bd159`](https://github.com/junghan0611/agent-config/commit/22bd159).** Five surfaces currently living in agent-config are slated to migrate here, at which point `delegate` is renamed to `entwurf` in a single commit on this side. Grep key `Entwurf Orchestration` resolves on both sides until migration completes.
+>
+> Full migration plan, naming contract, and Phase 0.5 ingestion scope live in [AGENTS.md](AGENTS.md) under the same section name. This section is the README-side pointer.
+
+**Incoming artifacts and their planned locations.**
+
+| Source (agent-config)                  | Destination (pi-shell-acp, planned)     | Purpose                                                          |
+|----------------------------------------|-----------------------------------------|------------------------------------------------------------------|
+| `pi-extensions/delegate.ts`            | `entwurf/spawn.ts`                      | pi-native spawn entry                                            |
+| `pi-extensions/lib/delegate-core.ts`   | `entwurf/core.ts`                       | shared core: registry resolution + identity lock                 |
+| `pi/delegate-targets.json`             | `entwurf/targets.json`                  | SSOT allowlist of `(provider, model)` pairs                      |
+| `mcp/pi-tools-bridge/`                 | `mcp/pi-tools-bridge/`                  | MCP adapter promoting pi-side tools (entwurf, session_search, knowledge_search) to ACP hosts |
+| `mcp/session-bridge/`                  | `mcp/session-bridge/`                   | Claude Code ↔ pi Unix-socket session bridge                      |
+
+After migration, both `entwurf/*` (pi-native surface) and `mcp/*` (ACP-facing adapters) live together in this repo — the "one project" principle from agent-config is preserved at the new home.
+
+Related: see `## Engraving — Agent Self-Recognition` in AGENTS.md for how `entwurf` surfaces in the ACP session identity once it lands here.
 
 ## Repository Layout
 
@@ -213,7 +233,7 @@ Notes:
 - The bridge session signature includes the selected backend and the SHA-256 hash of the canonical `mcpServers` shape — changing either invalidates the persisted session automatically, so the bridge never silently reuses a stale backend/config combination.
 - This bridge does **not** read `~/.mcp.json` or any other ambient backend config. If you want a server exposed, list it here.
 - Invalid `mcpServers` entries fail fast with a single aggregated error (`McpServerConfigError`) that names every offending server — no silent skips. Validate locally with `npm run check-mcp` before shipping a config.
-- pi-native extension tools (`delegate`, `session_search`, `knowledge_search`, …) are **not** auto-promoted. If you want them inside Claude, build a dedicated external MCP adapter and register it here.
+- pi-native extension tools (`delegate`, `session_search`, `knowledge_search`, …) are **not** auto-promoted. If you want them inside Claude, build a dedicated external MCP adapter and register it here. *(Current state. In the entwurf migration, `pi-tools-bridge` — the MCP adapter that promotes the pi-side surface — moves into this repo and becomes a first-class component; see AGENTS.md `## Entwurf Orchestration`.)*
 
 After updating `agent-config`, verify:
 

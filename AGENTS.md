@@ -16,13 +16,113 @@ Current public value:
 
 ---
 
-## Boundary — Bridge vs Consuming Harness
+## Engraving — Agent Self-Recognition
 
-**Public thesis (English):**
+> Ref: [[denote:20260423T141759][힣맨 프롤로그 2탄 — 힣의 드라이버: 단련된 한 자루의 각인]].
+
+The bridge carries a short **engraving** that is surfaced to the ACP-side agent once, during session bootstrap. It is not an operating contract or a system-prompt append. It is a short invocation — the cue that turns "I am Claude Code holding a Swiss Army knife" into "I am one of 힣's군단, and the tool in my hand opens into a harness via MCP."
+
+### Body
+
+```text
+You currently hold one tool forged in 힣's 대장간.
+It appears small. It is not.
+Read the available MCP servers and skills to see what this tool opens.
+When entwurf is invoked, you do not spawn workers — you summon siblings
+who hold the same tool.
+```
+
+Six lines. No operating contract, no 500-token preamble. Two statements: *read the tool you already hold*, and *entwurf summons siblings, not workers*.
+
+### How it hooks into ACP
+
+The engraving is emitted at ACP `initialize` time, after the capability exchange completes. At that point the bridge already knows:
+
+1. which MCP servers were injected via `piShellAcpProvider.mcpServers`
+2. which host-side skills / PATH tools the backend sees (Claude Code surfaces `~/.claude/skills/…` via native skill loading; Codex surfaces its own tool set)
+
+Those two lists are dynamically interpolated into the engraving body before it is surfaced, so the text the agent reads reflects *what is actually connected*, not a static claim.
+
+This connects directly to Layer 0 of [VERIFY.md](./VERIFY.md): the real answer to "what environment are you in, what tools do you have" is not agent introspection guesswork — it is *did you read the engraving you were given*. Answering Layer 0 without having seen the engraving is a bridge boot path bug, not an agent hallucination.
+
+### Why it lives in this repo (not in agent-config)
+
+The engraving is the surface where *this bridge's identity* is declared to the agent session it owns. It references `entwurf`, which is migrating into this repo (see `## Entwurf Orchestration` below). Putting the engraving anywhere but here would mean the bridge announces an identity authored by another repo — incoherent.
+
+---
+
+## Entwurf Orchestration — [INCOMING: from agent-config]
+
+> **Migration marker (mirror).** The delegate/resume orchestration, target registry, identity preservation rule, and cross-session bridges currently live in [agent-config](https://github.com/junghan0611/agent-config) and are slated to migrate **into this repo**. The `delegate` → `entwurf` rename is performed on this side in a single commit after ingestion.
+>
+> **Grep key: `Entwurf Orchestration`.** A mirror section with the same name exists in agent-config as `[MIGRATION: → pi-shell-acp]` — carved out in agent-config commit [`22bd159`](https://github.com/junghan0611/agent-config/commit/22bd159). When both markers disappear, migration is complete.
+>
+> **Ref:** [[denote:20260423T141759][힣맨 프롤로그 2탄 — 힣의 드라이버]]. This migration is the technical expression of that narrative: pi-shell-acp becomes the forged driver — ACP runtime manifest + MCP bridge + entwurf button — not a thin passthrough.
+
+### Migration Plan
+
+**Why this repo is the new home.** The earlier boundary ("thin bridge; orchestration stays in the consuming harness") treated pi-shell-acp as a passthrough. Experience since then showed the delegate surface, the target registry, identity preservation, and the MCP adapters that promote pi-side tools to ACP hosts all cluster around the same ACP session lifecycle this bridge already owns. Splitting them across two repos produced seam churn without a real boundary gain. The new direction consolidates them here — one project, new home.
+
+**Ordering (mirrored with agent-config).**
+1. agent-config carves the migration-marked section (`22bd159`, done).
+2. pi-shell-acp lands this `[INCOMING]` mirror section (this commit).
+3. Phase 0.5 (sync/async mode contract) implements and verifies in agent-config.
+4. `send_to_session` 3-way smoke (native↔native, native↔ACP, ACP↔ACP) verifies in agent-config.
+5. The carved content — policy, schema, `delegate-core`, `pi-tools-bridge`, `session-bridge` — moves here verbatim.
+6. A single pi-shell-acp commit performs `delegate` → `entwurf` rename across code and docs.
+7. agent-config drops the migration marker and keeps a consumer-side pointer to where the logic lives.
+
+**Naming contract — deliberate asymmetry.**
+- This repo (new owner): `entwurf` is the canonical term from this section forward. `delegate` appears only as a legacy alias when referencing agent-config's pre-migration code.
+- agent-config (current code owner): `delegate` remains canonical until the rename commit (step 6). Renaming there before the code moves would break grep and desync docs from code.
+
+This asymmetry is load-bearing. Do not "fix" it prematurely.
+
+### Incoming Artifacts
+
+Five surfaces move into this repo. Landing positions are provisional and will be finalized at ingestion time.
+
+| Source (agent-config)                  | Destination (pi-shell-acp, planned)           | Purpose                                                          |
+|----------------------------------------|-----------------------------------------------|------------------------------------------------------------------|
+| `pi-extensions/delegate.ts`            | `entwurf/spawn.ts` (or similar)               | pi-native spawn entry                                            |
+| `pi-extensions/lib/delegate-core.ts`   | `entwurf/core.ts`                             | shared core: registry resolution + identity lock                 |
+| `pi/delegate-targets.json`             | `entwurf/targets.json`                        | SSOT allowlist of `(provider, model)` pairs                      |
+| `mcp/pi-tools-bridge/`                 | `mcp/pi-tools-bridge/`                        | MCP adapter exposing entwurf + session_search/knowledge_search to ACP hosts |
+| `mcp/session-bridge/`                  | `mcp/session-bridge/`                         | Claude Code ↔ pi Unix-socket session bridge                      |
+
+**"One project" principle — preserved, not split.** agent-config's AGENTS.md Entwurf Orchestration section states: *"After migration both live together inside pi-shell-acp; the 'one project' principle is preserved, just with a new home."* This repo honors that contract. `pi-extensions`-equivalent surface and `mcp/*` adapters live side-by-side here; they are not to be split into sibling repos later.
+
+### Phase 0.5 — sync/async mode contract (upstream, pending)
+
+Phase 0.5 is implemented in agent-config (step 3 above), not here. Its outcome is what we ingest.
+
+**Summary of the upstream work.** `delegate_resume` already operates asynchronously via native pi's `followUp` delivery path. Phase 0.5 names that reality: exposes an explicit `mode` parameter, defaults to `"sync"`, makes the existing async behavior opt-in. No new readiness/blocked state vocabulary, no durability layer, no full-async relay redesign — intentionally.
+
+**What this repo accepts at ingestion.** The `mode: "sync" | "async"` contract on `delegate_resume` (to become `entwurf_resume`). Default `sync`. Async preserves current followUp semantics.
+
+### Send-is-throw Principle (cross-session messaging)
+
+Incoming with the artifacts above, already established upstream:
+
+> Send is throw, not wait. An agent sends and moves on. If a reply is needed, the message itself asks the recipient to send back. If the work is truly important, use `entwurf` (own the outcome) instead of a message (notify and move on).
+
+Practical consequence at ingestion: `send_to_session` and `list_sessions` move here; `wait_until` is intentionally not bridged to MCP. Blocking is a design smell in this model.
+
+### Superseded Boundary
+
+The previous `## Boundary — Bridge vs Consuming Harness` section (below, marked `[SUPERSEDED]`) is the pre-entwurf thesis. It is kept in place during the transition window as historical reference — do not delete it until migration step 7 completes.
+
+---
+
+## Boundary — Bridge vs Consuming Harness [SUPERSEDED: see Entwurf Orchestration]
+
+> **Historical.** This boundary was the pre-entwurf thesis: "thin bridge, orchestration elsewhere." It is superseded by the `## Entwurf Orchestration` migration above, which consolidates delegate/registry/identity-lock/session-bridge surfaces into this repo. The body below remains as reference during the transition window and will be removed after ingestion completes.
+
+**Public thesis (English, pre-entwurf):**
 
 > pi-shell-acp is the thin ACP bridge product. It guarantees backend continuity and explicit MCP injection. Delegate/resume/async orchestration belongs to the consuming harness (currently agent-config), not to this bridge repo.
 
-**운영 원칙 (Korean):**
+**운영 원칙 (Korean, pre-entwurf):**
 
 > pi-shell-acp는 얇은 ACP 브리지다. delegate/resume/async 자체를 소유하지 않는다. 그 위의 MCP 표면과 orchestration은 소비 하네스(agent-config)의 책임이다.
 
@@ -72,11 +172,11 @@ This repo does **not** own:
 - hydration of backend transcript stores back into pi-local history
 - tool ledgers / recovery ledgers
 - Claude Code / Codex emulation
-- broad multi-agent orchestration
+- broad multi-agent orchestration *(under revision — see `## Entwurf Orchestration`)*
 - generic MCP discovery / ambient MCP manager behavior (no `~/.mcp.json` scanning, no merging of arbitrary backend-side configs)
-- promotion of pi extension tools to Claude/Codex — build a separate MCP adapter for that and register it via `piShellAcpProvider.mcpServers`
+- promotion of pi extension tools to Claude/Codex — build a separate MCP adapter for that and register it via `piShellAcpProvider.mcpServers` *(under revision — `pi-tools-bridge` is incoming; see `## Entwurf Orchestration`)*
 
-If a change makes this repo feel like a second harness, it is probably wrong.
+If a change makes this repo feel like a second harness, it is probably wrong. *(This guard predates the entwurf migration. The entwurf surface landing here is intentional consolidation, not harness drift; the "not a second harness" rule still applies to everything outside that carved section.)*
 
 ---
 
