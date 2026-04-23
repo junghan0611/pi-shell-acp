@@ -5,6 +5,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { applyBridgePromptEvent, finalizeAcpStreamState, type AcpPiStreamState } from "./event-mapper.js";
 import { cancelActivePrompt, cleanupBridgeSessionProcess, closeBridgeSession, describeBridgeSession, ensureBridgeSession, getBridgeErrorDetails, normalizeMcpServers, sendPrompt, setActivePromptHandler, type AcpBackend, type ClaudeSettingSource, type McpServerInputMap } from "./acp-bridge.js";
+import { detectCompactionContext, renderCompactionSystemPromptAppend } from "./compaction-context.js";
 import type { McpServer } from "@agentclientprotocol/sdk";
 
 const PROVIDER_ID = "pi-shell-acp";
@@ -332,12 +333,29 @@ function streamShellAcp(model: Model<any>, context: Context, options?: SimpleStr
 		}
 
 		try {
+			// Post-compaction handoff — only meaningful for Claude backend (the
+			// Codex adapter doesn't forward systemPromptAppend today). When pi
+			// compacts, its next call to us carries a synthetic user message that
+			// holds the summary; without this handoff the new Claude session
+			// bootstraps cold because extractPromptBlocks only sends the latest
+			// user turn. pi session stays canonical — we just project pi's
+			// compacted view into the new Claude session once via system prompt,
+			// and rely on identical systemPromptAppend across subsequent turns to
+			// keep the reuse branch alive.
+			const compaction = providerSettings.backend === "claude" ? detectCompactionContext(context) : null;
+			const baseSystemPrompt = providerSettings.appendSystemPrompt ? context.systemPrompt : undefined;
+			const compactionAppend = compaction ? renderCompactionSystemPromptAppend(compaction) : undefined;
+			const mergedSystemPromptAppend =
+				baseSystemPrompt && compactionAppend
+					? `${baseSystemPrompt}\n\n${compactionAppend}`
+					: (compactionAppend ?? baseSystemPrompt);
+
 			bridgeSession = await ensureBridgeSession({
 				sessionKey,
 				cwd,
 				backend: providerSettings.backend,
 				modelId: model.id,
-				systemPromptAppend: providerSettings.appendSystemPrompt ? context.systemPrompt : undefined,
+				systemPromptAppend: mergedSystemPromptAppend,
 				settingSources: providerSettings.settingSources,
 				strictMcpConfig: providerSettings.strictMcpConfig,
 				mcpServers: providerSettings.mcpServers,

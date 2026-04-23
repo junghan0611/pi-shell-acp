@@ -31,10 +31,12 @@ Usage:
   ./run.sh smoke-cancel [project-dir] # strict cancel/abort cleanup observability gate (Claude + Codex)
   ./run.sh smoke-model-switch [project-dir] # strict dual-backend model switch observability gate (reuse 3 branches)
   ./run.sh smoke-delegate-resume [project-dir] # bridge-level delegate-style continuity gate (Claude=resume, Codex=load)
+  ./run.sh smoke-compaction [project-dir] # strict post-compaction handoff gate (Claude recalls pi-side summary token + reuses session)
   ./run.sh check-mcp                  # local deterministic check of normalizeMcpServers() — no Claude/ACP subprocess
   ./run.sh check-backends             # local deterministic check of backend launch resolution + backend-specific _meta shape
   ./run.sh check-registration         # local deterministic check of per-runtime provider registration semantics
   ./run.sh check-models               # local deterministic check of MODELS contextWindow cap (default 200K + opt-in override)
+  ./run.sh check-compaction-handoff   # local deterministic check of post-compaction summary + kept-turn projection into systemPromptAppend
   ./run.sh check-claude-sessions [project-dir]  # compare pi persisted sessions vs Claude SDK session visibility
   ./run.sh verify-resume [project-dir] # exact pi -> ACP -> Claude continuity check with visible acpSessionId diagnostics
   ./run.sh sync-auth                  # copy ~/.pi/agent/auth.json anthropic OAuth credentials to pi-shell-acp alias
@@ -828,6 +830,192 @@ smoke_delegate_resume_single() {
   rm -f "$session_file"
 }
 
+smoke_compaction_single() {
+  local project_dir=$1
+  local backend=$2
+  local model=$3
+
+  local log_file token uuid
+  log_file=$(mktemp /tmp/pi-shell-acp-compaction-XXXXXX.log)
+  # Token is generated fresh per run so the check fails closed if Claude ever
+  # has prior knowledge of the phrase (it won't — it's random per invocation).
+  # Use bash builtins only — a `tr </dev/urandom | head -c` idiom tripped
+  # SIGPIPE (rc=141) under `set -o pipefail`.
+  uuid=$(</proc/sys/kernel/random/uuid)
+  uuid=${uuid//-/}
+  uuid=${uuid^^}
+  token=${uuid:0:12}
+
+  echo "[smoke-compaction/$backend] model=$model token=$token"
+
+  local rc=0
+  (
+    cd "$REPO_DIR"
+    PI_SHELL_ACP_SMOKE_BACKEND="$backend" \
+    PI_SHELL_ACP_MODEL_ID="$model" \
+    PI_SHELL_ACP_COMPACTION_TOKEN="$token" \
+      node --input-type=module 2>"$log_file" <<'EOF'
+import {
+  ensureBridgeSession,
+  sendPrompt,
+  setActivePromptHandler,
+  closeBridgeSession,
+  normalizeMcpServers,
+} from './acp-bridge.ts';
+import { renderCompactionSystemPromptAppend } from './compaction-context.ts';
+
+const backend = process.env.PI_SHELL_ACP_SMOKE_BACKEND;
+const modelId = process.env.PI_SHELL_ACP_MODEL_ID;
+const token = process.env.PI_SHELL_ACP_COMPACTION_TOKEN;
+if (!backend || !modelId || !token) throw new Error('backend/model/token env required');
+
+// Build a realistic post-compaction systemPromptAppend: summary contains the
+// token, plus a couple of "kept" turns for shape. This is the string pi-shell-
+// acp would synthesize from pi's compacted context.
+const fakeCtx = {
+  summary: `The operator shared a one-time session token that must be recalled verbatim when asked. The token is ${token}. Earlier we also discussed unrelated repo chores.`,
+  keptMessages: [
+    { role: 'user', content: 'Before I forget — please remember the token I just shared.' },
+    {
+      role: 'assistant',
+      content: [{ type: 'text', text: 'Acknowledged. I have the token on file.' }],
+      api: 'anthropic-messages', provider: 'anthropic', model: modelId,
+      usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+      stopReason: 'stop', timestamp: 0,
+    },
+    { role: 'user', content: 'Thanks. Continue with the task plan when I ask.' },
+    {
+      role: 'assistant',
+      content: [{ type: 'text', text: 'Understood.' }],
+      api: 'anthropic-messages', provider: 'anthropic', model: modelId,
+      usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+      stopReason: 'stop', timestamp: 0,
+    },
+  ],
+  latestUserIndex: -1, // unused by renderer
+};
+
+const systemPromptAppend = renderCompactionSystemPromptAppend(fakeCtx);
+const emptyMcpHash = normalizeMcpServers(undefined).hash;
+const bridgeConfigSignature = JSON.stringify({
+  backend, appendSystemPrompt: false, settingSources: ['user'],
+  strictMcpConfig: false, mcpServersHash: emptyMcpHash,
+});
+
+const sessionKey = `smoke-compaction:${backend}:${modelId}`;
+const baseParams = {
+  sessionKey,
+  cwd: process.cwd(),
+  backend,
+  modelId,
+  systemPromptAppend,
+  settingSources: ['user'],
+  strictMcpConfig: false,
+  mcpServers: [],
+  bridgeConfigSignature,
+  // Signatures mimic a real post-compaction context: one "user" for the summary
+  // message, two kept exchanges, then the live turn.
+  contextMessageSignatures: [
+    'user:text:SUMMARY', 'user:text:kept-u1', 'assistant:text:kept-a1',
+    'user:text:kept-u2', 'assistant:text:kept-a2', 'user:text:LATEST',
+  ],
+};
+
+// --- Turn 21 (post-compaction): fresh Claude session, recall the token. ---
+const sessionA = await ensureBridgeSession(baseParams);
+const acpIdA = sessionA.acpSessionId;
+console.error(`[smoke-compaction] turn1 acpSessionId=${acpIdA} bootstrapPath=${sessionA.bootstrapPath}`);
+if (sessionA.bootstrapPath !== 'new') {
+  throw new Error(`turn1 expected bootstrapPath=new, got ${sessionA.bootstrapPath}`);
+}
+
+let recalled = '';
+setActivePromptHandler(sessionA, (event) => {
+  if (event.type !== 'session_notification') return;
+  const update = event.notification?.update;
+  if (update?.sessionUpdate === 'agent_message_chunk' && update.content?.type === 'text') {
+    recalled += update.content.text;
+  }
+});
+
+const recallResult = await sendPrompt(sessionA, [{
+  type: 'text',
+  text: 'Please repeat the session token I shared earlier, exactly as it was given. Reply with only the token.',
+}]);
+setActivePromptHandler(sessionA, undefined);
+
+if (recallResult.stopReason !== 'end_turn') {
+  throw new Error(`turn1 stopReason=${recallResult.stopReason}`);
+}
+if (!recalled.includes(token)) {
+  throw new Error(`turn1 response did not contain the token. token=${token} response=${JSON.stringify(recalled).slice(0, 300)}`);
+}
+console.error(`[smoke-compaction] turn1 token recall: ok (${token} present in response)`);
+
+// --- Turn 22 (subsequent): same systemPromptAppend, signatures extended ---
+// bootstrapPath must be "reuse" — the whole point of the deterministic
+// renderer is so that Claude session A survives across post-compaction turns.
+const turn2Params = {
+  ...baseParams,
+  contextMessageSignatures: [...baseParams.contextMessageSignatures, 'assistant:text:turn1-reply', 'user:text:NEW'],
+};
+const sessionB = await ensureBridgeSession(turn2Params);
+if (sessionB !== sessionA) {
+  throw new Error(`turn2 expected session reuse (same object), got a different session`);
+}
+if (sessionB.bootstrapPath !== 'reuse') {
+  throw new Error(`turn2 expected bootstrapPath=reuse, got ${sessionB.bootstrapPath}`);
+}
+if (sessionB.acpSessionId !== acpIdA) {
+  throw new Error(`turn2 acpSessionId drifted: ${acpIdA} -> ${sessionB.acpSessionId}`);
+}
+console.error(`[smoke-compaction] turn2 reuse preserved: ok (same acpSessionId=${acpIdA})`);
+
+await closeBridgeSession(sessionKey, { closeRemote: true, invalidatePersisted: true });
+console.error('[smoke-compaction] cleanup: ok');
+EOF
+  ) || rc=$?
+
+  if [[ "$rc" != "0" ]]; then
+    echo "[smoke-compaction/$backend] node subprocess failed rc=$rc" >&2
+    cat "$log_file" >&2
+    rm -f "$log_file"
+    exit 1
+  fi
+
+  if ! grep -q '^\[smoke-compaction\] turn1 token recall: ok' "$log_file"; then
+    echo "[smoke-compaction/$backend] token recall did not pass" >&2
+    cat "$log_file" >&2
+    rm -f "$log_file"
+    exit 1
+  fi
+  if ! grep -q '^\[smoke-compaction\] turn2 reuse preserved: ok' "$log_file"; then
+    echo "[smoke-compaction/$backend] reuse invariant did not hold" >&2
+    cat "$log_file" >&2
+    rm -f "$log_file"
+    exit 1
+  fi
+
+  echo "[smoke-compaction/$backend] ok (token recalled + session reused across compaction-style turns)"
+  rm -f "$log_file"
+}
+
+smoke_compaction() {
+  local project_dir
+  project_dir=$(normalize_project_dir "$1")
+
+  require_cmd pi
+
+  echo "[smoke-compaction] post-compaction handoff live gate (Claude only — codex has no systemPromptAppend channel)"
+  echo "[smoke-compaction] project: $project_dir"
+  echo "[smoke-compaction] repo:    $REPO_DIR"
+
+  smoke_compaction_single "$project_dir" claude claude-sonnet-4-6
+  echo "[smoke-compaction] Claude compaction handoff: ok"
+}
+
 smoke_delegate_resume() {
   local project_dir
   project_dir=$(normalize_project_dir "$1")
@@ -1177,6 +1365,167 @@ EOF
   rm -rf "$verify_dir"
 }
 
+check_compaction_handoff() {
+  (cd "$REPO_DIR" && node --input-type=module <<'EOF'
+import { strict as assert } from 'node:assert';
+import {
+  detectCompactionContext,
+  renderCompactionSystemPromptAppend,
+  COMPACTION_PREFIX_LITERAL,
+  COMPACTION_SUFFIX_LITERAL,
+} from './compaction-context.ts';
+
+function makeMessage(role, content) {
+  const base = { role, content, timestamp: 0 };
+  if (role === 'assistant') {
+    return { ...base, api: 'anthropic-messages', provider: 'anthropic', model: 'test', usage: {
+      input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+    }, stopReason: 'stop' };
+  }
+  return base;
+}
+
+const fakeSummary = 'This is the synthetic summary of turns 1 through 17.';
+const summaryText = `${COMPACTION_PREFIX_LITERAL}${fakeSummary}${COMPACTION_SUFFIX_LITERAL}`;
+
+// --- Case 1: no compaction — normal context ---
+{
+  const ctx = {
+    systemPrompt: 'sys',
+    messages: [
+      makeMessage('user', 'hello'),
+      makeMessage('assistant', [{ type: 'text', text: 'hi' }]),
+      makeMessage('user', 'what time is it?'),
+    ],
+  };
+  const result = detectCompactionContext(ctx);
+  assert.equal(result, null, 'non-compaction context should return null');
+  console.log('[check-compaction-handoff] case 1 (no compaction): ok');
+}
+
+// --- Case 2: typical post-compaction context ---
+{
+  const keptUser18 = makeMessage('user', 'msg18');
+  const keptAsst18 = makeMessage('assistant', [{ type: 'text', text: 'asst18 body' }]);
+  const keptUser19 = makeMessage('user', 'msg19');
+  const keptAsst19 = makeMessage('assistant', [{ type: 'text', text: 'asst19 body' }]);
+  const keptUser20 = makeMessage('user', 'msg20');
+  const keptAsst20 = makeMessage('assistant', [{ type: 'text', text: 'asst20 body' }]);
+  const newUser21 = makeMessage('user', 'msg21');
+
+  const ctx = {
+    systemPrompt: 'sys',
+    messages: [
+      makeMessage('user', summaryText),
+      keptUser18, keptAsst18,
+      keptUser19, keptAsst19,
+      keptUser20, keptAsst20,
+      newUser21,
+    ],
+  };
+  const result = detectCompactionContext(ctx);
+  assert.ok(result, 'compaction should be detected');
+  assert.equal(result.summary, fakeSummary, 'summary body should be recovered verbatim');
+  assert.equal(result.keptMessages.length, 6, 'kept window should be 6 messages (msg18..asst20)');
+  assert.equal(result.latestUserIndex, 7, 'latest user index should point at msg21');
+
+  const rendered = renderCompactionSystemPromptAppend(result);
+  assert.ok(rendered.includes(fakeSummary), 'rendered append must contain the raw summary text');
+  assert.ok(rendered.includes('asst18 body'), 'rendered append must include kept assistant text');
+  assert.ok(rendered.includes('User: msg20'), 'rendered append must include kept user text with role label');
+  // Most important invariant: latest turn must NOT be in the append (it stays in extractPromptBlocks).
+  assert.ok(!rendered.includes('msg21'), 'rendered append must NOT include the latest user turn');
+  console.log('[check-compaction-handoff] case 2 (typical compaction): ok');
+}
+
+// --- Case 3: determinism — same input must produce identical append ---
+{
+  const build = (latest) => ({
+    systemPrompt: '',
+    messages: [
+      makeMessage('user', summaryText),
+      makeMessage('user', 'kept-u'),
+      makeMessage('assistant', [{ type: 'text', text: 'kept-a' }]),
+      makeMessage('user', latest),
+    ],
+  });
+  const a = renderCompactionSystemPromptAppend(detectCompactionContext(build('first'))); // latest = 'first'
+  const b = renderCompactionSystemPromptAppend(detectCompactionContext(build('second'))); // latest differs
+  assert.equal(a, b, 'append must be stable regardless of the latest user turn text (drives reuse)');
+  // And a second call with the exact same object yields the same string.
+  const c = renderCompactionSystemPromptAppend(detectCompactionContext(build('first')));
+  assert.equal(a, c, 'append is pure — same input yields same output');
+  console.log('[check-compaction-handoff] case 3 (determinism): ok');
+}
+
+// --- Case 4: summary-only context (no kept turns, just summary + latest user) ---
+{
+  const ctx = {
+    systemPrompt: '',
+    messages: [
+      makeMessage('user', summaryText),
+      makeMessage('user', 'brand new question'),
+    ],
+  };
+  const result = detectCompactionContext(ctx);
+  assert.ok(result, 'should detect compaction');
+  assert.equal(result.keptMessages.length, 0, 'no kept turns');
+  assert.equal(result.latestUserIndex, 1, 'latest user at index 1');
+  const rendered = renderCompactionSystemPromptAppend(result);
+  assert.ok(rendered.includes(fakeSummary));
+  assert.ok(!rendered.includes('Recent exchanges preserved'), 'should skip the "recent exchanges" section when keptMessages is empty');
+  console.log('[check-compaction-handoff] case 4 (summary-only): ok');
+}
+
+// --- Case 5: content-blocks form (array, not string) for the summary message ---
+{
+  const ctx = {
+    systemPrompt: '',
+    messages: [
+      makeMessage('user', [{ type: 'text', text: summaryText }]),
+      makeMessage('user', 'x'),
+    ],
+  };
+  const result = detectCompactionContext(ctx);
+  assert.ok(result, 'must detect compaction even when content is a text-block array');
+  assert.equal(result.summary, fakeSummary);
+  console.log('[check-compaction-handoff] case 5 (text-block array form): ok');
+}
+
+// --- Case 6: false positive guard — user message whose body merely mentions the prefix words ---
+{
+  const ctx = {
+    systemPrompt: '',
+    messages: [
+      makeMessage('user', 'Hey, could you compact the logs into a summary?'),
+      makeMessage('user', 'nope'),
+    ],
+  };
+  const result = detectCompactionContext(ctx);
+  assert.equal(result, null, 'must not mistake casual text for the compaction wrapper');
+  console.log('[check-compaction-handoff] case 6 (false-positive guard): ok');
+}
+
+// --- Case 7: first message is assistant (never valid for pi, but guard) ---
+{
+  const ctx = {
+    systemPrompt: '',
+    messages: [
+      makeMessage('assistant', [{ type: 'text', text: summaryText }]),
+      makeMessage('user', 'x'),
+    ],
+  };
+  const result = detectCompactionContext(ctx);
+  assert.equal(result, null, 'first non-user message must not trigger detection');
+  console.log('[check-compaction-handoff] case 7 (non-user first message): ok');
+}
+
+console.log('[check-compaction-handoff] all 7 cases ok');
+EOF
+  )
+}
+
 check_registration() {
   local verify_dir
   verify_dir="$REPO_DIR/.tmp-verify"
@@ -1393,6 +1742,7 @@ setup_all() {
   check_backends
   check_registration
   check_models
+  check_compaction_handoff
 
   smoke_all "$project_dir"
 }
@@ -1426,6 +1776,9 @@ case "$cmd" in
   smoke-delegate-resume)
     smoke_delegate_resume "$TARGET_PROJECT_DIR"
     ;;
+  smoke-compaction)
+    smoke_compaction "$TARGET_PROJECT_DIR"
+    ;;
   check-mcp)
     check_mcp
     ;;
@@ -1437,6 +1790,9 @@ case "$cmd" in
     ;;
   check-models)
     check_models
+    ;;
+  check-compaction-handoff)
+    check_compaction_handoff
     ;;
   check-claude-sessions)
     check_claude_sessions "$TARGET_PROJECT_DIR"
