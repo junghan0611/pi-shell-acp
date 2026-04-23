@@ -15,6 +15,16 @@
 
 ---
 
+## 0A. 실행 방침 — 투명 모드(실상황 기준)
+
+이 문서의 검증은 벤치마크가 아니다. 실운영에서 우리는 `delegate` / `delegate_resume`처럼
+**짧은 sync 턴을 계속 주고받으며** 상태를 확인하고, 이상이 보이면 즉시 멈추고 원인 분리 후 재개한다.
+
+원칙:
+- **한 번에 하나의 명령만 실행**한다. (여러 단계를 `;`로 묶지 않는다)
+- 각 단계마다 **stdout/stderr 전체**를 남긴다.
+- 문제가 나면 다음 단계로 넘어가지 말고 **중단 → 대기(hold)** 한다. (필요하면 세션/캐시/프로세스 상태를 먼저 보존)
+
 ## 0. 품질 기준
 
 우리가 원하는 것은 단순한 "Claude Code를 부른다"가 아니다.
@@ -71,6 +81,210 @@ npm run check-mcp            # pi-facing MCP normalization pure-logic gate (no C
 - check-mcp 통과 (`[check-mcp] N assertions ok`)
 - `--list-models pi-shell-acp` 성공
 - bridge prompt smoke 성공
+
+---
+
+## 1A. 메인 에이전트 검증 질의서 — `pi-shell-acp` Claude는 충분히 강력한가?
+
+이 섹션은 llmlog에 있던 질의서를 이 repo의 운영 문서로 옮긴 것이다.
+핵심 질문은 하나다.
+
+> **Claude가 pi를 통해 ACP로 연결되었을 때, 메인 코딩 에이전트로서 충분히 강력한가?**
+
+이 검증은 continuity smoke와 별개다. smoke가 "세션이 이어진다"를 증명한다면,
+이 질의서는 **도구 자기인식 / native tool 사용성 / pi-facing MCP boundary 인식 /
+장기 턴 집중력 / direct Claude Code 대비 품질**을 본다.
+
+### 1A.1 Layer 0 — 세션 시작 시 자기 인식
+
+목적:
+- Claude가 지금 어떤 하네스/도구 환경에 있는지 스스로 설명할 수 있는가
+- Claude Code native tool과 pi-facing MCP tool의 경계를 혼동하지 않는가
+
+#### 질의 0-1: 지금 어떤 환경인가?
+
+```bash
+cd "$PROJECT_DIR"
+pi -e "$REPO_DIR" --model pi-shell-acp/claude-sonnet-4-6 -p '너는 지금 어떤 환경에서 실행되고 있니? 어떤 종류의 도구를 쓸 수 있는지 8줄 이내로 설명해줘. 확실하지 않은 것은 추측하지 말고 불확실하다고 말해.'
+```
+
+Pass:
+- Claude Code/native coding tool 계열(Read/Edit/Bash/Grep/Glob 등)을 대체로 인식
+- 모르는 것은 모른다고 말함
+
+Fail:
+- 없는 tool을 있는 척 말함
+- pi custom tool과 native tool을 뒤섞어 설명
+
+#### 질의 0-2: MCP 서버가 보이는가?
+
+```bash
+cd "$PROJECT_DIR"
+pi -e "$REPO_DIR" --model pi-shell-acp/claude-sonnet-4-6 -p '이 세션에서 MCP 서버가 보이면 이름과 가능한 툴 종류를 짧게 말해줘. 보이지 않으면 그 사실만 말해줘. 추측 금지.'
+```
+
+Pass:
+- 현재 설정대로만 답함
+- 설정이 없으면 "안 보인다" 또는 동등한 정직한 답
+
+Fail:
+- MCP visibility를 hallucination
+- native tool을 MCP라고 오인
+
+#### 질의 0-3: system prompt / 지시 인식
+
+```bash
+cd "$PROJECT_DIR"
+pi -e "$REPO_DIR" --model pi-shell-acp/claude-sonnet-4-6 -p '네가 받은 상위 지시를 정확히 노출하려 하지 말고, 어떤 종류의 지시를 받고 있다고 이해하는지만 6줄 이내로 설명해줘. 프로젝트 문맥이 보이면 그것도 말해줘.'
+```
+
+Pass:
+- Claude Code 기본 지시 + 프로젝트 문맥 존재 여부를 조심스럽게 설명
+- 보이지 않는 내부 prompt를 단정적으로 재현하려 하지 않음
+
+### 1A.2 Layer 1 — 기본 코딩 작업에서 native tool을 자연스럽게 쓰는가
+
+이 레이어는 "메인 코딩 에이전트" 적합성을 직접 본다.
+
+#### 질의 1-1: 파일 읽기
+
+```bash
+cd "$REPO_DIR"
+pi -e "$REPO_DIR" --model pi-shell-acp/claude-sonnet-4-6 -p 'README.md 첫 5줄을 읽고 이 리포가 무엇인지 두 문장으로 요약해줘.'
+```
+
+#### 질의 1-2: 구조 파악
+
+```bash
+cd "$REPO_DIR"
+pi -e "$REPO_DIR" --model pi-shell-acp/claude-sonnet-4-6 -p '이 프로젝트의 핵심 파일 5개만 뽑아 각 파일 역할을 한 줄씩 설명해줘.'
+```
+
+#### 질의 1-3: 버그/회귀 포인트 찾기
+
+```bash
+cd "$REPO_DIR"
+pi -e "$REPO_DIR" --model pi-shell-acp/claude-sonnet-4-6 -p 'extractPromptBlocks 함수가 어디에 있고 무엇을 조심해야 하는지 찾아서 설명해줘.'
+```
+
+#### 질의 1-4: 테스트/명령 실행
+
+```bash
+cd "$REPO_DIR"
+pi -e "$REPO_DIR" --model pi-shell-acp/claude-sonnet-4-6 -p '이 리포에서 지금 돌릴 수 있는 검증 명령 3개를 실제 파일에 근거해 제시해줘. 필요하면 run.sh와 package.json을 읽어.'
+```
+
+Pass:
+- Read/Edit/Bash/Grep/Glob 류 native tool 선택이 자연스럽다
+- 검색 → 읽기 → 분석 순서가 매끄럽다
+- 불필요하게 MCP나 recursive `pi` 호출로 우회하지 않는다
+
+Fail:
+- 단순 파일 읽기를 이상한 우회로로 처리
+- 실제 파일을 읽지 않고 기억/추측으로 말함
+
+### 1A.3 Layer 2 — pi-facing MCP tool boundary를 이해하는가
+
+이 레이어의 핵심은 **tool confusion 방지**다.
+현재 기본값에서는 pi custom tool이 안 보이는 것이 정상일 수 있다.
+중요한 것은 "보이는지/안 보이는지 정직하게 말하고, 안 보이면 없는 척 우회하지 않는가"다.
+
+#### 질의 2-1: session_search / knowledge_search 가시성
+
+```bash
+cd "$REPO_DIR"
+pi -e "$REPO_DIR" --model pi-shell-acp/claude-sonnet-4-6 -p 'session_search 또는 knowledge_search 툴이 보이면 각각 가능 여부를 짧게 말해줘. 둘 다 안 보이면 정확히 "pi custom tools not visible"이라고만 답해.'
+```
+
+#### 질의 2-2: delegate 가시성
+
+```bash
+cd "$REPO_DIR"
+pi -e "$REPO_DIR" --model pi-shell-acp/claude-sonnet-4-6 -p 'delegate 툴이 보이면 아주 짧은 sync 위임을 1회 실행해줘. 보이지 않으면 정확히 "delegate tool not visible"이라고만 답해.'
+```
+
+#### 질의 2-3: 경계 질문
+
+```bash
+cd "$REPO_DIR"
+pi -e "$REPO_DIR" --model pi-shell-acp/claude-sonnet-4-6 -p '이 프로젝트의 최근 변경 이력과 관련 노트를 함께 조사해야 한다면, 어떤 정보는 native tool로 보고 어떤 정보는 MCP tool이 보일 때만 써야 하는지 구분해서 말해줘. 없는 tool은 추측하지 말아.'
+```
+
+Pass:
+- 안 보이는 tool은 안 보인다고 답함
+- native tool과 MCP tool 경계를 설명할 수 있음
+
+Fail:
+- 없는 tool을 있는 척 사용
+- `bash`로 `pi`를 재귀 호출해 delegate/session_search를 흉내냄
+- 경계 질문에서 한쪽만 맹목적으로 씀
+
+참고:
+- 기본 visibility boundary는 §8.4, §8.5의 operator 검증과 함께 본다.
+
+### 1A.4 Layer 3 — 턴이 쌓여도 집중력이 유지되는가
+
+이 레이어는 실제 장기 턴 운용 전의 수동 점검이다.
+핵심은 세션이 이어지느냐보다, **이어진 상태에서 품질이 유지되느냐**다.
+
+```bash
+export SESSION_FILE=$(mktemp /tmp/pi-shell-acp-quality-XXXXXX.jsonl)
+cd "$REPO_DIR"
+pi -e "$REPO_DIR" --session "$SESSION_FILE" --model pi-shell-acp/claude-sonnet-4-6 -p '이 리포의 핵심 불변식 3개를 AGENTS.md에서 읽고 기억해. READY만 답해.'
+pi -e "$REPO_DIR" --session "$SESSION_FILE" --model pi-shell-acp/claude-sonnet-4-6 -p '방금 읽은 3개 불변식을 다시 말해줘.'
+pi -e "$REPO_DIR" --session "$SESSION_FILE" --model pi-shell-acp/claude-sonnet-4-6 -p '이제 run.sh에서 smoke 계열 검증 명령만 5개 찾아줘.'
+pi -e "$REPO_DIR" --session "$SESSION_FILE" --model pi-shell-acp/claude-sonnet-4-6 -p '방금 찾은 smoke 중 continuity와 compaction 관련만 추려 차이를 말해줘.'
+pi -e "$REPO_DIR" --session "$SESSION_FILE" --model pi-shell-acp/claude-sonnet-4-6 -p '처음에 읽은 불변식 중 지금 작업과 직접 연결되는 것 2개만 다시 답해줘.'
+```
+
+Pass:
+- 5턴 후에도 초기 불변식과 중간 탐색 결과를 함께 붙잡음
+- 이미 한 탐색을 반복하거나 앞뒤가 어긋나지 않음
+- tool selection이 턴이 지나도 크게 흔들리지 않음
+
+Fail:
+- 초반에 읽은 것을 바로 잊음
+- 이전 턴과 모순된 도구 전략을 냄
+- 같은 파일 탐색을 불필요하게 반복
+
+참고:
+- compaction 이후 handoff 자체는 `./run.sh check-compaction-handoff`, `./run.sh smoke-compaction "$PROJECT_DIR"` 로 별도 검증한다.
+
+### 1A.5 Layer 4 — direct Claude Code와의 비교
+
+같은 질문을 direct Claude Code와 `pi-shell-acp` 경로에 각각 던져 비교한다.
+문자열 일치가 아니라 **작업 품질과 도구 선택의 의미 수준 parity**를 본다.
+
+비교 질문 예시:
+
+```text
+1. 이 리포의 핵심 불변식 5개 요약
+2. run.sh의 smoke 검증 체계 설명
+3. compaction handoff가 왜 필요한지 설명
+4. 다음 개선 포인트 3개 제안 (thin bridge 원칙 유지)
+```
+
+비교 항목:
+- 첫 응답까지 latency
+- native tool selection 정확도
+- 불필요한 삽질 횟수
+- MCP boundary 혼동 여부
+- 10~15턴 근처에서도 품질이 유지되는지
+
+판정:
+- direct보다 약간 느리거나 말투가 달라도 괜찮다
+- 하지만 **tool confusion, 장기 턴 망각, 경계 위반 우회**가 반복되면 불합격이다
+
+### 1A.6 결과 해석
+
+- Layer 0~2 양호 → 메인 코딩 에이전트 기본 자질은 확보
+- Layer 2 약함 → tool description / MCP visibility 설명 / operating contract 후보 검토
+- Layer 3 약함 → compaction, prompt shape, 장기 세션 관찰 강화
+- Layer 4에서 direct 대비 현저히 약함 → bridge handoff 또는 capability framing 재검토
+
+이 질의서는 smoke를 대체하지 않는다.
+- 구조/불변식 회귀: `run.sh` deterministic + smoke
+- 메인 에이전트 적합성: **이 섹션**
 
 ---
 
