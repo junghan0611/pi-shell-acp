@@ -1,10 +1,14 @@
 /**
  * pi-tools-bridge — MCP adapter exposing selected pi-side tools to ACP hosts.
  *
- * Ownership: this adapter lives inside `agent-config` (the consuming harness).
- * It is NOT part of `pi-shell-acp` (the thin bridge product). Do not move it
- * into the bridge repo — see agent-config/AGENTS.md "Two-Repo Contract" and
- * pi-shell-acp/README.md "Product boundary".
+ * Ownership: this adapter lives inside `pi-shell-acp` alongside the rest of the
+ * entwurf orchestration surface (pi-extensions/delegate.ts + lib/delegate-core.ts +
+ * pi/delegate-targets.json + mcp/session-bridge). See AGENTS.md §Entwurf Orchestration.
+ *
+ * Historical note: this adapter previously lived in agent-config under the
+ * "thin bridge, orchestration elsewhere" boundary. That boundary was superseded
+ * during the entwurf migration — delegate/registry/identity-lock/session-bridge
+ * all consolidated into pi-shell-acp. agent-config is now a consumer, not the owner.
  *
  * Wiring: registered only via piShellAcpProvider.mcpServers in pi settings.
  * No ambient discovery. The bridge never auto-promotes pi extension tools.
@@ -453,7 +457,7 @@ server.tool(
     "where you want the result inline. " +
     "The result includes a Task ID — pass it to delegate_resume to continue this delegate's " +
     "saved session with a follow-up prompt. " +
-    "Delegate Target Registry (narrow door, see agent-config/AGENTS.md): every spawn must " +
+    "Delegate Target Registry (narrow door, see pi-shell-acp/AGENTS.md §Entwurf Orchestration): every spawn must " +
     "resolve to an exact (provider, model) pair listed in ~/.pi/agent/delegate-targets.json. " +
     "Caller may pass either a qualified `model` (provider/name) or both `provider` and `model` " +
     "fields. Bare model is accepted only when unambiguous — e.g. `claude-sonnet-4-6` resolves " +

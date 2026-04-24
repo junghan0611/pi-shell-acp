@@ -14,12 +14,14 @@ pi
       -> Claude Code | Codex
 ```
 
+> **Direction reminder.** `pi-shell-acp` is the reverse direction of [`pi-acp`](https://github.com/svkozak/pi-acp): `pi-acp` lets external ACP clients talk *to* pi; `pi-shell-acp` lets pi talk *to* ACP backends.
+
 The goal is simple:
 - keep **pi** as the harness
 - keep each ACP backend as itself
 - keep this repo as a **small bridge**, not a second harness
 
-> **Product boundary — under revision.** The earlier thesis ("thin bridge; orchestration stays in the consuming harness") is being superseded: delegate / resume / registry / cross-session bridges are migrating **into this repo** (renamed `entwurf`). Until the migration completes, those surfaces still live in [agent-config](https://github.com/junghan0611/agent-config). See AGENTS.md `## Entwurf Orchestration` for the migration plan, and the `## Entwurf Orchestration — [INCOMING: from agent-config]` section below for the incoming artifacts list.
+> **Product scope.** `pi-shell-acp` bundles the ACP bridge and the entwurf orchestration surface in one project: delegate spawn, delegate-target registry, identity preservation, pi-side MCP adapter (`mcp/pi-tools-bridge`), and the Claude Code ↔ pi session bridge (`mcp/session-bridge`). The earlier "thin bridge, orchestration elsewhere" thesis has been superseded — see AGENTS.md `§Entwurf Orchestration` for the narrative and migration history. External harnesses (e.g. [agent-config](https://github.com/junghan0611/agent-config) as a pi skills/prompts package) can consume this repo without owning any of the surfaces above.
 
 ## Current Guarantees
 
@@ -90,25 +92,24 @@ Persisted data is intentionally minimal:
 
 This is a deliberate architectural choice: `pi-shell-acp` persists only enough to re-attach pi to the same remote ACP session. It does **not** ingest backend transcript files to rebuild pi-local conversation history.
 
-## Entwurf Orchestration — [INCOMING: from agent-config]
+## Entwurf Orchestration
 
-> **Mirror of the carving in [agent-config `22bd159`](https://github.com/junghan0611/agent-config/commit/22bd159).** Five surfaces currently living in agent-config are slated to migrate here, at which point `delegate` is renamed to `entwurf` in a single commit on this side. Grep key `Entwurf Orchestration` resolves on both sides until migration completes.
->
-> Full migration plan, naming contract, and Phase 0.5 ingestion scope live in [AGENTS.md](AGENTS.md) under the same section name. This section is the README-side pointer.
+> Migrated in from agent-config during the entwurf consolidation. This repo now owns the full surface; the original carving is [agent-config `22bd159`](https://github.com/junghan0611/agent-config/commit/22bd159), ingestion is [pi-shell-acp `768baf4`](https://github.com/junghan0611/pi-shell-acp/commit/768baf4) plus the `da97fa9`/`060c412`/`9269771`/`6939e7e` stabilization round. See AGENTS.md `§Entwurf Orchestration` for the full narrative, schema, and release baseline.
 
-**Incoming artifacts and their planned locations.**
+**Surfaces in this repo.**
 
-| Source (agent-config)                  | Destination (pi-shell-acp, planned)     | Purpose                                                          |
-|----------------------------------------|-----------------------------------------|------------------------------------------------------------------|
-| `pi-extensions/delegate.ts`            | `entwurf/spawn.ts`                      | pi-native spawn entry                                            |
-| `pi-extensions/lib/delegate-core.ts`   | `entwurf/core.ts`                       | shared core: registry resolution + identity lock                 |
-| `pi/delegate-targets.json`             | `entwurf/targets.json`                  | SSOT allowlist of `(provider, model)` pairs                      |
-| `mcp/pi-tools-bridge/`                 | `mcp/pi-tools-bridge/`                  | MCP adapter promoting pi-side tools (entwurf, session_search, knowledge_search) to ACP hosts |
-| `mcp/session-bridge/`                  | `mcp/session-bridge/`                   | Claude Code ↔ pi Unix-socket session bridge                      |
+| Path                                   | Purpose                                                          |
+|----------------------------------------|------------------------------------------------------------------|
+| `pi-extensions/delegate.ts`            | pi-native delegate spawn (sync + async modes, Phase 0.5)         |
+| `pi-extensions/lib/delegate-core.ts`   | shared core: registry resolution + Identity Preservation Rule    |
+| `pi/delegate-targets.json`             | SSOT allowlist of `(provider, model)` spawn targets              |
+| `mcp/pi-tools-bridge/`                 | MCP adapter promoting pi-side tools (delegate, session_search, knowledge_search, send_to_session, list_sessions) to ACP hosts |
+| `mcp/session-bridge/`                  | Claude Code ↔ pi Unix-socket session bridge (wire-compatible with pi's `control.ts`) |
+| `scripts/session-messaging-smoke.sh`   | 4-case matrix verifying send_to_session across native/ACP senders × native/ACP targets |
 
-After migration, both `entwurf/*` (pi-native surface) and `mcp/*` (ACP-facing adapters) live together in this repo — the "one project" principle from agent-config is preserved at the new home.
+The identifier `delegate` is the current in-repo name. A single rename commit to `entwurf` is pending as the final cosmetic step of the migration — see AGENTS.md `§Entwurf Orchestration § Migration Plan (step 6)`.
 
-Related: see `## Engraving — Agent Self-Recognition` in AGENTS.md for how `entwurf` surfaces in the ACP session identity once it lands here.
+Related: see `## Engraving — Agent Self-Recognition` in AGENTS.md for how the delegate tool surfaces in the ACP session identity.
 
 ## Repository Layout
 
@@ -172,9 +173,11 @@ pi --list-models pi-shell-acp
 pi --model pi-shell-acp/claude-sonnet-4-6 -p 'ok만 답하세요'
 ```
 
-## agent-config Integration
+## Consumer example: agent-config
 
-`agent-config` should reference this repo in `pi/settings.json` packages and use:
+This section shows how an external harness can consume `pi-shell-acp` as a pi package. [agent-config](https://github.com/junghan0611/agent-config) is the reference consumer — it wires `pi-shell-acp` into its own `pi/settings.json`, uses the provider surface this repo exposes, and adds its own skills / prompts / themes on top without owning any of the entwurf orchestration pieces (those live here).
+
+Typical consumer settings:
 
 ```json
 {

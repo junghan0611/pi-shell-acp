@@ -148,7 +148,7 @@ export function normalizeCodexDelegateModelForAcp(model?: string): string | unde
 //
 // SSOT for what (provider, model) pairs may be spawned via delegate.
 // File: ~/.pi/agent/delegate-targets.json (override with PI_DELEGATE_TARGETS_PATH).
-// See agent-config/AGENTS.md "Delegate Target Registry" for principle and schema.
+// See pi-shell-acp/AGENTS.md §Entwurf Orchestration (Delegate Target Registry) for principle and schema.
 //
 // Spawn flow goes through this gate. Resume flow does NOT — Identity Preservation
 // Rule states that an existing being is preserved as-is, regardless of current
@@ -187,7 +187,7 @@ export function loadDelegateTargets(): DelegateRegistry {
     const err = new DelegateRegistryError(
       `Delegate target registry not found at ${DELEGATE_TARGETS_PATH}. ` +
         `Without it, every delegate spawn is refused. Run \`./run.sh setup:links\` ` +
-        `or create the file manually (see agent-config/pi/delegate-targets.json).`,
+        `or create the file manually (see pi-shell-acp/pi/delegate-targets.json for the canonical shape).`,
     );
     cachedRegistry = err;
     throw err;

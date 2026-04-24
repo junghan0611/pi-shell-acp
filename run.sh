@@ -1026,9 +1026,9 @@ smoke_delegate_resume() {
   echo "[smoke-delegate-resume] project: $project_dir"
   echo "[smoke-delegate-resume] repo:    $REPO_DIR"
   echo "[smoke-delegate-resume] scope:   bridge carries same-session turn1->turn2 via resume(Claude) / load(Codex)"
-  echo "                       — delegate spawn authority / target selection / parent×target matrix"
-  echo "                         all live in agent-config (delegate-targets.json registry + pi-tools-bridge),"
-  echo "                         not here. This smoke does not validate orchestration, only bridge carry."
+  echo "                       — spawn authority / target selection / parent×target matrix live in"
+  echo "                         this repo's entwurf surface (pi/delegate-targets.json + mcp/pi-tools-bridge)."
+  echo "                         This smoke validates BRIDGE carry only; orchestration is validated separately."
 
   smoke_delegate_resume_single "$project_dir" claude claude-sonnet-4-6 resume "bridge continuity (Claude → resumeSession)"
   smoke_delegate_resume_single "$project_dir" codex  gpt-5.2           load   "bridge continuity (Codex → loadSession)"
@@ -1727,16 +1727,17 @@ check_global_codex_acp() {
   fi
 }
 
-# setup_all — standalone bridge install only.
+# setup_all — full pi-shell-acp install.
 #
-# This installs pi-shell-acp (the thin ACP bridge) into a target project and
-# verifies it end-to-end against both ACP backends. It deliberately does NOT:
-#   - build or install any consuming harness (e.g. agent-config)
-#   - build or wire agent-config/mcp/pi-tools-bridge
-#   - touch delegate orchestration / async registry / pi extensions
+# Installs the bridge + entwurf orchestration surface (delegate registry,
+# MCP pi-tools-bridge, session-bridge) into a target project and verifies
+# end-to-end against both ACP backends. As of the entwurf migration this
+# repo owns the orchestration — there is no separate "consuming harness"
+# install for the delegate/registry pieces.
 #
-# If you want the full harness install (bridge + MCP adapter + wiring + full
-# validation), run `agent-config/run.sh setup` instead. See AGENTS.md §Boundary.
+# An external harness that consumes pi-shell-acp (e.g. agent-config as a
+# pi package + skills set) may still have its own install/setup for its
+# own concerns; those are outside the scope of this script.
 setup_all() {
   local project_dir
   project_dir=$(normalize_project_dir "$1")
@@ -1747,7 +1748,7 @@ setup_all() {
 
   echo "[setup] repo:    $REPO_DIR"
   echo "[setup] project: $project_dir"
-  echo "[setup] scope:   standalone bridge install (consuming harness has its own setup)"
+  echo "[setup] scope:   full bridge + entwurf orchestration install"
   echo "[setup] verification: smoke-all (Claude + Codex)"
 
   (cd "$REPO_DIR" && npm install)

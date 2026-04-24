@@ -209,49 +209,29 @@ The previous `## Boundary — Bridge vs Consuming Harness` section (below, marke
 
 ---
 
-## Boundary — Bridge vs Consuming Harness [SUPERSEDED: see Entwurf Orchestration]
+## Historical Boundary — Pre-Entwurf Thesis [SUPERSEDED]
 
-> **Historical.** This boundary was the pre-entwurf thesis: "thin bridge, orchestration elsewhere." It is superseded by the `## Entwurf Orchestration` migration above, which consolidates delegate/registry/identity-lock/session-bridge surfaces into this repo. The body below remains as reference during the transition window and will be removed after ingestion completes.
+> **This section is historical context only, not the current ownership model.** It documents a boundary that no longer applies. For current ownership, read `## Entwurf Orchestration` and `## Scope` (Layer A / Layer B). The quotes below are frozen snapshots of the old thesis kept for migration trail — do not treat them as current fact. Specific path references in the old boundary (`agent-config/pi-extensions/...`, `agent-config/mcp/pi-tools-bridge`, etc.) no longer match reality; those surfaces now live in this repo.
 
-**Public thesis (English, pre-entwurf):**
+**Frozen thesis — English (pre-entwurf):**
 
 > pi-shell-acp is the thin ACP bridge product. It guarantees backend continuity and explicit MCP injection. Delegate/resume/async orchestration belongs to the consuming harness (currently agent-config), not to this bridge repo.
 
-**운영 원칙 (Korean, pre-entwurf):**
+**Frozen 운영 원칙 — Korean (pre-entwurf):**
 
 > pi-shell-acp는 얇은 ACP 브리지다. delegate/resume/async 자체를 소유하지 않는다. 그 위의 MCP 표면과 orchestration은 소비 하네스(agent-config)의 책임이다.
 
-### What this repo is NOT
+Why the boundary moved: experience showed the delegate surface, target registry, identity preservation, and the MCP adapters that promote pi-side tools to ACP hosts all cluster around the ACP session lifecycle this repo already owned. Splitting them across two repos produced seam churn without a real boundary gain. See `## Entwurf Orchestration § Migration Plan` for the step-by-step transition.
 
-- ❌ a delegate orchestration layer — `agent-config/pi-extensions/delegate.ts` is the source of truth for delegate / delegate_status / delegate_resume and async task lifecycle.
-- ❌ the owner of MCP Phase-2 tools (`delegate_status`, `delegate_resume`, `list_sessions`) — those belong to `agent-config/mcp/pi-tools-bridge`.
-- ❌ an async task registry or completion-notification system.
-- ❌ a pi extension semantic emulation layer.
-- ❌ a second harness. If a change makes this repo feel like a harness, it is probably wrong.
-
-### Spawn authority lives in the consuming harness
-
-Which (provider, model) a delegate call is allowed to spawn to — and which combinations auto-resolve from a bare model name — is owned by the **delegate target registry** in agent-config:
-
-- File: `agent-config/pi/delegate-targets.json`
-- Consumers: `agent-config/pi-extensions/lib/delegate-core.ts` (spawn path) and `agent-config/mcp/pi-tools-bridge/src/index.ts` (MCP surface).
-
-This bridge deliberately does **not** read that registry. Once pi hands us a `(provider=pi-shell-acp, model, session)` triple we carry it; the decision of whether that triple was allowed lives upstream.
-
-Historical note: there used to be a `PI_DELEGATE_ACP_FOR_CODEX=1` environment switch that controlled whether Codex delegates were routed through this bridge. That was a pre-registry heuristic. The registry is now the spawn authority; the env var is being retired in agent-config. If you see it referenced in older notes, treat it as legacy.
-
-### Install / setup boundary
-
-- `./run.sh setup` (this repo) — **standalone bridge install only**. Builds, wires, and smoke-tests `pi-shell-acp` against a target project. It does not install or build the consuming harness or its MCP adapter.
-- `agent-config/run.sh setup` (consuming harness) — full harness install: brings in `pi-shell-acp` as a dependency, then additionally builds `mcp/pi-tools-bridge`, wires `piShellAcpProvider.mcpServers`, and validates the full delegate orchestration surface.
-
-Version and release are tracked independently: the bridge evolves on its own cadence, and the consuming harness pins the bridge version it consumes.
+Legacy env var note — `PI_DELEGATE_ACP_FOR_CODEX=1` was a pre-registry heuristic for Codex-via-ACP routing. It is superseded by the delegate target registry (`pi/delegate-targets.json`). If you see it in older notes, treat it as legacy.
 
 ---
 
 ## Scope
 
-This repo owns only the narrow bridge layer:
+This repo owns two cooperating layers:
+
+**Layer A — ACP bridge (original product surface):**
 - provider registration in pi
 - ACP subprocess lifecycle
 - ACP initialize / resume / load / new session bootstrap
@@ -261,17 +241,23 @@ This repo owns only the narrow bridge layer:
 - minimal backend adapter selection for ACP launch + backend-specific session metadata
 - bridge-local cleanup, invalidation, diagnostics
 
+**Layer B — Entwurf orchestration (migrated in from agent-config):**
+- delegate spawn (sync + async, Phase 0.5 mode contract) — `pi-extensions/delegate.ts`
+- delegate core — registry resolution + Identity Preservation Rule — `pi-extensions/lib/delegate-core.ts`
+- delegate target registry (SSOT) — `pi/delegate-targets.json`
+- pi-tools-bridge — MCP adapter promoting pi-side tools to ACP hosts — `mcp/pi-tools-bridge/`
+- session-bridge — cross-session Unix-socket MCP — `mcp/session-bridge/`
+- 4-case session-messaging smoke — `scripts/session-messaging-smoke.sh`
+
 This repo does **not** own:
 - pi session UX conventions
 - prompt reconstruction from full pi history
 - hydration of backend transcript stores back into pi-local history
 - tool ledgers / recovery ledgers
 - Claude Code / Codex emulation
-- broad multi-agent orchestration *(under revision — see `## Entwurf Orchestration`)*
 - generic MCP discovery / ambient MCP manager behavior (no `~/.mcp.json` scanning, no merging of arbitrary backend-side configs)
-- promotion of pi extension tools to Claude/Codex — build a separate MCP adapter for that and register it via `piShellAcpProvider.mcpServers` *(under revision — `pi-tools-bridge` is incoming; see `## Entwurf Orchestration`)*
 
-If a change makes this repo feel like a second harness, it is probably wrong. *(This guard predates the entwurf migration. The entwurf surface landing here is intentional consolidation, not harness drift; the "not a second harness" rule still applies to everything outside that carved section.)*
+If a change expands Layer A or Layer B beyond the surfaces listed above — especially if it starts to look like "a general-purpose agent harness" — it is probably wrong. The "not a second harness" rule still applies: Layer B is a consolidated orchestration surface, not an expanding one.
 
 ---
 
