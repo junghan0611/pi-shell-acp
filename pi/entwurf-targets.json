@@ -1,10 +1,10 @@
 {
-  "$comment": "Delegate Target Registry — exact (provider, model) allowlist. SSOT for what can be spawned via delegate. See pi-shell-acp/AGENTS.md Entwurf Orchestration. Resume path intentionally bypasses this registry per Identity Preservation Rule.",
+  "$comment": "Entwurf Target Registry — exact (provider, model) allowlist. SSOT for what can be spawned via entwurf. See pi-shell-acp/AGENTS.md Entwurf Orchestration. Resume path intentionally bypasses this registry per Identity Preservation Rule.",
   "$notes": {
     "gpt-5.5": "High-end frontier target with 400K native codex context. Cost: ~$5 input / $30 output per 1M tokens on this tier — ~6x gpt-5.4 and ~30x gpt-5.4-mini. Do not make it the default. Use explicitly for long-context / high-quality work only. ACP-routed entries are `explicitOnly`: caller must pass provider=pi-shell-acp to route through the ACP bridge, otherwise bare `gpt-5.5` resolves to native openai-codex.",
     "bareResolution": "Each bare model id resolves unambiguously because only the native openai-codex entry is non-explicitOnly. Bare `gpt-5.5` -> openai-codex/gpt-5.5. ACP route requires explicit provider."
   },
-  "delegateTargets": [
+  "entwurfTargets": [
     { "provider": "pi-shell-acp", "model": "claude-sonnet-4-6", "enabled": true },
     { "provider": "pi-shell-acp", "model": "claude-opus-4-7",   "enabled": true },
 

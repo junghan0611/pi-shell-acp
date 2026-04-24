@@ -1,14 +1,14 @@
 /**
- * delegate-core — sync delegate execution, host-agnostic.
+ * entwurf-core — sync entwurf execution, host-agnostic.
  *
  * Single implementation shared by:
- *   - pi-extensions/delegate.ts (pi native tool surface)
+ *   - pi-extensions/entwurf.ts (pi native tool surface)
  *   - mcp/pi-tools-bridge/src/index.ts (MCP tool surface for ACP hosts)
  *
  * This module MUST NOT import anything from @mariozechner/pi-coding-agent or any
  * other pi runtime API. It is pure Node + @sinclair/typebox-free.  Anything that
  * requires pi's ExtensionAPI (sendMessage, appendEntry, sessionManager) belongs
- * in the async delegate path, which stays in pi-extensions/delegate.ts for now.
+ * in the async entwurf path, which stays in pi-extensions/entwurf.ts for now.
  *
  * Scope:
  *   - sync execution (spawn pi, collect message_end events, return summary)
@@ -20,8 +20,8 @@
  *   - Claude models (claude-*)            — always routed through pi-shell-acp.
  *     If pi-shell-acp can't be resolved, falls back to pi-claude-code-use, then warns.
  *   - Codex models (openai-codex/*, gpt-5*) — default is the direct openai-codex provider.
- *     Opt-in via env var `PI_DELEGATE_ACP_FOR_CODEX=1` routes Codex through pi-shell-acp,
- *     in which case `normalizeCodexDelegateModelForAcp()` strips the `openai-codex/`
+ *     Opt-in via env var `PI_ENTWURF_ACP_FOR_CODEX=1` routes Codex through pi-shell-acp,
+ *     in which case `normalizeCodexEntwurfModelForAcp()` strips the `openai-codex/`
  *     prefix because the bridge forwards the model id verbatim to codex-acp, which
  *     only accepts the bare backend id (e.g. `gpt-5.4`) on ChatGPT accounts.
  *
@@ -42,28 +42,28 @@ import * as path from "node:path";
 const AGENT_DIR = path.join(os.homedir(), ".pi", "agent");
 const PI_SETTINGS_PATH = path.join(AGENT_DIR, "settings.json");
 const SESSIONS_BASE = path.join(AGENT_DIR, "sessions");
-const DELEGATE_TARGETS_PATH = process.env.PI_DELEGATE_TARGETS_PATH
-  ?? path.join(AGENT_DIR, "delegate-targets.json");
-export const DEFAULT_DELEGATE_MODEL = "openai-codex/gpt-5.2";
-export const DELEGATE_CODEX_ACP_ENV = "PI_DELEGATE_ACP_FOR_CODEX";
+const ENTWURF_TARGETS_PATH = process.env.PI_ENTWURF_TARGETS_PATH
+  ?? path.join(AGENT_DIR, "entwurf-targets.json");
+export const DEFAULT_ENTWURF_MODEL = "openai-codex/gpt-5.2";
+export const ENTWURF_CODEX_ACP_ENV = "PI_ENTWURF_ACP_FOR_CODEX";
 
 // ============================================================================
 // Types
 // ============================================================================
 
-export interface DelegateSyncOptions {
+export interface EntwurfSyncOptions {
   host?: string;
   cwd?: string;
   /** Caller-provided provider id (e.g. "pi-shell-acp", "openai-codex"). Optional;
    *  if model is qualified ("provider/name") or unambiguous in the registry,
-   *  this can be omitted. See resolveDelegateTarget for resolution rules. */
+   *  this can be omitted. See resolveEntwurfTarget for resolution rules. */
   provider?: string;
   model?: string;
   signal?: AbortSignal;
   onUpdate?: (text: string) => void;
 }
 
-export interface DelegateResult {
+export interface EntwurfResult {
   task: string;
   host: string;
   exitCode: number;
@@ -73,7 +73,7 @@ export interface DelegateResult {
   model?: string;
   error?: string;
   stopReason?: string;
-  /** Short id (8 hex chars) embedded in the session filename. Use this to call delegate_resume. */
+  /** Short id (8 hex chars) embedded in the session filename. Use this to call entwurf_resume. */
   taskId: string;
   sessionFile?: string;
   explicitExtensions: string[];
@@ -116,9 +116,9 @@ export function cwdToSessionDir(cwd: string): string {
   return path.join(SESSIONS_BASE, dirName);
 }
 
-export function resolveDelegateModel(model?: string): string {
+export function resolveEntwurfModel(model?: string): string {
   const trimmed = model?.trim();
-  return trimmed ? trimmed : DEFAULT_DELEGATE_MODEL;
+  return trimmed ? trimmed : DEFAULT_ENTWURF_MODEL;
 }
 
 export function isClaudeModel(model?: string): boolean {
@@ -135,20 +135,20 @@ export function isCodexModel(model?: string): boolean {
 }
 
 export function shouldRouteCodexViaAcp(model?: string): boolean {
-  return isCodexModel(model) && process.env[DELEGATE_CODEX_ACP_ENV] === "1";
+  return isCodexModel(model) && process.env[ENTWURF_CODEX_ACP_ENV] === "1";
 }
 
-export function normalizeCodexDelegateModelForAcp(model?: string): string | undefined {
+export function normalizeCodexEntwurfModelForAcp(model?: string): string | undefined {
   if (!isCodexModel(model) || typeof model !== "string") return model;
   return model.startsWith("openai-codex/") ? model.slice("openai-codex/".length) : model;
 }
 
 // ============================================================================
-// Delegate Target Registry (v1) — narrow door
+// Entwurf Target Registry (v1) — narrow door
 //
-// SSOT for what (provider, model) pairs may be spawned via delegate.
-// File: ~/.pi/agent/delegate-targets.json (override with PI_DELEGATE_TARGETS_PATH).
-// See pi-shell-acp/AGENTS.md §Entwurf Orchestration (Delegate Target Registry) for principle and schema.
+// SSOT for what (provider, model) pairs may be spawned via entwurf.
+// File: ~/.pi/agent/entwurf-targets.json (override with PI_ENTWURF_TARGETS_PATH).
+// See pi-shell-acp/AGENTS.md §Entwurf Orchestration (Entwurf Target Registry) for principle and schema.
 //
 // Spawn flow goes through this gate. Resume flow does NOT — Identity Preservation
 // Rule states that an existing being is preserved as-is, regardless of current
@@ -156,7 +156,7 @@ export function normalizeCodexDelegateModelForAcp(model?: string): string | unde
 // not retroactively forbid resuming sessions that were already created.
 // ============================================================================
 
-export interface DelegateTarget {
+export interface EntwurfTarget {
   provider: string;
   model: string;
   enabled: boolean;
@@ -166,28 +166,28 @@ export interface DelegateTarget {
   explicitOnly?: boolean;
 }
 
-export interface DelegateRegistry {
-  delegateTargets: DelegateTarget[];
+export interface EntwurfRegistry {
+  entwurfTargets: EntwurfTarget[];
 }
 
-export class DelegateRegistryError extends Error {
+export class EntwurfRegistryError extends Error {
   constructor(message: string) {
     super(message);
-    this.name = "DelegateRegistryError";
+    this.name = "EntwurfRegistryError";
   }
 }
 
-let cachedRegistry: DelegateRegistry | DelegateRegistryError | null = null;
+let cachedRegistry: EntwurfRegistry | EntwurfRegistryError | null = null;
 
-export function loadDelegateTargets(): DelegateRegistry {
-  if (cachedRegistry instanceof DelegateRegistryError) throw cachedRegistry;
+export function loadEntwurfTargets(): EntwurfRegistry {
+  if (cachedRegistry instanceof EntwurfRegistryError) throw cachedRegistry;
   if (cachedRegistry) return cachedRegistry;
 
-  if (!fs.existsSync(DELEGATE_TARGETS_PATH)) {
-    const err = new DelegateRegistryError(
-      `Delegate target registry not found at ${DELEGATE_TARGETS_PATH}. ` +
-        `Without it, every delegate spawn is refused. Run \`./run.sh setup:links\` ` +
-        `or create the file manually (see pi-shell-acp/pi/delegate-targets.json for the canonical shape).`,
+  if (!fs.existsSync(ENTWURF_TARGETS_PATH)) {
+    const err = new EntwurfRegistryError(
+      `Entwurf target registry not found at ${ENTWURF_TARGETS_PATH}. ` +
+        `Without it, every entwurf spawn is refused. Run \`./run.sh setup:links\` ` +
+        `or create the file manually (see pi-shell-acp/pi/entwurf-targets.json for the canonical shape).`,
     );
     cachedRegistry = err;
     throw err;
@@ -195,58 +195,58 @@ export function loadDelegateTargets(): DelegateRegistry {
 
   let raw: unknown;
   try {
-    raw = JSON.parse(fs.readFileSync(DELEGATE_TARGETS_PATH, "utf-8"));
+    raw = JSON.parse(fs.readFileSync(ENTWURF_TARGETS_PATH, "utf-8"));
   } catch (e) {
-    const err = new DelegateRegistryError(
-      `Failed to parse ${DELEGATE_TARGETS_PATH}: ${e instanceof Error ? e.message : String(e)}`,
+    const err = new EntwurfRegistryError(
+      `Failed to parse ${ENTWURF_TARGETS_PATH}: ${e instanceof Error ? e.message : String(e)}`,
     );
     cachedRegistry = err;
     throw err;
   }
 
-  if (typeof raw !== "object" || raw === null || !("delegateTargets" in raw)) {
-    const err = new DelegateRegistryError(
-      `Invalid registry shape in ${DELEGATE_TARGETS_PATH}: expected { delegateTargets: [...] }`,
+  if (typeof raw !== "object" || raw === null || !("entwurfTargets" in raw)) {
+    const err = new EntwurfRegistryError(
+      `Invalid registry shape in ${ENTWURF_TARGETS_PATH}: expected { entwurfTargets: [...] }`,
     );
     cachedRegistry = err;
     throw err;
   }
 
-  const targetsRaw = (raw as { delegateTargets: unknown }).delegateTargets;
+  const targetsRaw = (raw as { entwurfTargets: unknown }).entwurfTargets;
   if (!Array.isArray(targetsRaw)) {
-    const err = new DelegateRegistryError(
-      `Invalid delegateTargets in ${DELEGATE_TARGETS_PATH}: must be an array`,
+    const err = new EntwurfRegistryError(
+      `Invalid entwurfTargets in ${ENTWURF_TARGETS_PATH}: must be an array`,
     );
     cachedRegistry = err;
     throw err;
   }
 
-  const targets: DelegateTarget[] = [];
+  const targets: EntwurfTarget[] = [];
   for (let i = 0; i < targetsRaw.length; i++) {
     const t = targetsRaw[i];
     if (typeof t !== "object" || t === null) {
-      const err = new DelegateRegistryError(`Entry #${i} is not an object`);
+      const err = new EntwurfRegistryError(`Entry #${i} is not an object`);
       cachedRegistry = err;
       throw err;
     }
     const obj = t as Record<string, unknown>;
     if (typeof obj.provider !== "string" || !obj.provider.trim()) {
-      const err = new DelegateRegistryError(`Entry #${i}: provider must be a non-empty string`);
+      const err = new EntwurfRegistryError(`Entry #${i}: provider must be a non-empty string`);
       cachedRegistry = err;
       throw err;
     }
     if (typeof obj.model !== "string" || !obj.model.trim()) {
-      const err = new DelegateRegistryError(`Entry #${i}: model must be a non-empty string`);
+      const err = new EntwurfRegistryError(`Entry #${i}: model must be a non-empty string`);
       cachedRegistry = err;
       throw err;
     }
     if (typeof obj.enabled !== "boolean") {
-      const err = new DelegateRegistryError(`Entry #${i}: enabled must be a boolean`);
+      const err = new EntwurfRegistryError(`Entry #${i}: enabled must be a boolean`);
       cachedRegistry = err;
       throw err;
     }
     if (obj.explicitOnly !== undefined && typeof obj.explicitOnly !== "boolean") {
-      const err = new DelegateRegistryError(`Entry #${i}: explicitOnly must be boolean if present`);
+      const err = new EntwurfRegistryError(`Entry #${i}: explicitOnly must be boolean if present`);
       cachedRegistry = err;
       throw err;
     }
@@ -258,19 +258,19 @@ export function loadDelegateTargets(): DelegateRegistry {
     });
   }
 
-  cachedRegistry = { delegateTargets: targets };
+  cachedRegistry = { entwurfTargets: targets };
   return cachedRegistry;
 }
 
 /** Test-only hook to reset the in-memory cache (e.g. between test runs). */
-export function _resetDelegateRegistryCache(): void {
+export function _resetEntwurfRegistryCache(): void {
   cachedRegistry = null;
 }
 
 // ============================================================================
 // Child stderr mirror (opt-in, sentinel observability)
 //
-// Gated by env PI_DELEGATE_CHILD_STDERR_LOG. When set, any delegate child pi
+// Gated by env PI_ENTWURF_CHILD_STDERR_LOG. When set, any entwurf child pi
 // process spawned here also has its stderr appended to the given path. The
 // sentinel uses this to grep for child-side `[pi-shell-acp:bootstrap]` bridge
 // markers when asserting continuity — parent stderr can't see that signal
@@ -282,22 +282,22 @@ export function _resetDelegateRegistryCache(): void {
 // ============================================================================
 
 export function mirrorChildStderr(proc: ChildProcess): void {
-  const logPath = process.env.PI_DELEGATE_CHILD_STDERR_LOG;
+  const logPath = process.env.PI_ENTWURF_CHILD_STDERR_LOG;
   if (!logPath || !proc.stderr) return;
   const writer = fs.createWriteStream(logPath, { flags: "a" });
   writer.on("error", (err) => {
-    console.error(`[delegate] child stderr mirror failed (${logPath}): ${err.message}`);
+    console.error(`[entwurf] child stderr mirror failed (${logPath}): ${err.message}`);
   });
   proc.stderr.on("data", (data: Buffer) => writer.write(data));
   proc.on("close", () => writer.end());
 }
 
 // ============================================================================
-// Spawn guard — one delegate spawn per (session, target) per process.
+// Spawn guard — one entwurf spawn per (session, target) per process.
 //
-// Shared by pi native tool (pi-extensions/delegate.ts) and the MCP bridge
+// Shared by pi native tool (pi-extensions/entwurf.ts) and the MCP bridge
 // (mcp/pi-tools-bridge). Both paths must go through this gate before calling
-// runDelegateSync / runDelegateAsync. delegate_resume deliberately bypasses it.
+// runEntwurfSync / runEntwurfAsync. entwurf_resume deliberately bypasses it.
 //
 // Map key is the caller-provided sessionId:
 //   - pi native: pi.sessionManager.getSessionId()
@@ -305,35 +305,35 @@ export function mirrorChildStderr(proc: ChildProcess): void {
 // Resets on process restart, which is the intended lifetime.
 // ============================================================================
 
-const usedDelegateTargets = new Map<string, Set<string>>();
+const usedEntwurfTargets = new Map<string, Set<string>>();
 
-export function ensureDelegateOncePerTarget(sessionId: string, targetKey: string): void {
-  const seen = usedDelegateTargets.get(sessionId);
+export function ensureEntwurfOncePerTarget(sessionId: string, targetKey: string): void {
+  const seen = usedEntwurfTargets.get(sessionId);
   if (seen && seen.has(targetKey)) {
     throw new Error(
-      `delegate to ${targetKey} already exists in this session. Use delegate_resume to continue.`,
+      `entwurf to ${targetKey} already exists in this session. Use entwurf_resume to continue.`,
     );
   }
 }
 
-export function markDelegateTargetUsed(sessionId: string, targetKey: string): void {
-  let seen = usedDelegateTargets.get(sessionId);
+export function markEntwurfTargetUsed(sessionId: string, targetKey: string): void {
+  let seen = usedEntwurfTargets.get(sessionId);
   if (!seen) {
     seen = new Set();
-    usedDelegateTargets.set(sessionId, seen);
+    usedEntwurfTargets.set(sessionId, seen);
   }
   seen.add(targetKey);
 }
 
 export function resolveGuardTargetKey(provider: string | undefined, model: string | undefined): string {
-  const fallbackModel = model && model.trim() ? model : DEFAULT_DELEGATE_MODEL;
-  const target = resolveDelegateTarget({ provider, model: fallbackModel });
+  const fallbackModel = model && model.trim() ? model : DEFAULT_ENTWURF_MODEL;
+  const target = resolveEntwurfTarget({ provider, model: fallbackModel });
   return `${target.provider}/${target.model}`;
 }
 
 /** Test-only: reset the guard state so unit tests can reuse a single process. */
-export function _resetUsedDelegateTargets(): void {
-  usedDelegateTargets.clear();
+export function _resetUsedEntwurfTargets(): void {
+  usedEntwurfTargets.clear();
 }
 
 export interface ResolvedTarget {
@@ -355,17 +355,17 @@ export interface ResolvedTarget {
  *        - 2+ candidates → reject as ambiguous.
  *
  * In all paths the resolved tuple must be present in the registry with
- * `enabled: true`. Otherwise `DelegateRegistryError` is thrown.
+ * `enabled: true`. Otherwise `EntwurfRegistryError` is thrown.
  */
-export function resolveDelegateTarget(input: { provider?: string; model?: string }): ResolvedTarget {
-  const registry = loadDelegateTargets();
-  const enabled = registry.delegateTargets.filter((t) => t.enabled);
+export function resolveEntwurfTarget(input: { provider?: string; model?: string }): ResolvedTarget {
+  const registry = loadEntwurfTargets();
+  const enabled = registry.entwurfTargets.filter((t) => t.enabled);
 
   let provider = input.provider?.trim() || undefined;
   let model = input.model?.trim() || undefined;
 
   if (!model) {
-    throw new DelegateRegistryError("delegate: model is required");
+    throw new EntwurfRegistryError("entwurf: model is required");
   }
 
   // Path 1: qualified `provider/model` in model field
@@ -374,7 +374,7 @@ export function resolveDelegateTarget(input: { provider?: string; model?: string
     provider = model.slice(0, slash).trim();
     model = model.slice(slash + 1).trim();
     if (!provider || !model) {
-      throw new DelegateRegistryError(`delegate: malformed qualified model id "${input.model}"`);
+      throw new EntwurfRegistryError(`entwurf: malformed qualified model id "${input.model}"`);
     }
   }
 
@@ -382,8 +382,8 @@ export function resolveDelegateTarget(input: { provider?: string; model?: string
   if (provider) {
     const found = enabled.find((t) => t.provider === provider && t.model === model);
     if (!found) {
-      throw new DelegateRegistryError(
-        `delegate: (provider="${provider}", model="${model}") is not in the delegate target ` +
+      throw new EntwurfRegistryError(
+        `entwurf: (provider="${provider}", model="${model}") is not in the entwurf target ` +
           `registry, or is disabled. Allowed: ${describeRegistryEntries(enabled)}`,
       );
     }
@@ -395,19 +395,19 @@ export function resolveDelegateTarget(input: { provider?: string; model?: string
   if (candidates.length === 0) {
     const sameModel = enabled.filter((t) => t.model === model);
     if (sameModel.length > 0) {
-      throw new DelegateRegistryError(
-        `delegate: model "${model}" exists in registry only as explicitOnly target(s). ` +
+      throw new EntwurfRegistryError(
+        `entwurf: model "${model}" exists in registry only as explicitOnly target(s). ` +
           `Specify provider explicitly. Available: ${describeRegistryEntries(sameModel)}`,
       );
     }
-    throw new DelegateRegistryError(
-      `delegate: model "${model}" is not in the delegate target registry. ` +
+    throw new EntwurfRegistryError(
+      `entwurf: model "${model}" is not in the entwurf target registry. ` +
         `Allowed: ${describeRegistryEntries(enabled)}`,
     );
   }
   if (candidates.length > 1) {
-    throw new DelegateRegistryError(
-      `delegate: bare model "${model}" is ambiguous (${candidates.length} candidates). ` +
+    throw new EntwurfRegistryError(
+      `entwurf: bare model "${model}" is ambiguous (${candidates.length} candidates). ` +
         `Specify provider explicitly. Candidates: ${describeRegistryEntries(candidates)}`,
     );
   }
@@ -415,7 +415,7 @@ export function resolveDelegateTarget(input: { provider?: string; model?: string
   return { provider: only.provider, model: only.model, explicitOnly: false };
 }
 
-function describeRegistryEntries(entries: DelegateTarget[]): string {
+function describeRegistryEntries(entries: EntwurfTarget[]): string {
   if (entries.length === 0) return "(none)";
   return entries
     .map((t) => `${t.provider}/${t.model}${t.explicitOnly ? " [explicitOnly]" : ""}`)
@@ -549,7 +549,7 @@ function resolveExplicitExtensionSpec(packageNeedle: string): ExplicitExtensionS
   return null;
 }
 
-export function getDelegateExplicitExtensions(
+export function getEntwurfExplicitExtensions(
   model: string | undefined,
   isRemote: boolean,
   recordedProvider?: string,
@@ -564,7 +564,7 @@ export function getDelegateExplicitExtensions(
   // MUST be resumed with the bridge extension loaded — otherwise pi cannot
   // resolve the "pi-shell-acp" provider and the resume dies silently (no
   // assistant turn gets appended). This guard is needed because resume
-  // deliberately bypasses the Delegate Target Registry (Identity Preservation
+  // deliberately bypasses the Entwurf Target Registry (Identity Preservation
   // Rule) — so routing info has to come from the session's own recordedProvider.
   const wantsAcpByRecordedProvider = recordedProvider === "pi-shell-acp";
   if (!wantsClaudeBridge && !wantsCodexBridge && !wantsAcpByRecordedProvider) {
@@ -584,7 +584,7 @@ export function getDelegateExplicitExtensions(
       // routing and recorded-provider resume. For bare model ids the helper is
       // a no-op, so this is safe regardless of whether the prefix is present.
       modelOverride: (wantsCodexBridge || wantsAcpByRecordedProvider)
-        ? normalizeCodexDelegateModelForAcp(model)
+        ? normalizeCodexEntwurfModelForAcp(model)
         : undefined,
     };
   }
@@ -598,7 +598,7 @@ export function getDelegateExplicitExtensions(
     }
 
     warnings.push(
-      "Claude delegate requested but pi-shell-acp could not be resolved. Claude delegates may fail without an explicit provider bridge.",
+      "Claude entwurf requested but pi-shell-acp could not be resolved. Claude entwurfs may fail without an explicit provider bridge.",
     );
     return { args, names, warnings };
   }
@@ -612,18 +612,18 @@ export function getDelegateExplicitExtensions(
   }
 
   warnings.push(
-    `Codex delegate requested with ${DELEGATE_CODEX_ACP_ENV}=1 but pi-shell-acp could not be resolved. Codex delegates will fall back to the default provider path.`,
+    `Codex entwurf requested with ${ENTWURF_CODEX_ACP_ENV}=1 but pi-shell-acp could not be resolved. Codex entwurfs will fall back to the default provider path.`,
   );
   return { args, names, warnings };
 }
 
 /**
- * Registry-driven routing — used by spawn (runDelegateSync). Replaces the
- * heuristic getDelegateExplicitExtensions for paths that have already gone
- * through resolveDelegateTarget (i.e., the (provider, model) tuple is known
+ * Registry-driven routing — used by spawn (runEntwurfSync). Replaces the
+ * heuristic getEntwurfExplicitExtensions for paths that have already gone
+ * through resolveEntwurfTarget (i.e., the (provider, model) tuple is known
  * to be in the registry and is the explicit caller intent).
  *
- * Resume path (runDelegateResumeSync) intentionally still uses the heuristic
+ * Resume path (runEntwurfResumeSync) intentionally still uses the heuristic
  * helper — Identity Preservation Rule, no registry consultation.
  */
 export function getRegistryRouting(
@@ -689,16 +689,16 @@ export function enrichTaskWithProjectContext(task: string, cwd: string): string 
 }
 
 // ============================================================================
-// Saved delegate session lookup (for delegate_resume)
+// Saved entwurf session lookup (for entwurf_resume)
 //
 // PM-mandated layer separation: this is the *saved-session* world. It must
 // NOT consult any active control-socket state. Pure filesystem walk over
-// ~/.pi/agent/sessions/**/*delegate-<taskId>*.jsonl.
+// ~/.pi/agent/sessions/**/*entwurf-<taskId>*.jsonl.
 // ============================================================================
 
-const DELEGATE_FILE_RE = /delegate-([0-9a-f]+)/i;
+const ENTWURF_FILE_RE = /entwurf-([0-9a-f]+)/i;
 
-export function findDelegateSessionFile(taskId: string): string | null {
+export function findEntwurfSessionFile(taskId: string): string | null {
   if (!taskId || /[/\\]|\.\./.test(taskId)) return null;
   try {
     const dirs = fs.readdirSync(SESSIONS_BASE);
@@ -719,7 +719,7 @@ export function findDelegateSessionFile(taskId: string): string | null {
         continue;
       }
       for (const file of files) {
-        if (file.includes(`delegate-${taskId}`) && file.endsWith(".jsonl")) {
+        if (file.includes(`entwurf-${taskId}`) && file.endsWith(".jsonl")) {
           return path.join(dirPath, file);
         }
       }
@@ -730,7 +730,7 @@ export function findDelegateSessionFile(taskId: string): string | null {
   return null;
 }
 
-export interface DelegateResumeOptions {
+export interface EntwurfResumeOptions {
   host?: string;
   cwd?: string;
   // Identity Preservation Rule (see AGENTS.md): the resume API intentionally
@@ -751,13 +751,13 @@ interface CollectInput {
   cwd?: string;
   signal?: AbortSignal;
   onUpdate?: (text: string) => void;
-  result: DelegateResult;
+  result: EntwurfResult;
 }
 
-function collectPiRun({ command, args, cwd, signal, onUpdate, result }: CollectInput): Promise<DelegateResult> {
+function collectPiRun({ command, args, cwd, signal, onUpdate, result }: CollectInput): Promise<EntwurfResult> {
   const messages: AssistantMessageLike[] = [];
 
-  return new Promise<DelegateResult>((resolve) => {
+  return new Promise<EntwurfResult>((resolve) => {
     const proc = spawn(command, args, { cwd, shell: false, stdio: ["ignore", "pipe", "pipe"] });
     mirrorChildStderr(proc);
 
@@ -806,7 +806,7 @@ function collectPiRun({ command, args, cwd, signal, onUpdate, result }: CollectI
       if (buffer.trim()) processLine(buffer);
       result.exitCode = code ?? 0;
       if (!result.error && result.stopReason === "error") {
-        result.error = "Delegate model returned stopReason=error";
+        result.error = "Entwurf model returned stopReason=error";
       }
       const assistantText = parseMessages(messages).trim();
       result.output = assistantText || result.error || stderr || "(no output)";
@@ -836,16 +836,16 @@ function collectPiRun({ command, args, cwd, signal, onUpdate, result }: CollectI
 }
 
 // ============================================================================
-// runDelegateResumeSync — revive a saved delegate session by taskId
+// runEntwurfResumeSync — revive a saved entwurf session by taskId
 //
 // Contract:
-//   - Input: taskId (8 hex chars from a prior delegate result) + prompt
-//   - Looks up sessionFile via findDelegateSessionFile (pure filesystem walk)
+//   - Input: taskId (8 hex chars from a prior entwurf result) + prompt
+//   - Looks up sessionFile via findEntwurfSessionFile (pure filesystem walk)
 //   - Reads model + provider from the session's last assistant turn
 //     (analyzeSessionFileLike) and reuses BOTH verbatim
 //   - Spawns sync `pi --session <file> ... <prompt>` and waits for completion
-//   - Does NOT touch ~/.pi/session-control; works regardless of whether the
-//     original delegate process is still alive
+//   - Does NOT touch ~/.pi/entwurf-control; works regardless of whether the
+//     original entwurf process is still alive
 //
 // Identity Preservation Rule (AGENTS.md, intentionally hard-coded here):
 //   - This API does NOT accept a `model` override. The model identity is
@@ -868,21 +868,21 @@ function collectPiRun({ command, args, cwd, signal, onUpdate, result }: CollectI
 //                         remote pi yet. Treat with care until smoke covers it.
 // ============================================================================
 
-export async function runDelegateResumeSync(
+export async function runEntwurfResumeSync(
   taskId: string,
   prompt: string,
-  options: DelegateResumeOptions,
-): Promise<DelegateResult> {
+  options: EntwurfResumeOptions,
+): Promise<EntwurfResult> {
   const host = options.host ?? "local";
   const isRemote = host !== "local";
 
-  const sessionFile = findDelegateSessionFile(taskId);
+  const sessionFile = findEntwurfSessionFile(taskId);
   if (!sessionFile) {
     return {
       task: prompt,
       host,
       exitCode: 1,
-      output: `No saved delegate session found for taskId "${taskId}" under ${SESSIONS_BASE}`,
+      output: `No saved entwurf session found for taskId "${taskId}" under ${SESSIONS_BASE}`,
       turns: 0,
       cost: 0,
       taskId,
@@ -924,7 +924,7 @@ export async function runDelegateResumeSync(
       output:
         `Cannot resume taskId "${taskId}": session has no recorded model ` +
         `(file empty, corrupted, or never reached an assistant turn). ` +
-        `Start a fresh delegate instead — identity must come from the session.`,
+        `Start a fresh entwurf instead — identity must come from the session.`,
       turns: 0,
       cost: 0,
       taskId,
@@ -935,11 +935,11 @@ export async function runDelegateResumeSync(
     };
   }
 
-  const effectiveModel = resolveDelegateModel(recordedModel);
+  const effectiveModel = resolveEntwurfModel(recordedModel);
   // Pass recordedProvider so the resume path re-injects pi-shell-acp when the
   // original spawn went through it (registry is bypassed on resume per Identity
   // Preservation Rule — so the bridge signal must come from the session itself).
-  const explicitExtensions = getDelegateExplicitExtensions(effectiveModel, isRemote, recordedProvider);
+  const explicitExtensions = getEntwurfExplicitExtensions(effectiveModel, isRemote, recordedProvider);
   const resumeProvider = explicitExtensions.provider ?? recordedProvider;
 
   const piArgs = [
@@ -959,7 +959,7 @@ export async function runDelegateResumeSync(
   let args: string[];
   if (isRemote) {
     command = "ssh";
-    const connectTimeout = Number.parseInt(process.env.PI_DELEGATE_SSH_CONNECT_TIMEOUT ?? "10", 10);
+    const connectTimeout = Number.parseInt(process.env.PI_ENTWURF_SSH_CONNECT_TIMEOUT ?? "10", 10);
     const sshOptions = [
       "-o", "BatchMode=yes",
       "-o", `ConnectTimeout=${Number.isFinite(connectTimeout) && connectTimeout > 0 ? connectTimeout : 10}`,
@@ -971,7 +971,7 @@ export async function runDelegateResumeSync(
     args = piArgs;
   }
 
-  const result: DelegateResult = {
+  const result: EntwurfResult = {
     task: prompt,
     host,
     exitCode: 0,
@@ -995,26 +995,26 @@ export async function runDelegateResumeSync(
 }
 
 // ============================================================================
-// runDelegateSync — spawn pi and collect result
+// runEntwurfSync — spawn pi and collect result
 // ============================================================================
 
-export async function runDelegateSync(task: string, options: DelegateSyncOptions): Promise<DelegateResult> {
+export async function runEntwurfSync(task: string, options: EntwurfSyncOptions): Promise<EntwurfResult> {
   const host = options.host ?? "local";
   const isRemote = host !== "local";
   const effectiveCwd = options.cwd ?? process.cwd();
   const enrichedTask = enrichTaskWithProjectContext(task, effectiveCwd);
   const taskId = crypto.randomUUID().slice(0, 8);
 
-  // Resolve through the Delegate Target Registry. This is the spawn gate:
+  // Resolve through the Entwurf Target Registry. This is the spawn gate:
   // unregistered (provider, model) pairs are rejected here. Resume path does
   // NOT pass through this — Identity Preservation Rule.
-  const fallbackModel = options.model && options.model.trim() ? options.model : DEFAULT_DELEGATE_MODEL;
-  const target = resolveDelegateTarget({ provider: options.provider, model: fallbackModel });
+  const fallbackModel = options.model && options.model.trim() ? options.model : DEFAULT_ENTWURF_MODEL;
+  const target = resolveEntwurfTarget({ provider: options.provider, model: fallbackModel });
 
   const sessionDir = cwdToSessionDir(effectiveCwd);
   fs.mkdirSync(sessionDir, { recursive: true });
   const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-  const sessionFile = path.join(sessionDir, `${timestamp}_delegate-${taskId}.jsonl`);
+  const sessionFile = path.join(sessionDir, `${timestamp}_entwurf-${taskId}.jsonl`);
   const routing = getRegistryRouting(target, isRemote);
 
   const piArgs = [
@@ -1036,7 +1036,7 @@ export async function runDelegateSync(task: string, options: DelegateSyncOptions
   let args: string[];
   if (isRemote) {
     command = "ssh";
-    const connectTimeout = Number.parseInt(process.env.PI_DELEGATE_SSH_CONNECT_TIMEOUT ?? "10", 10);
+    const connectTimeout = Number.parseInt(process.env.PI_ENTWURF_SSH_CONNECT_TIMEOUT ?? "10", 10);
     const sshOptions = [
       "-o", "BatchMode=yes",
       "-o", `ConnectTimeout=${Number.isFinite(connectTimeout) && connectTimeout > 0 ? connectTimeout : 10}`,
@@ -1048,7 +1048,7 @@ export async function runDelegateSync(task: string, options: DelegateSyncOptions
     args = piArgs;
   }
 
-  const result: DelegateResult = {
+  const result: EntwurfResult = {
     task,
     host,
     exitCode: 0,
@@ -1075,7 +1075,7 @@ export async function runDelegateSync(task: string, options: DelegateSyncOptions
 // Shared summary formatter (used by both pi native and MCP surfaces)
 // ============================================================================
 
-export function formatSyncSummary(result: DelegateResult): string {
+export function formatSyncSummary(result: EntwurfResult): string {
   return [
     `Task ID: ${result.taskId}`,
     `Host: ${result.host}`,

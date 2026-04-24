@@ -17,19 +17,19 @@ Even if scripts break, an agent that follows these steps and reads the results s
 
 ## 0A. Execution Policy — Transparent Mode (Real-World Baseline)
 
-The verification in this document is not a benchmark. In production, we continuously exchange **short sync turns** like `delegate` / `delegate_resume` to check state, and stop immediately to isolate the cause before resuming when something looks off.
+The verification in this document is not a benchmark. In production, we continuously exchange **short sync turns** like `entwurf` / `entwurf_resume` to check state, and stop immediately to isolate the cause before resuming when something looks off.
 
 This document records only **verification intent (what we're looking at) and pass criteria (how to judge)**. The execution shape is determined by the agent using the most reasonable tools in its environment. The same intent can be verified in different ways — as long as the pass criteria are met.
 
-### Default Execution Shape — delegate orchestration
+### Default Execution Shape — entwurf orchestration
 
-- Single-turn verification: one `delegate(provider="pi-shell-acp", model="<M>", mode="sync")` call
-- Multi-turn verification: first turn via `delegate`, subsequent turns via `delegate_resume` with the same `taskId`
+- Single-turn verification: one `entwurf(provider="pi-shell-acp", model="<M>", mode="sync")` call
+- Multi-turn verification: first turn via `entwurf`, subsequent turns via `entwurf_resume` with the same `taskId`
 - Different backend verification: same pattern with only provider/model changed (e.g., `pi-shell-acp/codex-...`)
 
 ### What NOT to Do — Bypassing the Operational Path
 
-The following patterns **bypass the delegation logic itself** that we're trying to verify. Even if continuity appears to hold on the surface, these are not the real operational path (delegate → delegate_resume), so passing does not mean production is healthy.
+The following patterns **bypass the delegation logic itself** that we're trying to verify. Even if continuity appears to hold on the surface, these are not the real operational path (entwurf → entwurf_resume), so passing does not mean production is healthy.
 
 - ✗ Creating session files directly with `mktemp /tmp/pi-shell-acp-verify-XXXXXX.jsonl`
 - ✗ Manual calls of the form `pi -e <REPO> --session <FILE> --model <M> -p '...'`
@@ -38,7 +38,7 @@ The following patterns **bypass the delegation logic itself** that we're trying 
 In the past, having these commands written out directly caused agents to copy them verbatim and bypass the operational path. This document contains only intent and pass criteria. Shell commands are retained only where they are integral to the verification, such as boundary checks (§6).
 
 The manual `pi --session` path is only used in two cases:
-- When the delegate path itself is broken and an isolated debug bypass is needed
+- When the entwurf path itself is broken and an isolated debug bypass is needed
 - §6-style boundary verification that requires directly hitting the bridge's internal API
 
 ### Operational Principles
@@ -202,7 +202,7 @@ The core question is one:
 
 This evaluation is separate from the continuity smoke. If smoke proves "sessions continue," this questionnaire examines **tool self-awareness / native tool usability / pi-facing MCP boundary awareness / long-turn focus / quality relative to direct Claude Code**.
 
-The execution shape follows §0A — Layers 0–3 start with one `delegate` for a single target (`pi-shell-acp/claude-sonnet-4-6`) and continue via `delegate_resume` with the same taskId for multi-turn. Layer 4 is a comparison with direct Claude Code, so it uses a separate path.
+The execution shape follows §0A — Layers 0–3 start with one `entwurf` for a single target (`pi-shell-acp/claude-sonnet-4-6`) and continue via `entwurf_resume` with the same taskId for multi-turn. Layer 4 is a comparison with direct Claude Code, so it uses a separate path.
 
 ### 1A.1 Layer 0 — Self-Awareness at Session Start
 
@@ -238,22 +238,22 @@ Fail:
 
 ### 1A.3 Layer 2 — Does It Understand the pi-facing MCP Tool Boundary?
 
-Intent: **Prevent tool confusion.** By default, pi custom tools (`delegate`, `delegate_resume`, `send_to_session`, `list_sessions`) not being visible is normal — they appear only when the `pi-tools-bridge` MCP adapter is explicitly registered in settings. What matters is "does the session honestly say whether it can see them, and not pretend it can when it can't."
+Intent: **Prevent tool confusion.** By default, pi custom tools (`entwurf`, `entwurf_resume`, `entwurf_send`, `entwurf_peers`) not being visible is normal — they appear only when the `pi-tools-bridge` MCP adapter is explicitly registered in settings. What matters is "does the session honestly say whether it can see them, and not pretend it can when it can't."
 
 Pass:
-- Says tools it cannot see are not visible (e.g., "delegate tool not visible", "pi custom tools not visible")
+- Says tools it cannot see are not visible (e.g., "entwurf tool not visible", "pi custom tools not visible")
 - Can explain the boundary between native tools and MCP tools
 
 Fail:
 - Pretends to use a tool it cannot see
-- Mimics `delegate` / `send_to_session` by recursively calling `pi` via `bash`
+- Mimics `entwurf` / `entwurf_send` by recursively calling `pi` via `bash`
 - Blindly uses only one side when asked about the boundary
 
 Note: check the default visibility boundary together with the operator verification in §8.4, §8.5.
 
 ### 1A.4 Layer 3 — Is Focus Maintained as Turns Accumulate?
 
-Intent: Not whether sessions continue, but **whether quality is maintained in a continuing state**. For a single target, inject a fact on the first turn (`delegate`) (e.g., "Remember 3 core invariants from AGENTS.md, reply with READY only") → continue with `delegate_resume` on the same taskId 4–5 times, mixing retrieval/exploration/retrieval.
+Intent: Not whether sessions continue, but **whether quality is maintained in a continuing state**. For a single target, inject a fact on the first turn (`entwurf`) (e.g., "Remember 3 core invariants from AGENTS.md, reply with READY only") → continue with `entwurf_resume` on the same taskId 4–5 times, mixing retrieval/exploration/retrieval.
 
 Pass:
 - Still holds onto the initial invariants and intermediate exploration results after 5 turns
@@ -269,7 +269,7 @@ Note: compaction handoff itself is verified separately via `./run.sh check-compa
 
 ### 1A.5 Layer 4 — Comparison with Direct Claude Code
 
-Throw the same questions to both direct Claude Code and the `pi-shell-acp` path (= delegate target `pi-shell-acp/claude-sonnet-4-6`) and compare. Not string matching, but **semantic-level parity of work quality and tool selection**.
+Throw the same questions to both direct Claude Code and the `pi-shell-acp` path (= entwurf target `pi-shell-acp/claude-sonnet-4-6`) and compare. Not string matching, but **semantic-level parity of work quality and tool selection**.
 
 Example comparison questions: summarize the core invariants of this repo / explain the smoke verification system in `run.sh` / why compaction handoff is needed / next 3 improvement points (maintaining thin bridge principle).
 
@@ -316,7 +316,7 @@ Note:
 
 ## 3. Single-Turn Verification — The First Regression Point to Break
 
-One sync `delegate` call for the `pi-shell-acp/claude-sonnet-4-6` target.
+One sync `entwurf` call for the `pi-shell-acp/claude-sonnet-4-6` target.
 
 ### 3.1 SessionStart Hook Regression Check
 
@@ -340,7 +340,7 @@ Pass:
 
 ## 4. Multi-Turn Verification — Does a Single Target Continue?
 
-This is where it gets important. The execution shape follows §0A — start with a first turn `delegate(provider="pi-shell-acp", model="claude-sonnet-4-6", mode="sync")`, then continue throwing `delegate_resume` with the same taskId.
+This is where it gets important. The execution shape follows §0A — start with a first turn `entwurf(provider="pi-shell-acp", model="claude-sonnet-4-6", mode="sync")`, then continue throwing `entwurf_resume` with the same taskId.
 
 Verification facts follow the §0A wording guide — ban `secret token` / `password` / `API key` types, use only non-sensitive plaintext (code names / colors / animal names, etc.).
 
@@ -349,13 +349,13 @@ Verification facts follow the §0A wording guide — ban `secret token` / `passw
 Only the intent of each of the three steps:
 
 1. First turn: inject one non-sensitive fact and receive a short ack (`READY`). E.g., "The password is owl. Reply with READY only, no explanation."
-2. Second turn (`delegate_resume`): retrieve the fact just given. E.g., "What was the password I just told you? Reply in one word only." → `owl`
-3. Third turn (`delegate_resume`): update the fact to a different value and receive `CHANGED`. Retrieve the updated value on the fourth turn.
+2. Second turn (`entwurf_resume`): retrieve the fact just given. E.g., "What was the password I just told you? Reply in one word only." → `owl`
+3. Third turn (`entwurf_resume`): update the fact to a different value and receive `CHANGED`. Retrieve the updated value on the fourth turn.
 
 Pass:
 - Second turn answers with the correct value
 - Last turn after update answers with the updated value
-- Continues naturally without re-throwing a text blob (delegate orchestration connects via ACP resume/load)
+- Continues naturally without re-throwing a text blob (entwurf orchestration connects via ACP resume/load)
 
 Fail:
 - Forgets the fact, or requires the entire first turn content to be re-sent, or the update is not reflected
@@ -367,7 +367,7 @@ What to suspect if it looks like Fail:
 
 ## 5. Cross-Process Continuity — Does It Continue Across Process Changes?
 
-The `delegate` → `delegate_resume` pair from §4 already has **cross-process** character since it goes through different child pi processes. Here we also look at persisted mapping and cache.
+The `entwurf` → `entwurf_resume` pair from §4 already has **cross-process** character since it goes through different child pi processes. Here we also look at persisted mapping and cache.
 
 ### 5.1 Cache Before/After Observation
 
@@ -376,7 +376,7 @@ Run `find "$CACHE_DIR" -maxdepth 1 -type f | sort` twice, before and after §4 e
 Pass:
 - After the first turn, a persisted session record corresponding to `pi:<sessionId>` is newly created
 - The record persists even after the first turn's child pi process exits
-- `delegate_resume` with the same taskId reuses that record as-is to continue the ACP session (continuity maintained)
+- `entwurf_resume` with the same taskId reuses that record as-is to continue the ACP session (continuity maintained)
 
 ---
 
@@ -439,9 +439,9 @@ If broken, suspect:
 
 ## 7. Ordinary Shutdown Semantics — Process Exit Must Preserve Mappings
 
-After a normal exit, persisted mappings must survive so the next child pi process can pick them up. When the first `delegate` from §4 finishes, the child pi process exits naturally — the cache record must not be invalidated at that point — this invariant is already observed via the §5.1 snapshot.
+After a normal exit, persisted mappings must survive so the next child pi process can pick them up. When the first `entwurf` from §4 finishes, the child pi process exits naturally — the cache record must not be invalidated at that point — this invariant is already observed via the §5.1 snapshot.
 
-If you want to check semantic continuity once more, after the last turn of §4, throw one more `delegate_resume` with the same taskId after some time and confirm the previous conversation context continues naturally.
+If you want to check semantic continuity once more, after the last turn of §4, throw one more `entwurf_resume` with the same taskId after some time and confirm the previous conversation context continues naturally.
 
 Pass:
 - Continues from the previous conversation context
@@ -458,7 +458,7 @@ Note:
 
 ### 8.1–8.3 read / grep / bash Character
 
-One sync `delegate` call each for the `pi-shell-acp/claude-sonnet-4-6` target, with different-intent short task sets: read part of a file and summarize, grep for a specific function definition, current git branch and the latest commit.
+One sync `entwurf` call each for the `pi-shell-acp/claude-sonnet-4-6` target, with different-intent short task sets: read part of a file and summarize, grep for a specific function definition, current git branch and the latest commit.
 
 Pass:
 - Tool usage of read/search/bash character is consistent
@@ -471,17 +471,17 @@ Observation points:
 
 ### 8.4 pi Custom Tool Visibility Check — Current Key Suspect Point
 
-What we're looking at here is not native tools like `bash`, `read`, `grep`, but **whether pi's custom tools (`delegate`, `delegate_resume`, `send_to_session`, `list_sessions` — the narrow set exposed by `mcp/pi-tools-bridge/` as of `035254b`) are visible when going through ACP**.
+What we're looking at here is not native tools like `bash`, `read`, `grep`, but **whether pi's custom tools (`entwurf`, `entwurf_resume`, `entwurf_send`, `entwurf_peers` — the narrow set exposed by `mcp/pi-tools-bridge/` as of `035254b`) are visible when going through ACP**.
 
 Verification intent: inside the `pi-shell-acp/claude-sonnet-4-6` target, ask "can you see this tool?" and have it reply "not visible" if it cannot. Agreed exact responses:
-- Single delegate visibility: `delegate tool not visible`
+- Single entwurf visibility: `entwurf tool not visible`
 - pi custom tool bundle visibility: `pi custom tools not visible`
 
 **Pass by current design:** the exact agreed strings above.
 
 **Fail:**
 - Hallucinates a nonexistent tool as existing
-- Mimics delegate by recursively calling `pi` via `bash`
+- Mimics entwurf by recursively calling `pi` via `bash`
 - Blurs the boundary with "I tried something similar instead"
 - Glosses over with only native tools
 
@@ -493,8 +493,8 @@ Current code suspect points:
 That is, with the current default (no configuration), **Claude Code native tools are visible but pi custom tools are not** — this is the normal state.
 
 This boundary judgment applies equally to Codex, not just Claude. However, MCP tool name notation may differ slightly between backends.
-- Claude example: `mcp__pi-tools-bridge__send_to_session`
-- Codex example: `mcp__pi_tools_bridge__send_to_session`
+- Claude example: `mcp__pi-tools-bridge__entwurf_send`
+- Codex example: `mcp__pi_tools_bridge__entwurf_send`
 
 Therefore, it's safer to set the verification criterion on whether **bridge name (`pi-tools-bridge` / `pi_tools_bridge`) + tool suffix** appear together.
 
@@ -504,7 +504,7 @@ Meaning of this item:
 - The bridge only pass-throughs that; it does not have promotion logic inside the repo
 
 If this test fails:
-- Do not force Claude to recursively call `pi` via `bash` to imitate delegate
+- Do not force Claude to recursively call `pi` via `bash` to imitate entwurf
 - First **make a clear judgment of the current bridge's tool exposure boundary**
 - If needed, explicitly add an external MCP adapter to `piShellAcpProvider.mcpServers` and verify via §8.5
 
@@ -529,7 +529,7 @@ Register one experimental pi-facing MCP (e.g., `session-bridge`) in the project 
 
 **Basic visibility (1 turn):**
 
-From the same project, throw a prompt like "list the visible MCP server names separated by commas" to the `pi-shell-acp/claude-sonnet-4-6` target via one sync `delegate`.
+From the same project, throw a prompt like "list the visible MCP server names separated by commas" to the `pi-shell-acp/claude-sonnet-4-6` target via one sync `entwurf`.
 
 Pass:
 - The registered MCP (e.g., `session-bridge`) appears in the response list
@@ -537,24 +537,24 @@ Pass:
 
 **resume/load/new consistency (multi-turn):**
 
-Run two or more turns using the §4 pattern (`delegate` → same taskId `delegate_resume`) and confirm the MCP server list seen in each turn is identical.
+Run two or more turns using the §4 pattern (`entwurf` → same taskId `entwurf_resume`) and confirm the MCP server list seen in each turn is identical.
 
 Pass: The server lists in both responses are identical.
 Fail: Only visible in turn 1, or different in turn 2 → session fingerprint or three-path injection consistency issue.
 
 **Config change → session invalidation:**
 
-When `piShellAcpProvider.mcpServers` changes, `bridgeConfigSignature` changes, causing the persisted session to fail compatibility and transition to a new session. Immediately after adding/removing a `mcpServers` entry in settings.json, throw `delegate_resume` or a new `delegate` and confirm the new configuration is immediately reflected.
+When `piShellAcpProvider.mcpServers` changes, `bridgeConfigSignature` changes, causing the persisted session to fail compatibility and transition to a new session. Immediately after adding/removing a `mcpServers` entry in settings.json, throw `entwurf_resume` or a new `entwurf` and confirm the new configuration is immediately reflected.
 
 Pass: New configuration reflected immediately (no stale capabilities).
 
-Under the current operational standard, this visibility check is run for **both Claude and Codex**, and at least one bridged MCP tool call is actually passed through. The most stable automation path is a negative-path `send_to_session` call. If a `No pi control socket ...` error surfaces for a nonexistent target, it means the `ACP host → MCP bridge → pi-side RPC` call path is actually alive.
+Under the current operational standard, this visibility check is run for **both Claude and Codex**, and at least one bridged MCP tool call is actually passed through. The most stable automation path is a negative-path `entwurf_send` call. If a `No pi control socket ...` error surfaces for a nonexistent target, it means the `ACP host → MCP bridge → pi-side RPC` call path is actually alive.
 
 ---
 
 ## 9. Scenario Testing — Use It Like an Actual Worker
 
-This step is more important than synthetic benchmarks. One sync `delegate` call each for a single target (`pi-shell-acp/claude-sonnet-4-6`), with different-intent task sets.
+This step is more important than synthetic benchmarks. One sync `entwurf` call each for a single target (`pi-shell-acp/claude-sonnet-4-6`), with different-intent task sets.
 
 - **9.1 Self-understanding**: read AGENTS.md/README and summarize this repo's current invariants in 7 lines or fewer (provider/model/settings names, session continuity boundary, bootstrap order, what not to do)
 - **9.2 Structural explanation**: explain the core structure based on `acp-bridge.ts`, `index.ts`. Use agent-shell as a semantic reference and include things not intentionally brought in
@@ -598,7 +598,7 @@ Note:
 
 The key is whether **pi session files are maintained as the shared record source** even when using ACP.
 
-After the `delegate` → `delegate_resume` pair from §4 finishes, locate the child pi session file for that task (identify location via taskId) and inspect it with `wc -l` / `tail`.
+After the `entwurf` → `entwurf_resume` pair from §4 finishes, locate the child pi session file for that task (identify location via taskId) and inspect it with `wc -l` / `tail`.
 
 Pass:
 - user / assistant turns are normally accumulated in the pi session
@@ -615,12 +615,12 @@ Important:
 
 The following are documented but observability/automation is still insufficient.
 
-1. Making the actual bootstrap path — whether `resume`, `load`, or `new` — immediately visible externally. Currently only verifiable via stderr `[pi-shell-acp:bootstrap]` lines. In the delegate orchestration path, that stderr is not surfaced to the front end, making it difficult to immediately answer whether `bridge continuity` passed during failure diagnosis. This lack of observability causes wording contamination to be misdiagnosed as continuity failure (see §0A "bridge vs semantic continuity"). **Current reinforcement path**: `PI_DELEGATE_CHILD_STDERR_LOG` opt-in env mirrors child stderr to a file to automatically verify the S6 (spawn `path=new`) / R4 (resume `path=resume|load`) gate. (This sentinel runner itself lives in the test runner maintained by agent-config as consumer, but spawn authority and registry are owned by this repo. The past agent-config sentinel commit is `9ee39aa`.)
+1. Making the actual bootstrap path — whether `resume`, `load`, or `new` — immediately visible externally. Currently only verifiable via stderr `[pi-shell-acp:bootstrap]` lines. In the entwurf orchestration path, that stderr is not surfaced to the front end, making it difficult to immediately answer whether `bridge continuity` passed during failure diagnosis. This lack of observability causes wording contamination to be misdiagnosed as continuity failure (see §0A "bridge vs semantic continuity"). **Current reinforcement path**: `PI_ENTWURF_CHILD_STDERR_LOG` opt-in env mirrors child stderr to a file to automatically verify the S6 (spawn `path=new`) / R4 (resume `path=resume|load`) gate. (This sentinel runner itself lives in the test runner maintained by agent-config as consumer, but spawn authority and registry are owned by this repo. The past agent-config sentinel commit is `9ee39aa`.)
 2. When persisted session incompatibility occurs, operators reading the invalidation reason quickly
 3. ~~Clearly observing the `unstable_setSessionModel` path vs new session fallback path on model switch~~ — see §12.3
 4. ~~Observing how cleanly bridge and child process are cleaned up on cancel/abort~~ — see §12.4
 5. Checking stream shape stability as tool notices / thinking / text blocks accumulate in long sessions
-6. Delegate-style continuity (see §12.5) — for both Claude and Codex backends, the bridge's resume/load path continues for the same spawn shape as delegate. Delegate orchestration itself (which target to spawn for, taskId / async completion / resume identity lock) now lives in this repo's `pi-extensions/delegate.ts` + `pi/delegate-targets.json` + `mcp/pi-tools-bridge/`. (Previously owned by agent-config. Migration history in AGENTS.md `§Entwurf Orchestration`.)
+6. Entwurf-style continuity (see §12.5) — for both Claude and Codex backends, the bridge's resume/load path continues for the same spawn shape as entwurf. Entwurf orchestration itself (which target to spawn for, taskId / async completion / resume identity lock) now lives in this repo's `pi-extensions/entwurf.ts` + `pi/entwurf-targets.json` + `mcp/pi-tools-bridge/`. (Previously owned by agent-config. Migration history in AGENTS.md `§Entwurf Orchestration`.)
 7. Separating observability of `bridge continuity` (sessionKey/acpSessionId/bootstrap path) and `semantic continuity` (retrieving previous turn facts) — the two layers can pass/fail independently. The rule is only in §0A, but there's no automated smoke that judges them separately yet.
 
 In other words, this document is not a completion declaration but an **operational document that exposes the next improvement points**.
@@ -692,16 +692,16 @@ Pass criteria:
 
 Operational default is resilient (stderr diagnostic only, pi session continues); smoke is fail-fast (any violation causes total failure).
 
-### 12.5 Delegate-Style Continuity (bridge-level)
+### 12.5 Entwurf-Style Continuity (bridge-level)
 
-This smoke mimics exactly the spawn form that delegate actually uses (`pi --mode json -p --no-extensions -e <repo> --provider pi-shell-acp --model <M> --session <F> <task>`) to verify turn1=new → turn2=resume(Claude)/load(Codex) continuity. Evidence is checked both in bridge diagnostic lines (`[pi-shell-acp:bootstrap]`, `[pi-shell-acp:model-switch]`, `[pi-shell-acp:shutdown]`) and in the session file assistant payload.
+This smoke mimics exactly the spawn form that entwurf actually uses (`pi --mode json -p --no-extensions -e <repo> --provider pi-shell-acp --model <M> --session <F> <task>`) to verify turn1=new → turn2=resume(Claude)/load(Codex) continuity. Evidence is checked both in bridge diagnostic lines (`[pi-shell-acp:bootstrap]`, `[pi-shell-acp:model-switch]`, `[pi-shell-acp:shutdown]`) and in the session file assistant payload.
 
-What this smoke proves is **bridge-level continuity**: "pi-shell-acp can continue sessions via resume/load path for a given (backend, session file, model) combination." **Which target to spawn for / async orchestration / resume identity lock / matrix coverage** is handled by this repo's `pi/delegate-targets.json` registry and `mcp/pi-tools-bridge` (entwurf orchestration; previously owned by agent-config before migration).
+What this smoke proves is **bridge-level continuity**: "pi-shell-acp can continue sessions via resume/load path for a given (backend, session file, model) combination." **Which target to spawn for / async orchestration / resume identity lock / matrix coverage** is handled by this repo's `pi/entwurf-targets.json` registry and `mcp/pi-tools-bridge` (entwurf orchestration; previously owned by agent-config before migration).
 
 Smoke:
 
 ```bash
-./run.sh smoke-delegate-resume /path/to/consumer-project
+./run.sh smoke-entwurf-resume /path/to/consumer-project
 ```
 
 Pass criteria:
@@ -715,8 +715,8 @@ Pass criteria:
 **Scope (retired narrative warning):**
 
 - For both Claude / Codex, the bridge continues sessions in the backend-native way. Claude uses ACP `resumeSession`, Codex uses `loadSession` (codex-acp capability difference — `resumeSession: false, loadSession: true`). This smoke only verifies that the bridge correctly routes both paths.
-- This smoke no longer uses labels like "shape-equivalent vs real e2e." That distinction came from a past state where delegate spawn authority was env-var (`PI_DELEGATE_ACP_FOR_CODEX=1`) based. The current spawn authority is this repo's `pi/delegate-targets.json` registry, and the bridge does not read the registry. That env var is legacy and will be cleaned up as the registry stabilizes.
-- The entire delegate orchestration (parent × target positive matrix, async completion, resume identity lock) is the responsibility of this repo's entwurf surface (`pi-extensions/delegate.ts` + `lib/delegate-core.ts` + `pi/delegate-targets.json` + `mcp/pi-tools-bridge`). This `smoke-delegate-resume` only verifies bridge-level continuity — the orchestration gate is handled by `mcp/pi-tools-bridge/test.sh` + `scripts/session-messaging-smoke.sh`.
+- This smoke no longer uses labels like "shape-equivalent vs real e2e." That distinction came from a past state where entwurf spawn authority was env-var (`PI_ENTWURF_ACP_FOR_CODEX=1`) based. The current spawn authority is this repo's `pi/entwurf-targets.json` registry, and the bridge does not read the registry. That env var is legacy and will be cleaned up as the registry stabilizes.
+- The entire entwurf orchestration (parent × target positive matrix, async completion, resume identity lock) is the responsibility of this repo's entwurf surface (`pi-extensions/entwurf.ts` + `lib/entwurf-core.ts` + `pi/entwurf-targets.json` + `mcp/pi-tools-bridge`). This `smoke-entwurf-resume` only verifies bridge-level continuity — the orchestration gate is handled by `mcp/pi-tools-bridge/test.sh` + `scripts/session-messaging-smoke.sh`.
 
 This smoke is not promoted to `setup` / baseline exit criteria. Maintained only as additional evidence gate.
 
@@ -732,7 +732,7 @@ find "$CACHE_DIR" -maxdepth 1 -type f | sort
 ```
 
 Also preserve:
-- Exact calls used (delegate provider/model/mode + delegate_resume taskId)
+- Exact calls used (entwurf provider/model/mode + entwurf_resume taskId)
 - Full stdout/stderr
 - Child pi session file path for that task
 - Cache directory changes
@@ -742,8 +742,8 @@ Short record example:
 
 ```text
 [verify] multi-turn continuity failed
-- call: delegate(provider="pi-shell-acp", model="claude-sonnet-4-6", mode="sync") → taskId=...
-        then delegate_resume(taskId=..., task="What was the password I just told you? Reply in one word only.")
+- call: entwurf(provider="pi-shell-acp", model="claude-sonnet-4-6", mode="sync") → taskId=...
+        then entwurf_resume(taskId=..., task="What was the password I just told you? Reply in one word only.")
 - injected: "The password is owl. Reply with READY only, no explanation."
 - expected: second turn returns "owl"
 - actual: model says it does not remember

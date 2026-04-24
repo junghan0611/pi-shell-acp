@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# session-messaging-smoke.sh — send_to_session 4-case matrix.
+# session-messaging-smoke.sh — entwurf_send 4-case matrix.
 #
 # Verifies the Cross-Session Messaging surface described in
 # AGENTS.md § Entwurf Orchestration § Cross-Session Messaging.
@@ -12,12 +12,12 @@
 #
 # Sender surfaces:
 #   native — pi's control.ts CLI bridge
-#            (pi -p --session-control --control-session <id> --send-session-message ...)
-#   MCP    — pi-tools-bridge stdio JSON-RPC (tools/call send_to_session)
+#            (pi -p --entwurf-control --entwurf-session <id> --entwurf-send-message ...)
+#   MCP    — pi-tools-bridge stdio JSON-RPC (tools/call entwurf_send)
 #
-# Targets are pi sessions with --session-control. "ACP" here means the target
+# Targets are pi sessions with --entwurf-control. "ACP" here means the target
 # pi uses pi-shell-acp as its LLM provider — the control socket namespace
-# (~/.pi/session-control/) is unified across providers. Targets are spawned
+# (~/.pi/entwurf-control/) is unified across providers. Targets are spawned
 # in disposable tmux sessions and killed on exit.
 #
 # Cost: ACP target bootstrap incurs a small Claude-token charge
@@ -29,7 +29,7 @@ set -uo pipefail
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 BRIDGE="$REPO/mcp/pi-tools-bridge/start.sh"
-CONTROL_DIR="$HOME/.pi/session-control"
+ENTWURF_DIR="$HOME/.pi/entwurf-control"
 TIMESTAMP=$(date +%Y%m%d-%H%M%S)
 ARTIFACT="${SMS_ARTIFACT:-/tmp/session-messaging-smoke-$TIMESTAMP.json}"
 BOOT_TIMEOUT="${SMS_BOOT_TIMEOUT:-30}"
@@ -57,7 +57,7 @@ cleanup() {
 trap cleanup EXIT
 
 snapshot_sockets() {
-  ls "$CONTROL_DIR"/*.sock 2>/dev/null | sort
+  ls "$ENTWURF_DIR"/*.sock 2>/dev/null | sort
 }
 
 # wait for a new socket to appear after starting a pi in tmux.
@@ -94,10 +94,10 @@ record() {
 case_native() {
   local case_name="$1" target="$2"
   local out rc
-  out=$(timeout 20 pi -p --session-control --control-session "$target" \
-        --send-session-message "sms:$case_name" \
-        --send-session-mode follow_up \
-        --send-session-wait message_processed 2>&1 | tail -1)
+  out=$(timeout 20 pi -p --entwurf-control --entwurf-session "$target" \
+        --entwurf-send-message "sms:$case_name" \
+        --entwurf-send-mode follow_up \
+        --entwurf-send-wait message_processed 2>&1 | tail -1)
   rc=$?
   if [ "$rc" -eq 0 ] && echo "$out" | grep -q "message processed"; then
     record "$case_name" "PASS" "$out"
@@ -112,7 +112,7 @@ case_mcp() {
   raw=$({
     printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"sms","version":"0"}}}'
     printf '%s\n' '{"jsonrpc":"2.0","method":"notifications/initialized"}'
-    printf '%s\n' "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"send_to_session\",\"arguments\":{\"target\":\"$target\",\"message\":\"sms:$case_name\"}}}"
+    printf '%s\n' "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"entwurf_send\",\"arguments\":{\"target\":\"$target\",\"message\":\"sms:$case_name\"}}}"
     sleep 2
   } | timeout 15 "$BRIDGE" 2>/dev/null | grep '"id":2')
   parsed=$(printf '%s' "$raw" | python3 -c '
@@ -136,19 +136,19 @@ except Exception as e:
 
 log "artifact: $ARTIFACT"
 log "bridge:   $BRIDGE"
-log "control:  $CONTROL_DIR"
+log "control:  $ENTWURF_DIR"
 echo
 
 log "→ Target-N (native: $NATIVE_PROVIDER/$NATIVE_MODEL) in tmux $TMUX_N"
 pre=$(snapshot_sockets)
-tmux new -d -s "$TMUX_N" "pi --session-control --provider $NATIVE_PROVIDER --model $NATIVE_MODEL" \
+tmux new -d -s "$TMUX_N" "pi --entwurf-control --provider $NATIVE_PROVIDER --model $NATIVE_MODEL" \
   || { log "FATAL: tmux new Target-N failed"; exit 1; }
 TGT_N=$(wait_for_new_socket "$pre") || { log "FATAL: Target-N socket did not appear in ${BOOT_TIMEOUT}s"; exit 1; }
 log "  Target-N: $TGT_N"
 
 log "→ Target-A (ACP: $ACP_PROVIDER/$ACP_MODEL) in tmux $TMUX_A"
 pre=$(snapshot_sockets)
-tmux new -d -s "$TMUX_A" "pi --session-control --provider $ACP_PROVIDER --model $ACP_MODEL" \
+tmux new -d -s "$TMUX_A" "pi --entwurf-control --provider $ACP_PROVIDER --model $ACP_MODEL" \
   || { log "FATAL: tmux new Target-A failed"; exit 1; }
 TGT_A=$(wait_for_new_socket "$pre") || { log "FATAL: Target-A socket did not appear in ${BOOT_TIMEOUT}s"; exit 1; }
 log "  Target-A: $TGT_A"

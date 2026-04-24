@@ -21,7 +21,7 @@ The goal is simple:
 - keep each ACP backend as itself
 - keep this repo as a **small bridge**, not a second harness
 
-> **Product scope.** `pi-shell-acp` bundles the ACP bridge and the entwurf orchestration surface in one project: delegate spawn, delegate-target registry, identity preservation, pi-side MCP adapter (`mcp/pi-tools-bridge`), and the Claude Code ↔ pi session bridge (`mcp/session-bridge`). The earlier "thin bridge, orchestration elsewhere" thesis has been superseded — see AGENTS.md `§Entwurf Orchestration` for the narrative and migration history. External harnesses (e.g. [agent-config](https://github.com/junghan0611/agent-config) as a pi skills/prompts package) can consume this repo without owning any of the surfaces above.
+> **Product scope.** `pi-shell-acp` bundles the ACP bridge and the entwurf orchestration surface in one project: entwurf spawn, entwurf-target registry, identity preservation, pi-side MCP adapter (`mcp/pi-tools-bridge`), and the Claude Code ↔ pi session bridge (`mcp/session-bridge`). The earlier "thin bridge, orchestration elsewhere" thesis has been superseded — see AGENTS.md `§Entwurf Orchestration` for the narrative and migration history. External harnesses (e.g. [agent-config](https://github.com/junghan0611/agent-config) as a pi skills/prompts package) can consume this repo without owning any of the surfaces above.
 
 ## Current Guarantees
 
@@ -100,17 +100,17 @@ This is a deliberate architectural choice: `pi-shell-acp` persists only enough t
 
 | Path                                   | Purpose                                                          |
 |----------------------------------------|------------------------------------------------------------------|
-| `pi-extensions/delegate.ts`            | pi-native delegate spawn (sync + async modes, Phase 0.5)         |
-| `pi-extensions/lib/delegate-core.ts`   | shared core: registry resolution + Identity Preservation Rule    |
-| `pi-extensions/session-control.ts`     | pi session-control server — opens `~/.pi/session-control/<id>.sock`, handles `send`/`get_message`/`clear`/`abort`/`subscribe turn_end` RPC, registers the native `send_to_session` tool. Ingested from [Armin Ronacher's `agent-stuff`](https://github.com/mitsuhiko/agent-stuff) (Apache 2.0), with `get_summary` dropped to avoid a `pi-ai.complete` dependency. |
-| `pi/delegate-targets.json`             | SSOT allowlist of `(provider, model)` spawn targets              |
-| `mcp/pi-tools-bridge/`                 | MCP adapter promoting pi-side tools (`send_to_session`, `list_sessions`, `delegate`, `delegate_resume`) to ACP hosts. Depends on `pi-extensions/session-control.ts` being loaded in the *target* pi session to have a socket to talk to. Deliberately narrow — semantic/knowledge search is a skill concern, not a bridge concern. |
-| `mcp/session-bridge/`                  | Claude Code ↔ pi Unix-socket session bridge (wire-compatible with pi's session-control) |
-| `scripts/session-messaging-smoke.sh`   | 4-case matrix verifying send_to_session across native/ACP senders × native/ACP targets |
+| `pi-extensions/entwurf.ts`            | pi-native entwurf spawn (sync + async modes, Phase 0.5)         |
+| `pi-extensions/lib/entwurf-core.ts`   | shared core: registry resolution + Identity Preservation Rule    |
+| `pi-extensions/entwurf-control.ts`     | pi entwurf-control server — opens `~/.pi/entwurf-control/<id>.sock`, handles `send`/`get_message`/`clear`/`abort`/`subscribe turn_end` RPC, registers the native `entwurf_send` tool. Ingested from [Armin Ronacher's `agent-stuff`](https://github.com/mitsuhiko/agent-stuff) (Apache 2.0), with `get_summary` dropped to avoid a `pi-ai.complete` dependency. |
+| `pi/entwurf-targets.json`             | SSOT allowlist of `(provider, model)` spawn targets              |
+| `mcp/pi-tools-bridge/`                 | MCP adapter promoting pi-side tools (`entwurf_send`, `entwurf_peers`, `entwurf`, `entwurf_resume`) to ACP hosts. Depends on `pi-extensions/entwurf-control.ts` being loaded in the *target* pi session to have a socket to talk to. Deliberately narrow — semantic/knowledge search is a skill concern, not a bridge concern. |
+| `mcp/session-bridge/`                  | Claude Code ↔ pi Unix-socket session bridge (wire-compatible with pi's entwurf-control) |
+| `scripts/session-messaging-smoke.sh`   | 4-case matrix verifying entwurf_send across native/ACP senders × native/ACP targets |
 
-The identifier `delegate` is the current in-repo name. A single rename commit to `entwurf` is pending as the final cosmetic step of the migration — see AGENTS.md `§Entwurf Orchestration § Migration Plan (step 6)`.
+The identifier `entwurf` is the current in-repo name. A single rename commit to `entwurf` is pending as the final cosmetic step of the migration — see AGENTS.md `§Entwurf Orchestration § Migration Plan (step 6)`.
 
-Related: see `## Engraving — Agent Self-Recognition` in AGENTS.md for how the delegate tool surfaces in the ACP session identity.
+Related: see `## Engraving — Agent Self-Recognition` in AGENTS.md for how the entwurf tool surfaces in the ACP session identity.
 
 ## Repository Layout
 
@@ -226,7 +226,7 @@ Notes:
 - The bridge session signature includes the selected backend and the SHA-256 hash of the canonical `mcpServers` shape — changing either invalidates the persisted session automatically, so the bridge never silently reuses a stale backend/config combination.
 - This bridge does **not** read `~/.mcp.json` or any other ambient backend config. If you want a server exposed, list it here.
 - Invalid `mcpServers` entries fail fast with a single aggregated error (`McpServerConfigError`) that names every offending server — no silent skips. Validate locally with `npm run check-mcp` before shipping a config.
-- pi-native extension tools are **not** auto-promoted into ACP sessions. The in-repo `mcp/pi-tools-bridge/` is the canonical MCP adapter that promotes the narrow pi-side surface (`send_to_session`, `list_sessions`, `delegate`, `delegate_resume`). External adapters remain possible for additional surfaces, but the defaults stay narrow. See AGENTS.md `## Entwurf Orchestration`.
+- pi-native extension tools are **not** auto-promoted into ACP sessions. The in-repo `mcp/pi-tools-bridge/` is the canonical MCP adapter that promotes the narrow pi-side surface (`entwurf_send`, `entwurf_peers`, `entwurf`, `entwurf_resume`). External adapters remain possible for additional surfaces, but the defaults stay narrow. See AGENTS.md `## Entwurf Orchestration`.
 - `./run.sh install <project>` pre-populates `piShellAcpProvider.mcpServers.pi-tools-bridge` and `piShellAcpProvider.mcpServers.session-bridge` pointing at the in-repo `mcp/*/start.sh` launchers, so `pi install git:…pi-shell-acp` + `./run.sh install .` produces a working setup without hand-editing settings.json. Any user-authored override at those names (different `command`/`args`) is preserved — `install` only fills entries it authored. `./run.sh remove <project>` symmetrically deletes only entries that match the repo-authored launcher path; user overrides stay.
 
 After installing into a consumer project, verify:

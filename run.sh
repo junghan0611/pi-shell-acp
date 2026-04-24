@@ -30,11 +30,11 @@ Usage:
   ./run.sh smoke-continuity [project-dir] # strict dual-backend persisted bootstrap gate (Claude=resume, Codex=load)
   ./run.sh smoke-cancel [project-dir] # strict cancel/abort cleanup observability gate (Claude + Codex)
   ./run.sh smoke-model-switch [project-dir] # strict dual-backend model switch observability gate (reuse 3 branches)
-  ./run.sh smoke-delegate-resume [project-dir] # bridge-level delegate-style continuity gate (Claude=resume, Codex=load)
+  ./run.sh smoke-entwurf-resume [project-dir] # bridge-level entwurf-style continuity gate (Claude=resume, Codex=load)
   ./run.sh smoke-compaction [project-dir] # strict post-compaction handoff gate (Claude recalls pi-side summary token + reuses session)
   ./run.sh check-bridge               # pi-tools-bridge direct MCP smoke + test.sh + ACP visibility/invocation (claude+codex)
-  ./run.sh check-native-async         # pi-native async delegate spawn smoke (pi -e pi-extensions/delegate.ts)
-  ./run.sh sentinel [args...]         # delegate 6-cell diagonal matrix (sync+resume × parent×target)
+  ./run.sh check-native-async         # pi-native async entwurf spawn smoke (pi -e pi-extensions/entwurf.ts)
+  ./run.sh sentinel [args...]         # entwurf 6-cell diagonal matrix (sync+resume × parent×target)
   ./run.sh session-messaging [args...] # 4-case session-messaging smoke (native/ACP cross-matrix)
   ./run.sh check-mcp                  # local deterministic check of normalizeMcpServers() — no Claude/ACP subprocess
   ./run.sh check-backends             # local deterministic check of backend launch resolution + backend-specific _meta shape
@@ -766,7 +766,7 @@ smoke_model_switch() {
   echo "[smoke-model-switch] Claude + Codex model switch observability: ok"
 }
 
-smoke_delegate_resume_single() {
+smoke_entwurf_resume_single() {
   local project_dir=$1
   local backend=$2
   local model=$3
@@ -774,10 +774,10 @@ smoke_delegate_resume_single() {
   local label=$5
 
   local session_file
-  session_file=$(mktemp /tmp/pi-shell-acp-delegate-resume-XXXXXX.jsonl)
+  session_file=$(mktemp /tmp/pi-shell-acp-entwurf-resume-XXXXXX.jsonl)
 
-  echo "[smoke-delegate-resume/$backend] ${label}"
-  echo "[smoke-delegate-resume/$backend] model=$model expected-turn2=$expected_path session=$session_file"
+  echo "[smoke-entwurf-resume/$backend] ${label}"
+  echo "[smoke-entwurf-resume/$backend] model=$model expected-turn2=$expected_path session=$session_file"
 
   local turn1_log turn1_rc=0
   turn1_log=$(cd "$project_dir" && PI_SHELL_ACP_STRICT_BOOTSTRAP=1 pi \
@@ -788,13 +788,13 @@ smoke_delegate_resume_single() {
     --session "$session_file" \
     'READY 만 답해' 2>&1) || turn1_rc=$?
   if [[ "$turn1_rc" != "0" ]]; then
-    echo "[smoke-delegate-resume/$backend] turn1 pi invocation failed rc=$turn1_rc:" >&2
+    echo "[smoke-entwurf-resume/$backend] turn1 pi invocation failed rc=$turn1_rc:" >&2
     echo "$turn1_log" >&2
     rm -f "$session_file"
     exit 1
   fi
   if ! grep -q "^\[pi-shell-acp:bootstrap\] path=new backend=$backend" <<< "$turn1_log"; then
-    echo "[smoke-delegate-resume/$backend] turn1 expected path=new, got:" >&2
+    echo "[smoke-entwurf-resume/$backend] turn1 expected path=new, got:" >&2
     echo "$turn1_log" >&2
     rm -f "$session_file"
     exit 1
@@ -803,18 +803,18 @@ smoke_delegate_resume_single() {
   turn1_acp=$(grep -oE "^\[pi-shell-acp:bootstrap\] path=new backend=$backend [^$]*" <<< "$turn1_log" \
     | head -1 | grep -oE 'acpSessionId=[^ ]+' | head -1 | cut -d= -f2)
   if [[ -z "$turn1_acp" ]]; then
-    echo "[smoke-delegate-resume/$backend] turn1 acpSessionId not extractable:" >&2
+    echo "[smoke-entwurf-resume/$backend] turn1 acpSessionId not extractable:" >&2
     echo "$turn1_log" >&2
     rm -f "$session_file"
     exit 1
   fi
   if ! grep -qE '"role":"assistant"' "$session_file"; then
-    echo "[smoke-delegate-resume/$backend] turn1 session file has no assistant message" >&2
+    echo "[smoke-entwurf-resume/$backend] turn1 session file has no assistant message" >&2
     cat "$session_file" >&2
     rm -f "$session_file"
     exit 1
   fi
-  echo "[smoke-delegate-resume/$backend] turn1 path=new acpSessionId=$turn1_acp: ok"
+  echo "[smoke-entwurf-resume/$backend] turn1 path=new acpSessionId=$turn1_acp: ok"
 
   local turn2_log turn2_rc=0
   turn2_log=$(cd "$project_dir" && PI_SHELL_ACP_STRICT_BOOTSTRAP=1 pi \
@@ -825,13 +825,13 @@ smoke_delegate_resume_single() {
     --session "$session_file" \
     'OK 만 답해' 2>&1) || turn2_rc=$?
   if [[ "$turn2_rc" != "0" ]]; then
-    echo "[smoke-delegate-resume/$backend] turn2 pi invocation failed rc=$turn2_rc:" >&2
+    echo "[smoke-entwurf-resume/$backend] turn2 pi invocation failed rc=$turn2_rc:" >&2
     echo "$turn2_log" >&2
     rm -f "$session_file"
     exit 1
   fi
   if ! grep -q "^\[pi-shell-acp:bootstrap\] path=$expected_path backend=$backend" <<< "$turn2_log"; then
-    echo "[smoke-delegate-resume/$backend] turn2 expected path=$expected_path, got:" >&2
+    echo "[smoke-entwurf-resume/$backend] turn2 expected path=$expected_path, got:" >&2
     echo "$turn2_log" >&2
     rm -f "$session_file"
     exit 1
@@ -840,19 +840,19 @@ smoke_delegate_resume_single() {
   turn2_acp=$(grep -oE "^\[pi-shell-acp:bootstrap\] path=$expected_path backend=$backend [^$]*" <<< "$turn2_log" \
     | head -1 | grep -oE 'acpSessionId=[^ ]+' | head -1 | cut -d= -f2)
   if [[ "$turn2_acp" != "$turn1_acp" ]]; then
-    echo "[smoke-delegate-resume/$backend] acpSessionId mismatch turn1=$turn1_acp turn2=$turn2_acp" >&2
+    echo "[smoke-entwurf-resume/$backend] acpSessionId mismatch turn1=$turn1_acp turn2=$turn2_acp" >&2
     echo "$turn2_log" >&2
     rm -f "$session_file"
     exit 1
   fi
   if grep -q "^\[pi-shell-acp:bootstrap-invalidate\]" <<< "$turn2_log"; then
-    echo "[smoke-delegate-resume/$backend] turn2 unexpected bootstrap-invalidate:" >&2
+    echo "[smoke-entwurf-resume/$backend] turn2 unexpected bootstrap-invalidate:" >&2
     echo "$turn2_log" >&2
     rm -f "$session_file"
     exit 1
   fi
   if grep -q "^\[pi-shell-acp:bootstrap-fallback\]" <<< "$turn2_log"; then
-    echo "[smoke-delegate-resume/$backend] turn2 unexpected bootstrap-fallback:" >&2
+    echo "[smoke-entwurf-resume/$backend] turn2 unexpected bootstrap-fallback:" >&2
     echo "$turn2_log" >&2
     rm -f "$session_file"
     exit 1
@@ -862,7 +862,7 @@ smoke_delegate_resume_single() {
   local assistant_count
   assistant_count=$(grep -cE '"role":"assistant"' "$session_file" || true)
   if [[ "${assistant_count:-0}" -lt 2 ]]; then
-    echo "[smoke-delegate-resume/$backend] expected >=2 assistant messages in session file, got ${assistant_count:-0}" >&2
+    echo "[smoke-entwurf-resume/$backend] expected >=2 assistant messages in session file, got ${assistant_count:-0}" >&2
     cat "$session_file" >&2
     rm -f "$session_file"
     exit 1
@@ -893,12 +893,12 @@ smoke_delegate_resume_single() {
     console.log(len);
   ' 2>/dev/null || echo 0)
   if [[ "${last_assistant_len:-0}" -lt 1 ]]; then
-    echo "[smoke-delegate-resume/$backend] last assistant payload is empty (len=${last_assistant_len:-0})" >&2
+    echo "[smoke-entwurf-resume/$backend] last assistant payload is empty (len=${last_assistant_len:-0})" >&2
     cat "$session_file" >&2
     rm -f "$session_file"
     exit 1
   fi
-  echo "[smoke-delegate-resume/$backend] turn2 path=$expected_path acpSessionId=$turn2_acp (same as turn1, last-assistant-len=$last_assistant_len): ok"
+  echo "[smoke-entwurf-resume/$backend] turn2 path=$expected_path acpSessionId=$turn2_acp (same as turn1, last-assistant-len=$last_assistant_len): ok"
 
   rm -f "$session_file"
 }
@@ -1089,24 +1089,24 @@ smoke_compaction() {
   echo "[smoke-compaction] Claude compaction handoff: ok"
 }
 
-smoke_delegate_resume() {
+smoke_entwurf_resume() {
   local project_dir
   project_dir=$(normalize_project_dir "$1")
 
   require_cmd pi
 
-  echo "[smoke-delegate-resume] bridge-level dual-backend continuity gate"
-  echo "[smoke-delegate-resume] project: $project_dir"
-  echo "[smoke-delegate-resume] repo:    $REPO_DIR"
-  echo "[smoke-delegate-resume] scope:   bridge carries same-session turn1->turn2 via resume(Claude) / load(Codex)"
+  echo "[smoke-entwurf-resume] bridge-level dual-backend continuity gate"
+  echo "[smoke-entwurf-resume] project: $project_dir"
+  echo "[smoke-entwurf-resume] repo:    $REPO_DIR"
+  echo "[smoke-entwurf-resume] scope:   bridge carries same-session turn1->turn2 via resume(Claude) / load(Codex)"
   echo "                       — spawn authority / target selection / parent×target matrix live in"
-  echo "                         this repo's entwurf surface (pi/delegate-targets.json + mcp/pi-tools-bridge)."
+  echo "                         this repo's entwurf surface (pi/entwurf-targets.json + mcp/pi-tools-bridge)."
   echo "                         This smoke validates BRIDGE carry only; orchestration is validated separately."
 
-  smoke_delegate_resume_single "$project_dir" claude claude-sonnet-4-6 resume "bridge continuity (Claude → resumeSession)"
-  smoke_delegate_resume_single "$project_dir" codex  gpt-5.2           load   "bridge continuity (Codex → loadSession)"
+  smoke_entwurf_resume_single "$project_dir" claude claude-sonnet-4-6 resume "bridge continuity (Claude → resumeSession)"
+  smoke_entwurf_resume_single "$project_dir" codex  gpt-5.2           load   "bridge continuity (Codex → loadSession)"
 
-  echo "[smoke-delegate-resume] Claude(resume) + Codex(load) bridge continuity: ok"
+  echo "[smoke-entwurf-resume] Claude(resume) + Codex(load) bridge continuity: ok"
 }
 
 check_mcp() {
@@ -1812,7 +1812,7 @@ check_global_codex_acp() {
 #   1. pi-tools-bridge as a standalone MCP server (tools/list + protocol suite)
 #   2. pi-tools-bridge visibility + callability from inside a pi-shell-acp
 #      ACP session, for both backends (claude + codex)
-#   3. pi-native async delegate spawn via `pi -e pi-extensions/delegate.ts`
+#   3. pi-native async entwurf spawn via `pi -e pi-extensions/entwurf.ts`
 #
 # AGENTS.md §Ingestion Gates (Axis 1) names these as required gates that must
 # pass before the Axis 2 agent interview can be re-run. They were implemented
@@ -1838,7 +1838,7 @@ pi_tools_bridge_require_tools() {
 
   # Bridge exposes a deliberately narrow set: session_search / knowledge_search
   # are intentionally NOT here — those are skill-side concerns (see mcp/pi-tools-bridge/src/index.ts header).
-  for tool in send_to_session list_sessions delegate delegate_resume; do
+  for tool in entwurf_send entwurf_peers entwurf entwurf_resume; do
     if [[ "$raw" != *"$tool"* ]]; then
       echo "$raw" >&2
       fail "pi-tools-bridge: $backend_label missing tool $tool"
@@ -1861,14 +1861,14 @@ validate_pi_tools_bridge_backend() {
   pi_tools_bridge_require_tools "$raw" "$backend_label" || return 1
   ok "pi-tools-bridge visibility via pi-shell-acp ($backend_label: $raw)"
 
-  if ! raw=$(cd "$REPO_DIR" && pi -e "$REPO_DIR" --provider pi-shell-acp --model "$model" -p 'send_to_session 도구가 보이면 반드시 그 도구를 실제로 1회 호출해. target은 __definitely_does_not_exist__, message는 "ping", mode는 follow_up 으로 해. functions.send_input 같은 다른 도구는 절대 쓰지 마. 응답은 두 줄만: 1) TOOL:<사용한 도구명 또는 NONE> 2) RESULT:<성공/실패 핵심 메시지 한 줄>. 도구가 안 보이면 TOOL:NONE / RESULT:not visible 로만 답해.' ); then
+  if ! raw=$(cd "$REPO_DIR" && pi -e "$REPO_DIR" --provider pi-shell-acp --model "$model" -p 'entwurf_send 도구가 보이면 반드시 그 도구를 실제로 1회 호출해. target은 __definitely_does_not_exist__, message는 "ping", mode는 follow_up 으로 해. functions.send_input 같은 다른 도구는 절대 쓰지 마. 응답은 두 줄만: 1) TOOL:<사용한 도구명 또는 NONE> 2) RESULT:<성공/실패 핵심 메시지 한 줄>. 도구가 안 보이면 TOOL:NONE / RESULT:not visible 로만 답해.' ); then
     fail "pi-tools-bridge: $backend_label invocation smoke failed"
     return 1
   fi
 
-  if [[ "$raw" != *"send_to_session"* ]]; then
+  if [[ "$raw" != *"entwurf_send"* ]]; then
     echo "$raw" >&2
-    fail "pi-tools-bridge: $backend_label invocation did not use send_to_session"
+    fail "pi-tools-bridge: $backend_label invocation did not use entwurf_send"
     return 1
   fi
 
@@ -1930,7 +1930,7 @@ function finishOk(trimmed) {
     process.exit(1);
   }
   const names = tools.map((t) => t?.name).sort();
-  const expected = ['delegate', 'delegate_resume', 'list_sessions', 'send_to_session'];
+  const expected = ['entwurf', 'entwurf_resume', 'entwurf_peers', 'entwurf_send'];
   for (const name of expected) {
     if (!names.includes(name)) {
       console.error(`missing MCP tool: ${name}`);
@@ -1994,30 +1994,30 @@ JS
   validate_pi_tools_bridge_backend "codex" "pi-shell-acp/gpt-5.2" || return 1
 }
 
-# pi-native async delegate spawn smoke. Loads the native delegate.ts directly
-# and asks a cheap model to invoke `delegate` in async mode against a bogus
+# pi-native async entwurf spawn smoke. Loads the native entwurf.ts directly
+# and asks a cheap model to invoke `entwurf` in async mode against a bogus
 # host. We read pi's --mode json event stream so the gate inspects the tool's
-# *actual* sync return (which contains "Async delegate spawned" + Task ID),
+# *actual* sync return (which contains "Async entwurf spawned" + Task ID),
 # not the model's natural-language interpretation. We also grep explicitly for
 # the regression class PM flagged: a stale `explicitExtensions` reference in
-# runDelegateAsync would surface as a ReferenceError in the tool result.
-validate_pi_native_async_delegate() {
+# runEntwurfAsync would surface as a ReferenceError in the tool result.
+validate_pi_native_async_entwurf() {
   local raw
-  log "pi-native: async delegate spawn smoke (model: gpt-5.4-mini)..."
+  log "pi-native: async entwurf spawn smoke (model: gpt-5.4-mini)..."
 
   if ! raw=$(cd "$REPO_DIR" && pi -p \
               --mode json \
               --no-extensions \
-              -e "$REPO_DIR/pi-extensions/delegate.ts" \
+              -e "$REPO_DIR/pi-extensions/entwurf.ts" \
               --provider openai-codex \
               --model gpt-5.4-mini \
-              'delegate 도구를 task="noop", host="__native_async_smoke_bogus__", mode="async" 인수로 정확히 1회 호출하라. 도구의 첫 sync 응답을 그대로 echo하라. 그 다음에 도착하는 follow-up 메시지는 무시하고 더 출력하지 마라.' 2>&1); then
+              'entwurf 도구를 task="noop", host="__native_async_smoke_bogus__", mode="async" 인수로 정확히 1회 호출하라. 도구의 첫 sync 응답을 그대로 echo하라. 그 다음에 도착하는 follow-up 메시지는 무시하고 더 출력하지 마라.' 2>&1); then
     echo "$raw" >&2
-    fail "pi-native async delegate smoke: pi -p exited non-zero"
+    fail "pi-native async entwurf smoke: pi -p exited non-zero"
     return 1
   fi
 
-  # Regression class PM flagged: stale variable name in runDelegateAsync.
+  # Regression class PM flagged: stale variable name in runEntwurfAsync.
   #
   # NOTE on here-strings: $raw can exceed 800KB (pi --mode json is chatty),
   # and `set -o pipefail` is active. The pattern `echo "$raw" | grep -q ...`
@@ -2034,18 +2034,18 @@ validate_pi_native_async_delegate() {
 
   # The sync tool return contains these strings verbatim — independent of how
   # the model paraphrases. Either marker proves the spawn completed cleanly.
-  if grep -qE 'Async delegate spawned|Task ID:' <<< "$raw"; then
+  if grep -qE 'Async entwurf spawned|Task ID:' <<< "$raw"; then
     local taskid
     # `head -1` still closes its stdin early, which can send SIGPIPE back
     # to grep under pipefail. Swallow the rc so the assignment survives —
     # the captured string is the only thing we need.
     taskid=$(grep -oE 'Task ID: [a-f0-9]+' <<< "$raw" | head -1 || true)
-    ok "pi-native async delegate spawn (${taskid:-Task ID present})"
+    ok "pi-native async entwurf spawn (${taskid:-Task ID present})"
     return 0
   fi
 
   echo "$raw" >&2
-  fail "pi-native async delegate produced neither Task ID nor a recognized error"
+  fail "pi-native async entwurf produced neither Task ID nor a recognized error"
   return 1
 }
 
@@ -2055,8 +2055,8 @@ check_bridge() {
 }
 
 check_native_async() {
-  section "pi-native async delegate spawn"
-  validate_pi_native_async_delegate
+  section "pi-native async entwurf spawn"
+  validate_pi_native_async_entwurf
 }
 
 sentinel_run() {
@@ -2079,11 +2079,11 @@ session_messaging_run() {
 
 # setup_all — full pi-shell-acp install.
 #
-# Installs the bridge + entwurf orchestration surface (delegate registry,
+# Installs the bridge + entwurf orchestration surface (entwurf registry,
 # MCP pi-tools-bridge, session-bridge) into a target project and verifies
 # end-to-end against both ACP backends. As of the entwurf migration this
 # repo owns the orchestration — there is no separate "consuming harness"
-# install for the delegate/registry pieces.
+# install for the entwurf/registry pieces.
 #
 # An external harness that consumes pi-shell-acp (e.g. agent-config as a
 # pi package + skills set) may still have its own install/setup for its
@@ -2145,13 +2145,13 @@ setup_all() {
   section "Axis 1 gate: pi-tools-bridge (direct MCP + backend visibility)"
   validate_pi_tools_bridge
 
-  section "Axis 1 gate: pi-native async delegate spawn"
-  validate_pi_native_async_delegate
+  section "Axis 1 gate: pi-native async entwurf spawn"
+  validate_pi_native_async_entwurf
 
   section "Axis 1 gate: session-messaging 4-case matrix"
   session_messaging_run
 
-  section "Axis 1 gate: sentinel (delegate 6-cell matrix)"
+  section "Axis 1 gate: sentinel (entwurf 6-cell matrix)"
   if sentinel_run; then
     ok "sentinel 6/6 PASS"
   else
@@ -2191,8 +2191,8 @@ case "$cmd" in
   smoke-model-switch)
     smoke_model_switch "$TARGET_PROJECT_DIR"
     ;;
-  smoke-delegate-resume)
-    smoke_delegate_resume "$TARGET_PROJECT_DIR"
+  smoke-entwurf-resume)
+    smoke_entwurf_resume "$TARGET_PROJECT_DIR"
     ;;
   smoke-compaction)
     smoke_compaction "$TARGET_PROJECT_DIR"

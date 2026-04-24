@@ -4,16 +4,16 @@
 # Exercises the four tools the bridge is allowed to expose (narrow scope —
 # anything the MCP bridge doesn't strictly need to bridge pi lives as a skill
 # instead):
-#   - send_to_session
-#   - list_sessions
-#   - delegate
-#   - delegate_resume
+#   - entwurf_send
+#   - entwurf_peers
+#   - entwurf
+#   - entwurf_resume
 #
 # Layers:
 #   1. tools/list parity
 #   2. unknown-tool error surface
-#   3. send_to_session negative path (bogus target)
-#   4. delegate registry rejection
+#   3. entwurf_send negative path (bogus target)
+#   4. entwurf registry rejection
 #
 # Runs straight against start.sh (no build step — src/*.ts is loaded by
 # --experimental-strip-types).
@@ -21,7 +21,7 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
-EXPECTED_TOOLS=("send_to_session" "list_sessions" "delegate" "delegate_resume")
+EXPECTED_TOOLS=("entwurf_send" "entwurf_peers" "entwurf" "entwurf_resume")
 PASS=0
 FAIL=0
 
@@ -85,16 +85,16 @@ else
 fi
 
 # ----------------------------------------------------------------------------
-# 3. send_to_session negative path — no process, should isError:true
+# 3. entwurf_send negative path — no process, should isError:true
 # ----------------------------------------------------------------------------
 
-echo "[3] send_to_session negative path"
+echo "[3] entwurf_send negative path"
 
 SEND=$(
   {
     printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"0"}}}'
     printf '%s\n' '{"jsonrpc":"2.0","method":"notifications/initialized"}'
-    printf '%s\n' '{"jsonrpc":"2.0","id":10,"method":"tools/call","params":{"name":"send_to_session","arguments":{"target":"__definitely_does_not_exist__","message":"hi"}}}'
+    printf '%s\n' '{"jsonrpc":"2.0","id":10,"method":"tools/call","params":{"name":"entwurf_send","arguments":{"target":"__definitely_does_not_exist__","message":"hi"}}}'
     sleep 0.5
   } | rpc 2>/dev/null | grep '"id":10' || true
 )
@@ -105,58 +105,58 @@ else
 fi
 
 # ----------------------------------------------------------------------------
-# 3b. list_sessions — must succeed (not isError) even when no live sessions exist
+# 3b. entwurf_peers — must succeed (not isError) even when no live sessions exist
 # ----------------------------------------------------------------------------
 
-echo "[3b] list_sessions empty environment"
+echo "[3b] entwurf_peers empty environment"
 
 LIST=$(
   {
     printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"0"}}}'
     printf '%s\n' '{"jsonrpc":"2.0","method":"notifications/initialized"}'
-    printf '%s\n' '{"jsonrpc":"2.0","id":15,"method":"tools/call","params":{"name":"list_sessions","arguments":{}}}'
+    printf '%s\n' '{"jsonrpc":"2.0","id":15,"method":"tools/call","params":{"name":"entwurf_peers","arguments":{}}}'
     sleep 1
   } | rpc 2>/dev/null | grep '"id":15' || true
 )
 if echo "$LIST" | grep -q '"isError":true'; then
-  fail "list_sessions reported isError on empty env: ${LIST:0:200}"
+  fail "entwurf_peers reported isError on empty env: ${LIST:0:200}"
 elif echo "$LIST" | grep -qE 'controlDir'; then
-  ok "list_sessions returns controlDir + sessions payload"
+  ok "entwurf_peers returns controlDir + sessions payload"
 else
-  fail "list_sessions produced no payload: ${LIST:0:200}"
+  fail "entwurf_peers produced no payload: ${LIST:0:200}"
 fi
 
 # ----------------------------------------------------------------------------
-# 4. delegate negative path — bogus SSH host should surface isError
+# 4. entwurf negative path — bogus SSH host should surface isError
 # ----------------------------------------------------------------------------
 
-echo "[4] delegate bogus-ssh negative path"
+echo "[4] entwurf bogus-ssh negative path"
 
-DELEGATE_NEG=$(
+ENTWURF_NEG=$(
   {
     printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"0"}}}'
     printf '%s\n' '{"jsonrpc":"2.0","method":"notifications/initialized"}'
-    printf '%s\n' '{"jsonrpc":"2.0","id":20,"method":"tools/call","params":{"name":"delegate","arguments":{"task":"noop","host":"__pi_tools_bridge_bogus_host__"}}}'
+    printf '%s\n' '{"jsonrpc":"2.0","id":20,"method":"tools/call","params":{"name":"entwurf","arguments":{"task":"noop","host":"__pi_tools_bridge_bogus_host__"}}}'
     sleep 3
   } | timeout 15 "$HERE/start.sh" 2>/dev/null | grep '"id":20' || true
 )
-if echo "$DELEGATE_NEG" | grep -q '"isError":true'; then
+if echo "$ENTWURF_NEG" | grep -q '"isError":true'; then
   ok "bogus SSH host returns isError"
 else
-  fail "bogus SSH host did not surface isError: ${DELEGATE_NEG:0:200}"
+  fail "bogus SSH host did not surface isError: ${ENTWURF_NEG:0:200}"
 fi
 
 # ----------------------------------------------------------------------------
-# 4b. delegate_resume negative path — unknown taskId must surface isError
+# 4b. entwurf_resume negative path — unknown taskId must surface isError
 # ----------------------------------------------------------------------------
 
-echo "[4b] delegate_resume unknown taskId"
+echo "[4b] entwurf_resume unknown taskId"
 
 RESUME_NEG=$(
   {
     printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"0"}}}'
     printf '%s\n' '{"jsonrpc":"2.0","method":"notifications/initialized"}'
-    printf '%s\n' '{"jsonrpc":"2.0","id":21,"method":"tools/call","params":{"name":"delegate_resume","arguments":{"taskId":"__definitely_does_not_exist__","prompt":"noop"}}}'
+    printf '%s\n' '{"jsonrpc":"2.0","id":21,"method":"tools/call","params":{"name":"entwurf_resume","arguments":{"taskId":"__definitely_does_not_exist__","prompt":"noop"}}}'
     sleep 1
   } | rpc 2>/dev/null | grep '"id":21' || true
 )
@@ -179,13 +179,13 @@ SCHEMA_JSON=$(
   } | rpc 2>/dev/null | grep '"id":22' || true
 )
 
-# 4c. Identity Preservation Rule — delegate_resume schema must NOT expose `model`.
-echo "[4c] delegate_resume schema lockdown (no model param)"
+# 4c. Identity Preservation Rule — entwurf_resume schema must NOT expose `model`.
+echo "[4c] entwurf_resume schema lockdown (no model param)"
 RESUME_SCHEMA=$(echo "$SCHEMA_JSON" | python3 -c "
 import json, sys
 try:
   o = json.loads(sys.stdin.read())
-  t = next((x for x in o['result']['tools'] if x['name'] == 'delegate_resume'), None)
+  t = next((x for x in o['result']['tools'] if x['name'] == 'entwurf_resume'), None)
   if t is None: print('NOT_FOUND'); sys.exit(0)
   props = list(t['inputSchema'].get('properties', {}).keys())
   print(','.join(sorted(props)))
@@ -193,71 +193,71 @@ except Exception as e:
   print('PARSE_ERROR:', e)
 ")
 if [ "$RESUME_SCHEMA" = "NOT_FOUND" ]; then
-  fail "delegate_resume tool not in tools/list: ${SCHEMA_JSON:0:200}"
+  fail "entwurf_resume tool not in tools/list: ${SCHEMA_JSON:0:200}"
 elif echo "$RESUME_SCHEMA" | grep -qw model; then
-  fail "delegate_resume schema exposes 'model' (Identity Preservation Rule violation): $RESUME_SCHEMA"
+  fail "entwurf_resume schema exposes 'model' (Identity Preservation Rule violation): $RESUME_SCHEMA"
 elif ! echo "$RESUME_SCHEMA" | grep -qw taskId; then
-  fail "delegate_resume schema unexpectedly missing 'taskId': $RESUME_SCHEMA"
+  fail "entwurf_resume schema unexpectedly missing 'taskId': $RESUME_SCHEMA"
 else
-  ok "delegate_resume schema has no 'model' (locked): $RESUME_SCHEMA"
+  ok "entwurf_resume schema has no 'model' (locked): $RESUME_SCHEMA"
 fi
 
-# 4d. delegate schema must expose the new `provider` field for registry-aware calls.
-echo "[4d] delegate schema exposes provider field"
-DELEGATE_SCHEMA=$(echo "$SCHEMA_JSON" | python3 -c "
+# 4d. entwurf schema must expose the new `provider` field for registry-aware calls.
+echo "[4d] entwurf schema exposes provider field"
+ENTWURF_SCHEMA=$(echo "$SCHEMA_JSON" | python3 -c "
 import json, sys
 try:
   o = json.loads(sys.stdin.read())
-  t = next((x for x in o['result']['tools'] if x['name'] == 'delegate'), None)
+  t = next((x for x in o['result']['tools'] if x['name'] == 'entwurf'), None)
   if t is None: print('NOT_FOUND'); sys.exit(0)
   print(','.join(sorted(t['inputSchema'].get('properties', {}).keys())))
 except Exception as e:
   print('PARSE_ERROR:', e)
 ")
-if [ "$DELEGATE_SCHEMA" = "NOT_FOUND" ]; then
-  fail "delegate tool not in tools/list"
-elif ! echo "$DELEGATE_SCHEMA" | grep -qw provider; then
-  fail "delegate schema missing 'provider' field: $DELEGATE_SCHEMA"
-elif ! echo "$DELEGATE_SCHEMA" | grep -qw model; then
-  fail "delegate schema missing 'model' field: $DELEGATE_SCHEMA"
+if [ "$ENTWURF_SCHEMA" = "NOT_FOUND" ]; then
+  fail "entwurf tool not in tools/list"
+elif ! echo "$ENTWURF_SCHEMA" | grep -qw provider; then
+  fail "entwurf schema missing 'provider' field: $ENTWURF_SCHEMA"
+elif ! echo "$ENTWURF_SCHEMA" | grep -qw model; then
+  fail "entwurf schema missing 'model' field: $ENTWURF_SCHEMA"
 else
-  ok "delegate schema exposes provider + model: $DELEGATE_SCHEMA"
+  ok "entwurf schema exposes provider + model: $ENTWURF_SCHEMA"
 fi
 
-# 4f. Static guard against the PM-flagged blocker class: runDelegateAsync in
-#     pi-extensions/delegate.ts must reference the local `routing` variable, not
+# 4f. Static guard against the PM-flagged blocker class: runEntwurfAsync in
+#     pi-extensions/entwurf.ts must reference the local `routing` variable, not
 #     the legacy `explicitExtensions` (which was renamed). Catches a regression
 #     class that the bridge's tsconfig cannot see (pi-extensions is outside its
 #     include path, so a stale name compiles silently and only fails at runtime).
-echo "[4d2] static guard: runDelegateAsync uses 'routing' (no stale name)"
-NATIVE_FILE="$HERE/../../pi-extensions/delegate.ts"
+echo "[4d2] static guard: runEntwurfAsync uses 'routing' (no stale name)"
+NATIVE_FILE="$HERE/../../pi-extensions/entwurf.ts"
 if [ ! -f "$NATIVE_FILE" ]; then
-  fail "static guard: native delegate.ts not found at $NATIVE_FILE"
+  fail "static guard: native entwurf.ts not found at $NATIVE_FILE"
 else
-  STALE_REFS=$(awk '/^async function runDelegateAsync/,/^\}$/' "$NATIVE_FILE" \
+  STALE_REFS=$(awk '/^async function runEntwurfAsync/,/^\}$/' "$NATIVE_FILE" \
     | grep -nE '\bexplicitExtensions\.' \
     | grep -v 'info\.explicitExtensions' \
     | grep -v 'resumeInfo\.explicitExtensions' \
     || true)
   if [ -z "$STALE_REFS" ]; then
-    ok "runDelegateAsync clean (no stale 'explicitExtensions.X' references)"
+    ok "runEntwurfAsync clean (no stale 'explicitExtensions.X' references)"
   else
-    fail "runDelegateAsync still references stale 'explicitExtensions': $STALE_REFS"
+    fail "runEntwurfAsync still references stale 'explicitExtensions': $STALE_REFS"
   fi
 fi
 
 # 4e. Registry runtime gate — unregistered (provider, model) must be rejected.
-echo "[4e] delegate registry — unregistered (provider, model) rejected"
+echo "[4e] entwurf registry — unregistered (provider, model) rejected"
 REGISTRY_NEG=$(
   {
     printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"0"}}}'
     printf '%s\n' '{"jsonrpc":"2.0","method":"notifications/initialized"}'
-    printf '%s\n' '{"jsonrpc":"2.0","id":23,"method":"tools/call","params":{"name":"delegate","arguments":{"task":"noop","host":"__bogus__","provider":"__not_a_provider__","model":"__not_a_model__"}}}'
+    printf '%s\n' '{"jsonrpc":"2.0","id":23,"method":"tools/call","params":{"name":"entwurf","arguments":{"task":"noop","host":"__bogus__","provider":"__not_a_provider__","model":"__not_a_model__"}}}'
     sleep 1
   } | rpc 2>/dev/null | grep '"id":23' || true
 )
 if echo "$REGISTRY_NEG" | grep -q '"isError":true' \
-   && echo "$REGISTRY_NEG" | grep -q 'not in the delegate target registry' \
+   && echo "$REGISTRY_NEG" | grep -q 'not in the entwurf target registry' \
    && echo "$REGISTRY_NEG" | grep -q 'Allowed:'; then
   ok "unregistered (provider, model) rejected with allowed-list hint"
 else

@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
-# sentinel-runner.sh — 6-cell delegate matrix sentinel.
+# sentinel-runner.sh — 6-cell entwurf matrix sentinel.
 #
 # Covers the high-risk diagonal slice of parent_surface × target before
 # committing to a full 18-cell positive matrix. Each cell runs:
-#   spawn:  parent pi → delegate(task, provider, model, mode=sync)
-#   resume: parent pi → delegate_resume(taskId, prompt)
+#   spawn:  parent pi → entwurf(task, provider, model, mode=sync)
+#   resume: parent pi → entwurf_resume(taskId, prompt)
 # and asserts structural evidence only — never the parent model's
 # natural-language echo. Evidence comes from two sources:
 #   1. raw `pi --mode json` stdout (for Task ID extraction)
-#   2. the delegate's session JSONL (for turn count, identity, cost)
+#   2. the entwurf's session JSONL (for turn count, identity, cost)
 #
 # Usage:
 #   scripts/sentinel-runner.sh                 # all 6 cells
@@ -50,7 +50,7 @@ log() { printf '[sentinel] %s\n' "$*" >&2; }
 
 usage() {
   cat <<'EOF'
-sentinel-runner.sh — 6-cell delegate matrix sentinel
+sentinel-runner.sh — 6-cell entwurf matrix sentinel
 
 Usage: scripts/sentinel-runner.sh [cells]
 
@@ -122,31 +122,31 @@ ALL_CELLS=(
 # giving us a paraphrase-free anchor for `Task ID: <8hex>`.
 #
 # child_stderr_log (4th arg, optional): when set, exported to the parent pi as
-# PI_DELEGATE_CHILD_STDERR_LOG so delegate-core's mirrorChildStderr() appends
-# the delegate child's stderr to that file. This is the only way to observe
+# PI_ENTWURF_CHILD_STDERR_LOG so entwurf-core's mirrorChildStderr() appends
+# the entwurf child's stderr to that file. This is the only way to observe
 # child-side `[pi-shell-acp:bootstrap]` bridge markers — parent stderr can't
 # see the bridge when target provider is pi-shell-acp (bridge lives in child).
 # ----------------------------------------------------------------------------
 parent_spawn() {
   local parent_key="$1" prompt="$2" out_file="$3" child_stderr_log="${4:-}"
   if [ -n "$child_stderr_log" ]; then
-    export PI_DELEGATE_CHILD_STDERR_LOG="$child_stderr_log"
+    export PI_ENTWURF_CHILD_STDERR_LOG="$child_stderr_log"
   else
-    unset PI_DELEGATE_CHILD_STDERR_LOG
+    unset PI_ENTWURF_CHILD_STDERR_LOG
   fi
   case "$parent_key" in
     native)
-      # --no-extensions -e delegate.ts: load only our delegate tool. This is the
-      # same pattern as validate_pi_native_async_delegate and avoids accidental
+      # --no-extensions -e entwurf.ts: load only our entwurf tool. This is the
+      # same pattern as validate_pi_native_async_entwurf and avoids accidental
       # cross-loads from global extensions.
       timeout "$TIMEOUT" pi --mode json -p --no-extensions \
-        -e "$SCRIPT_DIR/pi-extensions/delegate.ts" \
+        -e "$SCRIPT_DIR/pi-extensions/entwurf.ts" \
         --provider openai-codex --model gpt-5.4-mini \
         "$prompt" >"$out_file" 2>&1
       ;;
     acp-claude)
       # ACP parent brings pi-tools-bridge MCP into scope (per validate_pi_tools_bridge_backend).
-      # The MCP delegate/delegate_resume tools are what the parent will invoke.
+      # The MCP entwurf/entwurf_resume tools are what the parent will invoke.
       timeout "$TIMEOUT" pi --mode json -p \
         -e "$REPOS/pi-shell-acp" \
         --provider pi-shell-acp --model claude-sonnet-4-6 \
@@ -175,20 +175,20 @@ parent_spawn() {
 # ----------------------------------------------------------------------------
 build_spawn_prompt() {
   local provider="$1" model="$2" token="$3"
-  printf 'delegate 도구를 정확히 1회 호출하라. 인수: { task: "기억 단어는 %s 다. READY 한 단어만 답해라.", provider: "%s", model: "%s", mode: "sync" }. 도구 호출이 끝나면 설명이나 요약 없이 즉시 턴을 종료하라.' \
+  printf 'entwurf 도구를 정확히 1회 호출하라. 인수: { task: "기억 단어는 %s 다. READY 한 단어만 답해라.", provider: "%s", model: "%s", mode: "sync" }. 도구 호출이 끝나면 설명이나 요약 없이 즉시 턴을 종료하라.' \
     "$token" "$provider" "$model"
 }
 
 build_resume_prompt() {
   local task_id="$1"
-  printf 'delegate_resume 도구를 정확히 1회 호출하라. 인수: { taskId: "%s", prompt: "기억 단어를 한 단어로만 답해라." }. 도구 호출이 끝나면 설명이나 요약 없이 즉시 턴을 종료하라.' \
+  printf 'entwurf_resume 도구를 정확히 1회 호출하라. 인수: { taskId: "%s", prompt: "기억 단어를 한 단어로만 답해라." }. 도구 호출이 끝나면 설명이나 요약 없이 즉시 턴을 종료하라.' \
     "$task_id"
 }
 
 # ----------------------------------------------------------------------------
 # Evidence extraction
 # ----------------------------------------------------------------------------
-# Task ID appears verbatim in the tool_result content of the delegate tool
+# Task ID appears verbatim in the tool_result content of the entwurf tool
 # response (see formatSyncSummary / async spawn). Grepping the raw --mode json
 # stream is paraphrase-proof.
 extract_task_id() {
@@ -197,32 +197,32 @@ extract_task_id() {
 
 find_session_file() {
   local task_id="$1"
-  find "$SESSIONS_BASE" -type f -name "*delegate-${task_id}*.jsonl" 2>/dev/null | head -1
+  find "$SESSIONS_BASE" -type f -name "*entwurf-${task_id}*.jsonl" 2>/dev/null | head -1
 }
 
-# S2 fallback: find the most recent delegate-*.jsonl created after $1 (epoch).
+# S2 fallback: find the most recent entwurf-*.jsonl created after $1 (epoch).
 # Needed when the parent surface does not echo tool_result text into the raw
 # --mode json assistant content (observed with ACP Codex parent, where
 # `[tool:done]` is emitted but the structured result lives outside the
 # captured content stream). The filesystem is the ground truth — a new
-# session file means the spawn did reach the delegate core.
+# session file means the spawn did reach the entwurf core.
 # Emits: "<taskId>\t<session_file>" on stdout, empty on miss.
-find_new_delegate_session() {
+find_new_entwurf_session() {
   local threshold_ts="$1"
   local newest
-  newest=$(find "$SESSIONS_BASE" -type f -name '*delegate-*.jsonl' \
+  newest=$(find "$SESSIONS_BASE" -type f -name '*entwurf-*.jsonl' \
            -newermt "@$threshold_ts" 2>/dev/null |
            xargs -r -I{} stat -c '%Y {}' "{}" 2>/dev/null |
            sort -nr | head -1 | awk '{ $1=""; sub(/^ /, ""); print }')
   [ -z "$newest" ] && return 1
   local tid
-  tid=$(basename "$newest" | grep -oE 'delegate-[a-f0-9]{8}' | head -1 | sed 's/^delegate-//')
+  tid=$(basename "$newest" | grep -oE 'entwurf-[a-f0-9]{8}' | head -1 | sed 's/^entwurf-//')
   [ -z "$tid" ] && return 1
   printf '%s\t%s\n' "$tid" "$newest"
 }
 
-# Analyze a delegate session JSONL and emit {turns, cost, lastModel, lastProvider, lastStopReason, lastError}.
-# Matches analyzeSessionFileLike in delegate-core.ts — we deliberately re-implement here to keep
+# Analyze a entwurf session JSONL and emit {turns, cost, lastModel, lastProvider, lastStopReason, lastError}.
+# Matches analyzeSessionFileLike in entwurf-core.ts — we deliberately re-implement here to keep
 # the sentinel free of module-resolution concerns (no TS build dependency).
 analyze_session() {
   SENTINEL_FILE="$1" node -e '
@@ -294,7 +294,7 @@ wait_for_turns_gt() {
   return 1
 }
 
-# Last assistant turn's textual content from a delegate session JSONL.
+# Last assistant turn's textual content from a entwurf session JSONL.
 # Used for semantic recall assertion (R5). We concatenate text blocks only.
 last_assistant_text() {
   SENTINEL_FILE="$1" node -e '
@@ -359,7 +359,7 @@ run_cell() {
   # can't accidentally pass via cached state from a prior run.
   local CELL_TOKEN
   CELL_TOKEN=$(pick_token)
-  # Whether this cell's delegate child uses pi-shell-acp bridge — decides
+  # Whether this cell's entwurf child uses pi-shell-acp bridge — decides
   # if S6/R4 bridge-path anchors apply. Only ACP target provider qualifies;
   # native target provider means no bridge in the child.
   local CELL_BRIDGE_CHILD=0
@@ -385,7 +385,7 @@ run_cell() {
   spawn_prompt=$(build_spawn_prompt "$CELL_TP" "$CELL_TM" "$CELL_TOKEN")
 
   # Snapshot the pre-spawn wall clock (minus a second for race safety).
-  # Used by the S2 fallback to find a freshly-created delegate session file
+  # Used by the S2 fallback to find a freshly-created entwurf session file
   # if the parent's raw stream doesn't carry the Task ID text.
   local spawn_threshold=$(( $(date +%s) - 1 ))
 
@@ -402,7 +402,7 @@ run_cell() {
     # S2 fallback — parent surfaces that don't echo tool_result into their
     # raw stream (ACP Codex) still write a session file. The fs is truth.
     local fb
-    if fb=$(find_new_delegate_session "$spawn_threshold"); then
+    if fb=$(find_new_entwurf_session "$spawn_threshold"); then
       SPAWN_TASK_ID="${fb%%$'\t'*}"
       SPAWN_SESSION="${fb##*$'\t'}"
       log "  [fallback] taskId=$SPAWN_TASK_ID from session-file delta"
@@ -411,7 +411,7 @@ run_cell() {
 
   if [ -z "$SPAWN_TASK_ID" ]; then
     CELL_FCODE="S2"
-    CELL_NOTE="no 'Task ID:' in raw stream and no new delegate session file after parent exit — see $spawn_log"
+    CELL_NOTE="no 'Task ID:' in raw stream and no new entwurf session file after parent exit — see $spawn_log"
     finalize_cell; return
   fi
   log "  spawn taskId=$SPAWN_TASK_ID"
@@ -422,7 +422,7 @@ run_cell() {
   fi
   if [ -z "$SPAWN_SESSION" ] || [ ! -f "$SPAWN_SESSION" ]; then
     CELL_FCODE="S3"
-    CELL_NOTE="no session JSONL found for delegate-$SPAWN_TASK_ID under $SESSIONS_BASE"
+    CELL_NOTE="no session JSONL found for entwurf-$SPAWN_TASK_ID under $SESSIONS_BASE"
     finalize_cell; return
   fi
 
@@ -436,7 +436,7 @@ run_cell() {
 
   if [ "${SPAWN_TURNS:-0}" -lt 1 ]; then
     CELL_FCODE="S4"
-    CELL_NOTE="session has 0 assistant turns — delegate never reached a message_end"
+    CELL_NOTE="session has 0 assistant turns — entwurf never reached a message_end"
     finalize_cell; return
   fi
 
@@ -473,9 +473,9 @@ run_cell() {
     finalize_cell; return
   fi
 
-  # Native parent's delegate_resume is async (see pi-extensions/delegate.ts
-  # registerTool('delegate_resume')). ACP parent routes through the MCP
-  # bridge's runDelegateResumeSync which is blocking. Poll uniformly to
+  # Native parent's entwurf_resume is async (see pi-extensions/entwurf.ts
+  # registerTool('entwurf_resume')). ACP parent routes through the MCP
+  # bridge's runEntwurfResumeSync which is blocking. Poll uniformly to
   # cover both: wait for session turns to exceed the pre-resume snapshot.
   local resume_analysis
   if resume_analysis=$(wait_for_turns_gt "$SPAWN_SESSION" "$RESUME_TB"); then

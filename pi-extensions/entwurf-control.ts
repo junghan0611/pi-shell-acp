@@ -5,39 +5,39 @@
  *   https://github.com/mitsuhiko/agent-stuff (extensions/control.ts)
  * The AI-summarization `get_summary` command was dropped during ingest so
  * this file no longer depends on `@mariozechner/pi-ai.complete`. Model-routed
- * summarization belongs to consumer skills, not to the session-control
+ * summarization belongs to consumer skills, not to the entwurf-control
  * protocol surface that pi-shell-acp publishes.
  *
  * Why this lives here (not in consumer dotfiles): pi-shell-acp's public
- * bridge surface (`mcp/pi-tools-bridge.send_to_session`, `list_sessions`)
+ * bridge surface (`mcp/pi-tools-bridge.entwurf_send`, `entwurf_peers`)
  * depends at runtime on some pi session having this extension loaded to
  * open the control socket. Bundling it here removes a hidden dependency on
  * a private consumer repo and makes pi-shell-acp installable as a public
  * package without extra setup.
  *
  * Enables inter-session communication via Unix domain sockets. When enabled
- * with the `--session-control` flag, each pi session creates a control socket
- * at `~/.pi/session-control/<session-id>.sock` that accepts JSON-RPC commands.
+ * with the `--entwurf-control` flag, each pi session creates a control socket
+ * at `~/.pi/entwurf-control/<session-id>.sock` that accepts JSON-RPC commands.
  *
  * Features:
  * - Send messages to other running pi sessions (steer or follow-up mode)
- *   via tool (`send_to_session`) or startup CLI flags
- *   (`--control-session`, `--send-session-message`)
+ *   via tool (`entwurf_send`) or startup CLI flags
+ *   (`--entwurf-session`, `--entwurf-send-message`)
  * - Retrieve the last assistant message from a session
  * - Clear/rewind sessions to their initial state
  * - Subscribe to turn_end events for async coordination
  *
- * Once loaded the extension registers a `send_to_session` tool that allows
+ * Once loaded the extension registers a `entwurf_send` tool that allows
  * the AI to communicate with other pi sessions programmatically.
  *
  * Usage:
- *   pi --session-control
+ *   pi --entwurf-control
  *
  * One-shot startup send:
- *   pi -p --session-control --control-session <session-name|session-id> --send-session-message <text>
- *     [--send-session-mode steer|follow_up] [--send-session-wait turn_end|message_processed]
- *     [--send-session-include-sender-info]
- *   (startup send is one-way by default; use --send-session-wait turn_end to capture response on stdout)
+ *   pi -p --entwurf-control --entwurf-session <session-name|session-id> --entwurf-send-message <text>
+ *     [--entwurf-send-mode steer|follow_up] [--entwurf-send-wait turn_end|message_processed]
+ *     [--entwurf-send-include-sender-info]
+ *   (startup send is one-way by default; use --entwurf-send-wait turn_end to capture response on stdout)
  *
  * Environment:
  *   Sets PI_SESSION_ID when enabled, allowing child processes to discover
@@ -71,15 +71,15 @@ import * as net from "node:net";
 import * as os from "node:os";
 import * as path from "node:path";
 
-const CONTROL_FLAG = "session-control";
-const CONTROL_TARGET_FLAG = "control-session";
-const CONTROL_SEND_MESSAGE_FLAG = "send-session-message";
-const CONTROL_SEND_MODE_FLAG = "send-session-mode";
-const CONTROL_SEND_WAIT_FLAG = "send-session-wait";
-const CONTROL_SEND_INCLUDE_SENDER_FLAG = "send-session-include-sender-info";
-const CONTROL_DIR = path.join(os.homedir(), ".pi", "session-control");
+const ENTWURF_FLAG = "entwurf-control";
+const ENTWURF_SESSION_FLAG = "entwurf-session";
+const ENTWURF_SEND_MESSAGE_FLAG = "entwurf-send-message";
+const ENTWURF_SEND_MODE_FLAG = "entwurf-send-mode";
+const ENTWURF_SEND_WAIT_FLAG = "entwurf-send-wait";
+const ENTWURF_SEND_INCLUDE_SENDER_FLAG = "entwurf-send-include-sender-info";
+const ENTWURF_DIR = path.join(os.homedir(), ".pi", "entwurf-control");
 const SOCKET_SUFFIX = ".sock";
-const SESSION_MESSAGE_TYPE = "session-message";
+const SESSION_MESSAGE_TYPE = "entwurf-message";
 const SENDER_INFO_PATTERN = /<sender_info>[\s\S]*?<\/sender_info>/g;
 
 // ============================================================================
@@ -166,14 +166,14 @@ interface SocketState {
 // Utilities
 // ============================================================================
 
-const STATUS_KEY = "session-control";
+const STATUS_KEY = "entwurf-control";
 
 function isErrnoException(error: unknown): error is NodeJS.ErrnoException {
 	return typeof error === "object" && error !== null && "code" in error;
 }
 
 function getSocketPath(sessionId: string): string {
-	return path.join(CONTROL_DIR, `${sessionId}${SOCKET_SUFFIX}`);
+	return path.join(ENTWURF_DIR, `${sessionId}${SOCKET_SUFFIX}`);
 }
 
 function isSafeSessionId(sessionId: string): boolean {
@@ -185,7 +185,7 @@ function isSafeAlias(alias: string): boolean {
 }
 
 function getAliasPath(alias: string): string {
-	return path.join(CONTROL_DIR, `${alias}.alias`);
+	return path.join(ENTWURF_DIR, `${alias}.alias`);
 }
 
 function getSessionAlias(ctx: ExtensionContext): string | null {
@@ -196,7 +196,7 @@ function getSessionAlias(ctx: ExtensionContext): string | null {
 }
 
 async function ensureControlDir(): Promise<void> {
-	await fs.mkdir(CONTROL_DIR, { recursive: true });
+	await fs.mkdir(ENTWURF_DIR, { recursive: true });
 }
 
 async function removeSocket(socketPath: string | null): Promise<void> {
@@ -214,17 +214,17 @@ async function removeSocket(socketPath: string | null): Promise<void> {
 async function removeAliasesForSocket(socketPath: string | null): Promise<void> {
 	if (!socketPath) return;
 	try {
-		const entries = await fs.readdir(CONTROL_DIR, { withFileTypes: true });
+		const entries = await fs.readdir(ENTWURF_DIR, { withFileTypes: true });
 		for (const entry of entries) {
 			if (!entry.isSymbolicLink()) continue;
-			const aliasPath = path.join(CONTROL_DIR, entry.name);
+			const aliasPath = path.join(ENTWURF_DIR, entry.name);
 			let target: string;
 			try {
 				target = await fs.readlink(aliasPath);
 			} catch {
 				continue;
 			}
-			const resolvedTarget = path.resolve(CONTROL_DIR, target);
+			const resolvedTarget = path.resolve(ENTWURF_DIR, target);
 			if (resolvedTarget === socketPath) {
 				await fs.unlink(aliasPath);
 			}
@@ -260,7 +260,7 @@ async function resolveSessionIdFromAlias(alias: string): Promise<string | null> 
 	const aliasPath = getAliasPath(alias);
 	try {
 		const target = await fs.readlink(aliasPath);
-		const resolvedTarget = path.resolve(CONTROL_DIR, target);
+		const resolvedTarget = path.resolve(ENTWURF_DIR, target);
 		const base = path.basename(resolvedTarget);
 		if (!base.endsWith(SOCKET_SUFFIX)) return null;
 		const sessionId = base.slice(0, -SOCKET_SUFFIX.length);
@@ -273,18 +273,18 @@ async function resolveSessionIdFromAlias(alias: string): Promise<string | null> 
 
 async function getAliasMap(): Promise<Map<string, string[]>> {
 	const aliasMap = new Map<string, string[]>();
-	const entries = await fs.readdir(CONTROL_DIR, { withFileTypes: true });
+	const entries = await fs.readdir(ENTWURF_DIR, { withFileTypes: true });
 	for (const entry of entries) {
 		if (!entry.isSymbolicLink()) continue;
 		if (!entry.name.endsWith(".alias")) continue;
-		const aliasPath = path.join(CONTROL_DIR, entry.name);
+		const aliasPath = path.join(ENTWURF_DIR, entry.name);
 		let target: string;
 		try {
 			target = await fs.readlink(aliasPath);
 		} catch {
 			continue;
 		}
-		const resolvedTarget = path.resolve(CONTROL_DIR, target);
+		const resolvedTarget = path.resolve(ENTWURF_DIR, target);
 		const aliases = aliasMap.get(resolvedTarget);
 		const aliasName = entry.name.slice(0, -".alias".length);
 		if (aliases) {
@@ -329,13 +329,13 @@ type LiveSessionInfo = {
 
 async function getLiveSessions(): Promise<LiveSessionInfo[]> {
 	await ensureControlDir();
-	const entries = await fs.readdir(CONTROL_DIR, { withFileTypes: true });
+	const entries = await fs.readdir(ENTWURF_DIR, { withFileTypes: true });
 	const aliasMap = await getAliasMap();
 	const sessions: LiveSessionInfo[] = [];
 
 	for (const entry of entries) {
 		if (!entry.name.endsWith(SOCKET_SUFFIX)) continue;
-		const socketPath = path.join(CONTROL_DIR, entry.name);
+		const socketPath = path.join(ENTWURF_DIR, entry.name);
 		const alive = await isSocketAlive(socketPath);
 		if (!alive) continue;
 		const sessionId = entry.name.slice(0, -SOCKET_SUFFIX.length);
@@ -935,7 +935,7 @@ function wasBooleanFlagPassed(flagName: string): boolean {
 }
 
 function shouldRegisterControlTools(pi: ExtensionAPI): boolean {
-	return pi.getFlag(CONTROL_FLAG) === true || wasBooleanFlagPassed(CONTROL_FLAG);
+	return pi.getFlag(ENTWURF_FLAG) === true || wasBooleanFlagPassed(ENTWURF_FLAG);
 }
 
 // ============================================================================
@@ -943,28 +943,28 @@ function shouldRegisterControlTools(pi: ExtensionAPI): boolean {
 // ============================================================================
 
 export default function (pi: ExtensionAPI) {
-	pi.registerFlag(CONTROL_FLAG, {
-		description: "Enable per-session control socket under ~/.pi/session-control",
+	pi.registerFlag(ENTWURF_FLAG, {
+		description: "Enable per-session control socket under ~/.pi/entwurf-control",
 		type: "boolean",
 	});
-	pi.registerFlag(CONTROL_TARGET_FLAG, {
+	pi.registerFlag(ENTWURF_SESSION_FLAG, {
 		description: "Target session name or session id for startup control send",
 		type: "string",
 	});
-	pi.registerFlag(CONTROL_SEND_MESSAGE_FLAG, {
-		description: "Message to send to --control-session at startup",
+	pi.registerFlag(ENTWURF_SEND_MESSAGE_FLAG, {
+		description: "Message to send to --entwurf-session at startup",
 		type: "string",
 	});
-	pi.registerFlag(CONTROL_SEND_MODE_FLAG, {
+	pi.registerFlag(ENTWURF_SEND_MODE_FLAG, {
 		description: "Startup send mode: steer or follow_up",
 		type: "string",
 		default: "steer",
 	});
-	pi.registerFlag(CONTROL_SEND_WAIT_FLAG, {
+	pi.registerFlag(ENTWURF_SEND_WAIT_FLAG, {
 		description: "Startup send wait mode: turn_end or message_processed",
 		type: "string",
 	});
-	pi.registerFlag(CONTROL_SEND_INCLUDE_SENDER_FLAG, {
+	pi.registerFlag(ENTWURF_SEND_INCLUDE_SENDER_FLAG, {
 		description: "Include <sender_info> in startup messages (advanced; default: false)",
 		type: "boolean",
 	});
@@ -989,7 +989,7 @@ export default function (pi: ExtensionAPI) {
 	registerControlSessionsCommand(pi);
 
 	const refreshServer = async (ctx: ExtensionContext) => {
-		const enabled = pi.getFlag(CONTROL_FLAG) === true;
+		const enabled = pi.getFlag(ENTWURF_FLAG) === true;
 		if (!enabled) {
 			if (state.aliasTimer) {
 				clearInterval(state.aliasTimer);
@@ -1065,12 +1065,12 @@ export default function (pi: ExtensionAPI) {
 }
 
 // ============================================================================
-// Tool: send_to_session
+// Tool: entwurf_send
 // ============================================================================
 
 function registerSessionTool(pi: ExtensionAPI, state: SocketState): void {
 	pi.registerTool({
-		name: "send_to_session",
+		name: "entwurf_send",
 		label: "Send To Session",
 		description: `Interact with another running pi session via its control socket.
 
@@ -1086,10 +1086,10 @@ Target:
 For action=send:
 - mode: steer (immediate) or follow_up (after task).
 - wait_until=message_processed: queue ack only. Recommended.
-- wait_until=turn_end: native-path best-effort only. Prefer reply-back via send_to_session.
+- wait_until=turn_end: native-path best-effort only. Prefer reply-back via entwurf_send.
 
 Use this tool for notification / peer messaging. If the caller needs a result it owns,
-prefer delegate(mode=async) + delegate_resume instead.
+prefer entwurf(mode=async) + entwurf_resume instead.
 
 Messages include sender session info for replies.`,
 		parameters: Type.Object({
@@ -1112,7 +1112,7 @@ Messages include sender session info for replies.`,
 				StringEnum(["turn_end", "message_processed"] as const, {
 					description:
 						"Wait behavior for send. Prefer message_processed. turn_end is best-effort only; " +
-						"prefer reply-back via send_to_session or delegate(mode=async) when you need a caller-owned result.",
+						"prefer reply-back via entwurf_send or entwurf(mode=async) when you need a caller-owned result.",
 				}),
 			),
 		}),
@@ -1407,12 +1407,12 @@ Messages include sender session info for replies.`,
 }
 
 // ============================================================================
-// Tool: list_sessions
+// Tool: entwurf_peers
 // ============================================================================
 
 function registerListSessionsTool(pi: ExtensionAPI): void {
 	pi.registerTool({
-		name: "list_sessions",
+		name: "entwurf_peers",
 		label: "List Sessions",
 		description: "List live sessions that expose a control socket (optionally with session names). Use this for discovery only; for the current session id in shell/bash use $PI_SESSION_ID.",
 		parameters: Type.Object({}),
@@ -1469,38 +1469,38 @@ function getStringFlag(pi: ExtensionAPI, name: string): string | undefined {
 }
 
 function parseStartupControlSendOptions(pi: ExtensionAPI): { options?: StartupControlSendOptions; error?: string } {
-	const target = getStringFlag(pi, CONTROL_TARGET_FLAG);
-	const message = getStringFlag(pi, CONTROL_SEND_MESSAGE_FLAG);
+	const target = getStringFlag(pi, ENTWURF_SESSION_FLAG);
+	const message = getStringFlag(pi, ENTWURF_SEND_MESSAGE_FLAG);
 
 	if (!target && !message) {
 		return {};
 	}
 	if (target && !message) {
-		return { error: `Missing --${CONTROL_SEND_MESSAGE_FLAG} (required with --${CONTROL_TARGET_FLAG})` };
+		return { error: `Missing --${ENTWURF_SEND_MESSAGE_FLAG} (required with --${ENTWURF_SESSION_FLAG})` };
 	}
 	if (!target && message) {
-		return { error: `Missing --${CONTROL_TARGET_FLAG} (required with --${CONTROL_SEND_MESSAGE_FLAG})` };
+		return { error: `Missing --${ENTWURF_SESSION_FLAG} (required with --${ENTWURF_SEND_MESSAGE_FLAG})` };
 	}
 
-	const rawMode = getStringFlag(pi, CONTROL_SEND_MODE_FLAG) ?? "steer";
+	const rawMode = getStringFlag(pi, ENTWURF_SEND_MODE_FLAG) ?? "steer";
 	const mode = normalizeMode(rawMode);
 	if (!mode) {
-		return { error: `Invalid --${CONTROL_SEND_MODE_FLAG}: ${rawMode}. Use steer|follow_up.` };
+		return { error: `Invalid --${ENTWURF_SEND_MODE_FLAG}: ${rawMode}. Use steer|follow_up.` };
 	}
 
-	const rawWait = getStringFlag(pi, CONTROL_SEND_WAIT_FLAG);
+	const rawWait = getStringFlag(pi, ENTWURF_SEND_WAIT_FLAG);
 	let waitUntil: "turn_end" | "message_processed" | undefined;
 	if (rawWait) {
 		const normalized = normalizeWaitUntil(rawWait);
 		if (!normalized) {
 			return {
-				error: `Invalid --${CONTROL_SEND_WAIT_FLAG}: ${rawWait}. Use turn_end|message_processed.`,
+				error: `Invalid --${ENTWURF_SEND_WAIT_FLAG}: ${rawWait}. Use turn_end|message_processed.`,
 			};
 		}
 		waitUntil = normalized;
 	}
 
-	const includeSenderInfo = pi.getFlag(CONTROL_SEND_INCLUDE_SENDER_FLAG) === true;
+	const includeSenderInfo = pi.getFlag(ENTWURF_SEND_INCLUDE_SENDER_FLAG) === true;
 
 	return {
 		options: {
@@ -1617,11 +1617,11 @@ async function maybeHandleStartupControlSend(pi: ExtensionAPI, ctx: ExtensionCon
 
 function registerControlSessionsCommand(pi: ExtensionAPI): void {
 	pi.registerCommand("control-sessions", {
-		description: "List controllable sessions (from session-control sockets)",
+		description: "List controllable sessions (from entwurf-control sockets)",
 		handler: async (_args, ctx) => {
-			if (pi.getFlag(CONTROL_FLAG) !== true) {
+			if (pi.getFlag(ENTWURF_FLAG) !== true) {
 				if (ctx.hasUI) {
-					ctx.ui.notify("Session control not enabled (use --session-control)", "warning");
+					ctx.ui.notify("Session control not enabled (use --entwurf-control)", "warning");
 				}
 				return;
 			}
