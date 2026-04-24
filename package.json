@@ -1,8 +1,24 @@
 {
   "name": "pi-shell-acp",
   "version": "0.2.0",
+  "description": "ACP bridge providing Claude Code and Codex backends to pi-coding-agent, with the entwurf orchestration surface for cross-session delegation.",
+  "license": "MIT",
+  "author": "Junghan Kim",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/junghan0611/pi-shell-acp.git"
+  },
+  "homepage": "https://github.com/junghan0611/pi-shell-acp#readme",
+  "bugs": {
+    "url": "https://github.com/junghan0611/pi-shell-acp/issues"
+  },
   "keywords": [
-    "pi-package"
+    "pi-package",
+    "acp",
+    "claude-code",
+    "codex",
+    "agent-client-protocol",
+    "mcp"
   ],
   "type": "module",
   "engines": {

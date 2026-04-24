@@ -197,7 +197,9 @@ This is a deliberate architectural choice: `pi-shell-acp` persists only enough t
 
 ## Entwurf Orchestration
 
-> Migrated in from agent-config during the entwurf consolidation. This repo now owns the full surface; the original carving is [agent-config `22bd159`](https://github.com/junghan0611/agent-config/commit/22bd159), ingestion is [pi-shell-acp `768baf4`](https://github.com/junghan0611/pi-shell-acp/commit/768baf4) plus the `da97fa9`/`060c412`/`9269771`/`6939e7e` stabilization round. See AGENTS.md `§Entwurf Orchestration` for the full narrative, schema, and release baseline.
+`pi-shell-acp` owns the **entwurf** surface — sync/async spawn, resume, target registry, identity preservation, and the MCP/Unix-socket bridges that let pi sessions and ACP sessions delegate to one another. It is the orchestration layer that sits on top of the bare ACP bridge described above; the bridge is what every backend session rides on, and entwurf is what lets one session reach another.
+
+The full narrative — schema, release baseline, migration history (originally carved out of [`agent-config`](https://github.com/junghan0611/agent-config) and consolidated here), and the verification matrix — lives in [`AGENTS.md` § Entwurf Orchestration](./AGENTS.md). The README sticks to the consumer-facing surfaces.
 
 **Surfaces in this repo.**
 
@@ -211,7 +213,7 @@ This is a deliberate architectural choice: `pi-shell-acp` persists only enough t
 | `mcp/session-bridge/`                  | Claude Code ↔ pi Unix-socket session bridge (wire-compatible with pi's entwurf-control) |
 | `scripts/session-messaging-smoke.sh`   | 4-case matrix verifying entwurf_send across native/ACP senders × native/ACP targets |
 
-The `delegate` → `entwurf` rename completed at commit `cc6508a` (single commit, no legacy aliases). The `entwurf` name now applies uniformly to MCP tool names, CLI flags, runtime sockets, env vars, file paths, and internal symbols.
+The earlier `delegate` term was renamed to `entwurf` in a single sweeping commit with no legacy aliases. The `entwurf` name now applies uniformly to MCP tool names, CLI flags, runtime sockets, env vars, file paths, and internal symbols. (Commit-level history is preserved in `AGENTS.md § Migration history`.)
 
 ## Engraving
 
