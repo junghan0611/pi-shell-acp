@@ -22,7 +22,7 @@ PROVIDER_ID="pi-shell-acp"
 usage() {
   cat <<'EOF'
 Usage:
-  ./run.sh setup [project-dir]        # npm install + sync auth alias + install package + smoke-all (Claude + Codex)
+  ./run.sh setup [project-dir]        # pnpm install + sync auth alias + install package + smoke-all (Claude + Codex)
   ./run.sh smoke [project-dir]        # Claude runtime smoke (backward-compatible default)
   ./run.sh smoke-claude [project-dir] # explicit Claude runtime smoke
   ./run.sh smoke-codex [project-dir]  # explicit Codex runtime smoke
@@ -1742,7 +1742,7 @@ setup_all() {
   local project_dir
   project_dir=$(normalize_project_dir "$1")
 
-  require_cmd npm
+  require_cmd pnpm
   require_cmd python3
   require_cmd pi
 
@@ -1751,7 +1751,7 @@ setup_all() {
   echo "[setup] scope:   full bridge + entwurf orchestration install"
   echo "[setup] verification: smoke-all (Claude + Codex)"
 
-  (cd "$REPO_DIR" && npm install)
+  (cd "$REPO_DIR" && pnpm install)
   check_global_claude_acp
   check_global_codex_acp
   sync_auth

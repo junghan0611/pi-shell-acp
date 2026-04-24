@@ -8,7 +8,7 @@
 # pi-shell-acp spawns this launcher per ACP session and treats whatever it gets
 # as the MCP server. If src/** has been edited since the last build, the
 # launcher would silently serve stale code (this was a real "MCP not visible"
-# failure mode). We re-run `npm run build` when src is newer than dist.
+# failure mode). We re-run `pnpm run build` when src is newer than dist.
 # Skip the guard with PI_TOOLS_BRIDGE_SKIP_REBUILD=1 in CI / smoke paths that
 # already build explicitly.
 set -euo pipefail
@@ -34,7 +34,7 @@ if [ "${PI_TOOLS_BRIDGE_SKIP_REBUILD:-}" != "1" ]; then
     # All build chatter goes to stderr so it never confuses an MCP client
     # reading JSON-RPC frames from stdout.
     echo "[pi-tools-bridge] dist stale — rebuilding" >&2
-    (cd "$HERE" && npm run build >&2)
+    (cd "$HERE" && pnpm run build >&2)
   fi
 fi
 
