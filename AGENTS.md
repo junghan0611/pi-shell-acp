@@ -92,13 +92,42 @@ Five surfaces move into this repo. Landing positions are provisional and will be
 
 **"One project" principle — preserved, not split.** agent-config's AGENTS.md Entwurf Orchestration section states: *"After migration both live together inside pi-shell-acp; the 'one project' principle is preserved, just with a new home."* This repo honors that contract. `pi-extensions`-equivalent surface and `mcp/*` adapters live side-by-side here; they are not to be split into sibling repos later.
 
-### Phase 0.5 — sync/async mode contract (upstream, pending)
+### Runtime compatibility at ingestion
 
-Phase 0.5 is implemented in agent-config (step 3 above), not here. Its outcome is what we ingest.
+Ingested code was authored against the agent-config runtime. To preserve exact behavior under verbatim ingestion, this repo pins the same package versions agent-config resolves in its pnpm lockfile.
 
-**Summary of the upstream work.** `delegate_resume` already operates asynchronously via native pi's `followUp` delivery path. Phase 0.5 names that reality: exposes an explicit `mode` parameter, defaults to `"sync"`, makes the existing async behavior opt-in. No new readiness/blocked state vocabulary, no durability layer, no full-async relay redesign — intentionally.
+| Package | agent-config (pnpm lock) | pi-shell-acp devDeps | Rationale |
+|---------|--------------------------|----------------------|-----------|
+| `@mariozechner/pi-coding-agent` | `0.67.2` | `0.67.2` (exact pin) | `AgentToolResult` / tool execute signature drifted across 0.67.x → 0.69.x; `delegate.ts` written against 0.67.2 shape |
+| `@mariozechner/pi-ai` | `0.67.2` | `0.67.2` (exact pin) | same transitive lineage |
+| `@sinclair/typebox` | n/a (transitive) | `^0.34.0` | direct import in `delegate.ts`; added at ingestion |
 
-**What this repo accepts at ingestion.** The `mode: "sync" | "async"` contract on `delegate_resume` (to become `entwurf_resume`). Default `sync`. Async preserves current followUp semantics.
+pi runtime itself is **0.70.0** on this machine; the version pins above are library-type pins for build-time correctness only. They do not constrain which pi binary the spawn path invokes.
+
+**Why not bump to 0.70.0 at ingestion.** Verbatim ingestion carries both the code and its working environment. Bumping to 0.70.0 exposed real type drift (`AgentToolResult` requires `details`, tool execute signature adds `signal/onUpdate/ctx` params). That is an adaptation task, not an ingestion task. It belongs in a follow-up commit after step 6 rename — a clean "library bump + api adapt" unit of work, not tangled with ingestion.
+
+### Typecheck boundary
+
+`tsconfig.json` excludes `pi-extensions/` and `mcp/` from the root typecheck:
+
+- `mcp/*` are self-contained npm subprojects with their own `tsconfig.json` + `dist/` (they own their typecheck).
+- `pi-extensions/` is excluded because agent-config runs this code through the pi jiti runtime, not through `tsc`. The code carries pre-existing type-lint debt that jiti tolerates at runtime. Including it in the root typecheck would fail with drift that exists in the source repo too — verbatim ingestion means inheriting that condition.
+
+A follow-up task ("post-ingestion typecheck hardening") will either bring `pi-extensions/` under the root typecheck after a library bump + type-annotation pass, or carve out a separate `tsconfig.pi-extensions.json` with loosened strictness. Tracked separately from the rename (step 6).
+
+### Phase 0.5 — sync/async mode contract (completed upstream at agent-config `e5aa5a1`)
+
+Phase 0.5 landed in [agent-config `e5aa5a1`](https://github.com/junghan0611/agent-config/commit/e5aa5a1) and is part of the ingested surface.
+
+**What it did.** `delegate_resume` previously had cross-surface asymmetry: pi-native was async (followUp delivery), MCP bridge was already sync. `e5aa5a1` added `mode: "sync" | "async"` (default `"sync"`) on the pi-native surface, wiring the sync branch to the same `runDelegateResumeSync` the MCP bridge already called. Async branch is byte-identical to the pre-commit detached-followUp path.
+
+**Evidence carried into ingestion.**
+- MCP bridge test.sh: 15/15 baseline
+- sentinel cell 1 (native → `openai-codex/gpt-5.2`): sync inline return, identity preserved, model=gpt-5.2. Artifact `/tmp/sentinel-phase05-cell1.json`.
+- ad-hoc async smoke: Resume ID 7d7c5b84 spawned detached (PID 54061), followUp semantics unchanged.
+- callsite audit: only LLM-driven tool invocations consume `delegate_resume` — no internal callers break from the default flip.
+
+**After ingestion.** `mode: "sync" | "async"` is on `delegate_resume` as ingested (to become `entwurf_resume` in step 6). No further Phase 0.5 work pending.
 
 ### Send-is-throw Principle (cross-session messaging)
 
@@ -116,7 +145,7 @@ Practical consequence at ingestion: `send_to_session` and `list_sessions` move h
 
 - `mcp/pi-tools-bridge/test.sh` — full protocol tests (15/15 baseline at `e5aa5a1`)
 - entwurf spawn sentinel cell (sync + async variants) — the same sentinel artifact shape agent-config used at `e5aa5a1` (`/tmp/sentinel-phase05-cell1.json`)
-- `send_to_session` 3-way matrix once step 4 of the ordering completes
+- `scripts/session-messaging-smoke.sh` — **4-case matrix**: native→native (baseline), native→ACP, MCP→native, MCP→ACP. Originally framed as a "3-way" matrix; the actual smoke in agent-config `7545af8` includes the native↔native baseline as a fourth case to catch regressions in the non-ACP path.
 
 These are deterministic gates. They fail fast and are cheap to re-run.
 

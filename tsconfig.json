@@ -6,5 +6,6 @@
     "types": ["node"],
     "strict": false,
     "skipLibCheck": true
-  }
+  },
+  "exclude": ["node_modules", "mcp", "pi-extensions"]
 }

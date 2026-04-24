@@ -1,0 +1,15 @@
+{
+  "$comment": "Delegate Target Registry — exact (provider, model) allowlist. SSOT for what can be spawned via delegate. See agent-config/AGENTS.md 'Delegate Target Registry' section. Resume path intentionally bypasses this registry per Identity Preservation Rule.",
+  "delegateTargets": [
+    { "provider": "pi-shell-acp", "model": "claude-sonnet-4-6", "enabled": true },
+    { "provider": "pi-shell-acp", "model": "claude-opus-4-7",   "enabled": true },
+
+    { "provider": "openai-codex", "model": "gpt-5.2",           "enabled": true },
+    { "provider": "openai-codex", "model": "gpt-5.4",           "enabled": true },
+    { "provider": "openai-codex", "model": "gpt-5.4-mini",      "enabled": true },
+
+    { "provider": "pi-shell-acp", "model": "gpt-5.2",           "enabled": true, "explicitOnly": true },
+    { "provider": "pi-shell-acp", "model": "gpt-5.4",           "enabled": true, "explicitOnly": true },
+    { "provider": "pi-shell-acp", "model": "gpt-5.4-mini",      "enabled": true, "explicitOnly": true }
+  ]
+}
