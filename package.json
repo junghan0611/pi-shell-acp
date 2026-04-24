@@ -28,6 +28,7 @@
     "smoke-codex": "./run.sh smoke-codex",
     "smoke-all": "./run.sh smoke-all",
     "check-mcp": "./run.sh check-mcp",
+    "check-models": "./run.sh check-models",
     "check-backends": "./run.sh check-backends",
     "check-registration": "./run.sh check-registration",
     "check-claude-sessions": "./run.sh check-claude-sessions",

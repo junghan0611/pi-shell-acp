@@ -53,8 +53,43 @@ type ResolvedProviderSettings = {
 	bridgeConfigSignature: string;
 };
 
-const ANTHROPIC_MODEL_IDS = new Set(getModels("anthropic").map((model) => model.id));
-const OPENAI_MODEL_IDS = new Set(getModels("openai").map((model) => model.id));
+// pi-shell-acp is an ACP BRIDGE provider, not a general-purpose OpenAI/Anthropic
+// provider. It should NOT expose the full pi-ai model registry. Users who pick
+// `pi-shell-acp/<model>` are choosing a specific bridge path (Claude Code ACP
+// or codex-acp), so the surface is intentionally curated:
+//
+// - Claude backend: the two current frontier sonnet/opus we actually test against.
+// - Codex backend: only the "agentic coding" gpt-5.x line in the openai-codex
+//   source, which is what codex-acp spawns — NOT the openai source, whose
+//   context/cost values reflect the Chat Completions API, not codex.
+//
+// Adding a model here means we commit to checking it across both Axis 1
+// (protocol smoke) and Axis 2 (agent interview). Do not extend casually.
+const SUPPORTED_ANTHROPIC_MODEL_IDS: readonly string[] = [
+	"claude-sonnet-4-6",
+	"claude-opus-4-7",
+] as const;
+const SUPPORTED_CODEX_MODEL_IDS: readonly string[] = [
+	"gpt-5.2",
+	"gpt-5.4",
+	"gpt-5.4-mini",
+	"gpt-5.5",
+] as const;
+
+const SUPPORTED_ANTHROPIC_SET = new Set(SUPPORTED_ANTHROPIC_MODEL_IDS);
+const SUPPORTED_CODEX_SET = new Set(SUPPORTED_CODEX_MODEL_IDS);
+
+// Codex metadata must come from `openai-codex` (not `openai`). The two sources
+// diverge: `openai/gpt-5.5` declares 1,050,000 context (Chat Completions tier),
+// while `openai-codex/gpt-5.5` declares 400,000 (the capacity codex-acp
+// actually delivers). Reading from `openai` causes pi-shell-acp to advertise
+// context it cannot serve — a concrete bug that showed up as
+// "pi-shell-acp/gpt-5.5 ctx=1.1M" in --list-models.
+const ANTHROPIC_MODELS_ALL = getModels("anthropic");
+const CODEX_MODELS_ALL = getModels("openai-codex");
+
+const ANTHROPIC_MODEL_IDS = new Set(ANTHROPIC_MODELS_ALL.map((m) => m.id));
+const CODEX_MODEL_IDS = new Set(CODEX_MODELS_ALL.map((m) => m.id));
 
 // Anthropic's model registry hardcodes contextWindow: 1_000_000 for Claude 4.6+
 // (opus-4-6, opus-4-7, sonnet-4-6). That capacity is only delivered when the
@@ -74,9 +109,12 @@ function resolveClaudeContextCap(): number {
 }
 const CLAUDE_CONTEXT_CAP = resolveClaudeContextCap();
 
+const CURATED_ANTHROPIC_MODELS = ANTHROPIC_MODELS_ALL.filter((m) => SUPPORTED_ANTHROPIC_SET.has(m.id));
+const CURATED_CODEX_MODELS = CODEX_MODELS_ALL.filter((m) => SUPPORTED_CODEX_SET.has(m.id));
+
 const MODELS = Array.from(
 	new Map(
-		[...getModels("anthropic"), ...getModels("openai")].map((model) => [
+		[...CURATED_ANTHROPIC_MODELS, ...CURATED_CODEX_MODELS].map((model) => [
 			model.id,
 			{
 				id: model.id,
@@ -84,7 +122,7 @@ const MODELS = Array.from(
 				reasoning: model.reasoning,
 				input: model.input,
 				cost: model.cost,
-				contextWindow: ANTHROPIC_MODEL_IDS.has(model.id)
+				contextWindow: SUPPORTED_ANTHROPIC_SET.has(model.id)
 					? Math.min(model.contextWindow, CLAUDE_CONTEXT_CAP)
 					: model.contextWindow,
 				maxTokens: model.maxTokens,
@@ -192,7 +230,13 @@ function readSettingsFile(filePath: string): ProviderSettings {
 }
 
 function inferBackendFromModel(model: Model<any>): AcpBackend {
-	if (OPENAI_MODEL_IDS.has(model.id)) return "codex";
+	// Curated-first: the allowlist determines routing deterministically.
+	if (SUPPORTED_CODEX_SET.has(model.id)) return "codex";
+	if (SUPPORTED_ANTHROPIC_SET.has(model.id)) return "claude";
+	// Fallback: if an ID outside the allowlist somehow reaches here (e.g. a
+	// non-curated model was passed via explicit settings), consult the broader
+	// pi-ai registry. This is a safety net, not the primary path.
+	if (CODEX_MODEL_IDS.has(model.id)) return "codex";
 	if (ANTHROPIC_MODEL_IDS.has(model.id)) return "claude";
 	return model.id.startsWith("gpt-") || model.id.startsWith("o") || model.id.startsWith("codex")
 		? "codex"

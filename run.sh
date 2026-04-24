@@ -1274,55 +1274,83 @@ async function collectModels(envOverride) {
   return new Map(captured.models.map((m) => [m.id, m]));
 }
 
-// --- Pass 1: default cap (200K) ---
+// --- Pass 1: curated surface + default cap (200K) ---
 {
   const models = await collectModels(undefined);
 
-  // Known Claude models that pi-ai declares as 1M-capable.
-  // These MUST be capped to 200K without the env override.
-  const oneMClaude = ['claude-sonnet-4-6', 'claude-opus-4-6', 'claude-opus-4-7'];
+  // Curated allowlist — exact match required. Adding or removing a model id
+  // must flip this assertion, not silently drift.
+  const EXPECTED_IDS = [
+    'claude-sonnet-4-6',
+    'claude-opus-4-7',
+    'gpt-5.2',
+    'gpt-5.4',
+    'gpt-5.4-mini',
+    'gpt-5.5',
+  ].sort();
+  const actualIds = [...models.keys()].sort();
+  assert.deepEqual(
+    actualIds, EXPECTED_IDS,
+    `curated pi-shell-acp model surface mismatch.\n  expected: ${EXPECTED_IDS.join(', ')}\n  actual:   ${actualIds.join(', ')}`,
+  );
+
+  // Non-curated models MUST NOT leak through. Specifically: no legacy Claude
+  // (3.x, 4.0-4.5, haiku), no generic openai chat models (gpt-4, gpt-4.1,
+  // o1/o3/o4), no codex variants outside the allowlist (5.1, 5.3, codex-max).
+  const FORBIDDEN = [
+    'claude-3-5-sonnet-20241022', 'claude-3-5-haiku-latest',
+    'claude-haiku-4-5', 'claude-sonnet-4-5', 'claude-opus-4-5',
+    'claude-opus-4-6',
+    'gpt-4', 'gpt-4-turbo', 'gpt-4.1', 'gpt-4.1-mini', 'gpt-4o',
+    'o1', 'o3', 'o4-mini',
+    'gpt-5', 'gpt-5-chat-latest',
+    'gpt-5.1', 'gpt-5.1-codex-max', 'gpt-5.3-codex',
+    'codex-mini-latest',
+  ];
+  for (const id of FORBIDDEN) {
+    assert.ok(!models.has(id), `non-curated model ${id} must not be exposed by pi-shell-acp`);
+  }
+
+  // Claude 200K cap — the two curated 1M-capable models (sonnet-4-6, opus-4-7)
+  // must be capped down without the env override.
+  const oneMClaude = ['claude-sonnet-4-6', 'claude-opus-4-7'];
   for (const id of oneMClaude) {
     const m = models.get(id);
-    if (!m) continue; // tolerate model removed from pi-ai registry
+    assert.ok(m, `curated Claude model missing: ${id}`);
     assert.equal(
-      m.contextWindow,
-      200000,
+      m.contextWindow, 200000,
       `default: ${id} contextWindow should be capped at 200000, got ${m.contextWindow}`,
     );
   }
 
-  // Claude models that pi-ai declares at 200K must stay at 200K
-  // (cap should not *raise* any value).
-  const nativeClaude200k = ['claude-sonnet-4-5', 'claude-haiku-4-5'];
-  for (const id of nativeClaude200k) {
+  // Codex context metadata — source is openai-codex (NOT openai). The regression
+  // that motivated this gate: reading from openai source made pi-shell-acp
+  // advertise gpt-5.5 ctx=1,050,000 while codex-acp could only serve 400,000.
+  // Values below must match @mariozechner/pi-ai getModels("openai-codex") —
+  // if upstream updates a context, update this gate with it.
+  const CODEX_EXPECTED_CTX = {
+    'gpt-5.2':      272000,
+    'gpt-5.4':      272000,
+    'gpt-5.4-mini': 272000,
+    'gpt-5.5':      400000,
+  };
+  for (const [id, expected] of Object.entries(CODEX_EXPECTED_CTX)) {
     const m = models.get(id);
-    if (!m) continue;
-    assert.equal(m.contextWindow, 200000, `${id} should remain 200000`);
+    assert.ok(m, `curated Codex model missing: ${id}`);
+    assert.equal(
+      m.contextWindow, expected,
+      `${id} contextWindow must come from openai-codex source: expected ${expected}, got ${m.contextWindow}`,
+    );
   }
 
-  // OpenAI models must NOT be capped. We don't care what the exact number is
-  // (pi-ai updates it), only that:
-  //   1. it is not equal to the 200K cap (proves the cap branch was skipped)
-  //   2. it is greater than 200K (all listed OpenAI large-context models are)
-  const openaiLarge = ['gpt-5.2', 'gpt-4.1', 'gpt-4.1-mini'];
-  let openaiChecked = 0;
-  for (const id of openaiLarge) {
-    const m = models.get(id);
-    if (!m) continue;
-    assert.notEqual(
-      m.contextWindow,
-      200000,
-      `${id} must not be capped at the Anthropic 200K default`,
-    );
-    assert.ok(
-      m.contextWindow > 200000,
-      `${id} contextWindow should be > 200000, got ${m.contextWindow}`,
-    );
-    openaiChecked += 1;
-  }
-  assert.ok(openaiChecked > 0, 'expected at least one OpenAI large-context model to be present');
+  // Explicit anti-bug: gpt-5.5 must not be 1,050,000. The openai source claims
+  // that for Chat Completions, but codex-acp can't serve it.
+  assert.notEqual(
+    models.get('gpt-5.5')?.contextWindow, 1050000,
+    'gpt-5.5 at 1,050,000 context = openai source bug (should be openai-codex 400,000)',
+  );
 
-  console.log('[check-models] pass 1 (default 200K cap): ok');
+  console.log('[check-models] pass 1 (curated surface + default 200K cap + codex source): ok');
 }
 
 // --- Pass 2: explicit 1M opt-in ---
