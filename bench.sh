@@ -1,7 +1,16 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# bench.sh — Compare direct API vs pi-shell-acp (ACP bridge) provider
+# bench.sh — PERSONAL maintainer-only benchmark helper.
+#
+# This is NOT part of the public install or verification flow. It exists for the
+# repo maintainer to spot-check direct API vs pi-shell-acp (ACP bridge) latency
+# and quality drift on a local machine. Consumers and contributors should ignore
+# it — `./run.sh smoke-all` is the real dual-backend gate.
+#
+# Test prompts are deliberately kept in Korean because they reflect the
+# maintainer's working language. Translating them would not make this script
+# more useful to a generic consumer; it would just be cosmetic.
 #
 # Usage:
 #   ./bench.sh [project-dir]

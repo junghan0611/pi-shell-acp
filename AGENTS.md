@@ -37,10 +37,12 @@ The current body is deliberately short — two statements: *read the tool you al
 
 Delivery is backend-specific, but the source text is shared.
 
-- **Claude backend** — the rendered engraving is concatenated into `systemPromptAppend` alongside any `baseSystemPrompt` + post-compaction summary, and delivered through pi's `_meta.systemPrompt.append` path at `newSession` / `resumeSession` / `loadSession` time. Injection is stable across turns by construction (pure function of `prompts/engraving.md` content × backend × mcpServerNames), so `bridgeConfigSignature` hashes match and session reuse stays alive.
-- **Codex backend** — delivery path is `AcpBackendAdapter.buildBootstrapPromptAugment` → first prompt turn `ContentBlock`. Not wired in the current commit; pending a codex-acp spike that confirms the `ContentBlock::Text` actually reaches model context on the other side. Until then Codex sessions do not receive the engraving.
+- **Claude backend** — the rendered engraving is concatenated into `systemPromptAppend` alongside any `baseSystemPrompt` + post-compaction summary, and delivered through pi's `_meta.systemPrompt.append` path at `newSession` / `resumeSession` / `loadSession` time. Injection is stable across turns by construction (pure function of `prompts/engraving.md` content × backend × mcpServerNames), so `bridgeConfigSignature` hashes match and session reuse stays alive. Wired since the early Claude path; live in production.
+- **Codex backend** — delivery path is `AcpBackendAdapter.buildBootstrapPromptAugment` → first prompt turn `ContentBlock` prepend. Wired and verified at commit `44a0314`. The Codex agent on the far side now receives the same engraving text as Claude, just through the cross-backend baseline carrier (a `ContentBlock::Text` on the first user prompt turn). Layer 0 interview parity confirmed against `gpt-5.4`; the agent recognizes `pi-shell-acp` as its bridge and lists the registered MCP servers correctly.
 
 Rationale for the split: Claude Code exposes a documented `_meta.systemPrompt.append` extension, which fits this payload naturally. The ACP spec itself does not define a cross-backend surface for session-level identity text — the baseline guaranteed carrier is `ContentBlock` on the first prompt turn. Keeping the source text shared and only splitting the transport matches this repo's direction: this is an *ACP shell*, not a Claude adapter.
+
+**This is additive bridge context, not identity replacement.** The intent is not to make Claude Code claim it is something other than Claude Code, or to make Codex pretend to be a different agent. Both backends keep their native identity; the engraving only adds the fact that they are reached *through* `pi-shell-acp`, plus the visible MCP servers in this session. Trying to overwrite backend identity would be both ineffective (the agents push back) and undesirable (Anthropic / OpenAI / the user all want the underlying agent to remain itself).
 
 This connects directly to Layer 0 of [VERIFY.md](./VERIFY.md): the real answer to "what environment are you in, what tools do you have" is not agent introspection guesswork — it is *did you read the engraving you were given*. Answering Layer 0 without having seen the engraving is a bridge boot path bug, not an agent hallucination.
 
@@ -50,47 +52,42 @@ The engraving is the surface where *this bridge's identity* is declared to the a
 
 ---
 
-## Entwurf Orchestration — [INCOMING: from agent-config]
+## Entwurf Orchestration
 
-> **Migration marker (mirror).** The entwurf/resume orchestration, target registry, identity preservation rule, and cross-session bridges currently live in [agent-config](https://github.com/junghan0611/agent-config) and are slated to migrate **into this repo**. The `entwurf` → `entwurf` rename is performed on this side in a single commit after ingestion.
+> **Migration status (completed).** The entwurf/resume orchestration, target registry, identity preservation rule, and cross-session bridges now live in this repo. They were originally carved out of [agent-config](https://github.com/junghan0611/agent-config) (commit [`22bd159`](https://github.com/junghan0611/agent-config/commit/22bd159)), ingested into pi-shell-acp at commit `768baf4`, stabilized through `da97fa9` / `060c412` / `9269771` / `6939e7e`, and renamed end-to-end (`delegate` → `entwurf`) at commit `cc6508a`. agent-config now keeps only a consumer-side pointer; the migration markers on both sides are retired.
 >
-> **Grep key: `Entwurf Orchestration`.** A mirror section with the same name exists in agent-config as `[MIGRATION: → pi-shell-acp]` — carved out in agent-config commit [`22bd159`](https://github.com/junghan0611/agent-config/commit/22bd159). When both markers disappear, migration is complete.
->
-> **Ref:** [[denote:20260423T141759][힣맨 프롤로그 2탄 — 힣의 드라이버]]. This migration is the technical expression of that narrative: pi-shell-acp becomes the forged driver — ACP runtime manifest + MCP bridge + entwurf button — not a thin passthrough.
+> **Ref:** [[denote:20260423T141759][힣맨 프롤로그 2탄 — 힣의 드라이버]]. This migration was the technical expression of that narrative: pi-shell-acp became the forged driver — ACP runtime manifest + MCP bridge + entwurf button — not a thin passthrough.
 
-### Migration Plan
+### Why this repo is the home
 
-**Why this repo is the new home.** The earlier boundary ("thin bridge; orchestration stays in the consuming harness") treated pi-shell-acp as a passthrough. Experience since then showed the entwurf surface, the target registry, identity preservation, and the MCP adapters that promote pi-side tools to ACP hosts all cluster around the same ACP session lifecycle this bridge already owns. Splitting them across two repos produced seam churn without a real boundary gain. The new direction consolidates them here — one project, new home.
+The earlier boundary ("thin bridge; orchestration stays in the consuming harness") treated pi-shell-acp as a passthrough. Experience since then showed the entwurf surface, the target registry, identity preservation, and the MCP adapters that promote pi-side tools to ACP hosts all cluster around the same ACP session lifecycle this bridge already owns. Splitting them across two repos produced seam churn without a real boundary gain. The current direction consolidates them here — one project, new home.
 
-**Ordering (mirrored with agent-config).**
-1. agent-config carves the migration-marked section (`22bd159`, done).
-2. pi-shell-acp lands this `[INCOMING]` mirror section (this commit).
-3. Phase 0.5 (sync/async mode contract) implements and verifies in agent-config.
-4. `entwurf_send` 3-way smoke (native↔native, native↔ACP, ACP↔ACP) verifies in agent-config.
-5. The carved content — policy, schema, `entwurf-core`, `pi-tools-bridge`, `session-bridge` — moves here verbatim.
-6. A single pi-shell-acp commit performs `entwurf` → `entwurf` rename across code and docs.
-7. agent-config drops the migration marker and keeps a consumer-side pointer to where the logic lives.
+### Migration history (retrospective)
 
-**Naming contract — deliberate asymmetry.**
-- This repo (new owner): `entwurf` is the canonical term from this section forward. `entwurf` appears only as a legacy alias when referencing agent-config's pre-migration code.
-- agent-config (current code owner): `entwurf` remains canonical until the rename commit (step 6). Renaming there before the code moves would break grep and desync docs from code.
+| Step | What | Where |
+|------|------|-------|
+| 1 | agent-config carves the migration-marked section | agent-config `22bd159` |
+| 2 | pi-shell-acp lands the `[INCOMING]` mirror section | (now retired) |
+| 3 | Phase 0.5 (sync/async mode contract) implemented and verified | agent-config `e5aa5a1` |
+| 4 | `entwurf_send` (then `send_to_session`) 3-way smoke verified | agent-config `7545af8` |
+| 5 | Carved content — policy, schema, core, pi-tools-bridge, session-bridge — moved here verbatim | `768baf4` |
+| 6 | Single rename commit (`delegate` → `entwurf`) across code, flags, paths, env, docs | `cc6508a` |
+| 7 | agent-config drops the migration marker, keeps a consumer-side pointer | (consumer side) |
 
-This asymmetry is load-bearing. Do not "fix" it prematurely.
+The `[INCOMING]` and `[MIGRATION: → pi-shell-acp]` markers that mirrored across both repos during steps 1–6 are retired. The historical `[SUPERSEDED]` block below is kept as archival reference, not as active state.
 
-### Incoming Artifacts
+### Surfaces (current state)
 
-Six surfaces move into this repo. Landing positions are provisional and will be finalized at ingestion time.
+| Surface | File / path                                   | Notes |
+|---------|-----------------------------------------------|-------|
+| pi-native entwurf spawn | `pi-extensions/entwurf.ts`                | sync + async modes (Phase 0.5 mode contract) |
+| Shared core             | `pi-extensions/lib/entwurf-core.ts`       | registry resolution + Identity Preservation Rule |
+| Target registry (SSOT)  | `pi/entwurf-targets.json`                 | allowlist of `(provider, model)` spawn pairs |
+| MCP adapter             | `mcp/pi-tools-bridge/`                    | exposes `entwurf` / `entwurf_resume` / `entwurf_send` / `entwurf_peers` to ACP hosts |
+| Claude Code ↔ pi bridge | `mcp/session-bridge/`                     | separate MCP server, different surface (do not confuse with entwurf-control) |
+| Control plane server    | `pi-extensions/entwurf-control.ts`        | Unix-socket RPC, ingested from [Armin Ronacher's `agent-stuff`](https://github.com/mitsuhiko/agent-stuff) (Apache 2.0). Closes the hidden runtime dependency that previously made pi-tools-bridge require a private consumer repo to work. |
 
-| Source                                 | Destination (pi-shell-acp, planned)           | Purpose                                                          |
-|----------------------------------------|-----------------------------------------------|------------------------------------------------------------------|
-| `pi-extensions/entwurf.ts` (agent-config) | `entwurf/spawn.ts` (or similar)           | pi-native spawn entry                                            |
-| `pi-extensions/lib/entwurf-core.ts` (agent-config) | `entwurf/core.ts`                | shared core: registry resolution + identity lock                 |
-| `pi/entwurf-targets.json` (agent-config) | `entwurf/targets.json`                     | SSOT allowlist of `(provider, model)` pairs                      |
-| `mcp/pi-tools-bridge/` (agent-config)  | `mcp/pi-tools-bridge/`                        | MCP adapter exposing entwurf (entwurf/entwurf_resume) + entwurf-control (entwurf_send/entwurf_peers) to ACP hosts |
-| `mcp/session-bridge/` (agent-config)   | `mcp/session-bridge/`                         | Claude Code ↔ pi Unix-socket session bridge                      |
-| `extensions/control.ts` (Armin agent-stuff, Apache 2.0) | `pi-extensions/entwurf-control.ts` | pi entwurf-control server (Unix socket, RPC protocol, `entwurf_send` native tool). Closes the hidden runtime dependency that previously made pi-tools-bridge require a private consumer repo to work. |
-
-**"One project" principle — preserved, not split.** agent-config's AGENTS.md Entwurf Orchestration section states: *"After migration both live together inside pi-shell-acp; the 'one project' principle is preserved, just with a new home."* This repo honors that contract. `pi-extensions`-equivalent surface and `mcp/*` adapters live side-by-side here; they are not to be split into sibling repos later. The entwurf-control extension is the public counterpart of this principle — pi-shell-acp owns the server side of `entwurf_send`, not just the bridge-side caller.
+**"One project" principle — preserved, not split.** `pi-extensions`-equivalent surface and `mcp/*` adapters live side-by-side here; they are not to be split into sibling repos later. The entwurf-control extension is the public counterpart of this principle — pi-shell-acp owns the server side of `entwurf_send`, not just the bridge-side caller.
 
 ### Runtime compatibility — aligned to pi 0.70.0
 
@@ -133,7 +130,7 @@ Phase 0.5 landed in [agent-config `e5aa5a1`](https://github.com/junghan0611/agen
 - ad-hoc async smoke: Resume ID 7d7c5b84 spawned detached (PID 54061), followUp semantics unchanged.
 - callsite audit: only LLM-driven tool invocations consume `entwurf_resume` — no internal callers break from the default flip.
 
-**After ingestion.** `mode: "sync" | "async"` is on `entwurf_resume` as ingested (to become `entwurf_resume` in step 6). No further Phase 0.5 work pending.
+**Current state (post-rename).** `mode: "sync" | "async"` is on `entwurf_resume`. No further Phase 0.5 work pending.
 
 ### Send-is-throw Principle (cross-session messaging)
 
@@ -225,29 +222,31 @@ Most recent green run: 2026-04-24, all gates pass on fresh install (clean `node_
 /tmp/sentinel-20260424-110111.json
 ```
 
-Axis 2 — VERIFY.md §1A Layer 0–4 interview — is owned by the agent inside a `pi-shell-acp/<model>` session, not by this Claude Code session. With Axis 1 confirmed green end-to-end, the Axis 2 interview is now unblocked (step 6 rename gate precondition).
+Axis 2 — VERIFY.md §1A Layer 0–4 interview — is owned by the agent inside a `pi-shell-acp/<model>` session, not by this Claude Code session. Axis 1 has been green end-to-end since the pre-rename baseline; post-rename (`cc6508a`) the same gates pass against the new entwurf surface and the Axis 2 interview is the standing operator-facing check.
 
 ### Superseded Boundary
 
-The previous `## Boundary — Bridge vs Consuming Harness` section (below, marked `[SUPERSEDED]`) is the pre-entwurf thesis. It is kept in place during the transition window as historical reference — do not delete it until migration step 7 completes.
+The `## Historical Boundary` section below is **archival reference only** — frozen pre-entwurf wording kept for the migration trail. Future agents reading this repo should treat it the way they would a `CHANGELOG.md` entry from a year ago: useful for understanding *why* the current shape exists, never as current operational guidance.
 
 ---
 
-## Historical Boundary — Pre-Entwurf Thesis [SUPERSEDED]
+## Historical Boundary — Pre-Entwurf Thesis [ARCHIVED]
 
-> **This section is historical context only, not the current ownership model.** It documents a boundary that no longer applies. For current ownership, read `## Entwurf Orchestration` and `## Scope` (Layer A / Layer B). The quotes below are frozen snapshots of the old thesis kept for migration trail — do not treat them as current fact. Specific path references in the old boundary (`agent-config/pi-extensions/...`, `agent-config/mcp/pi-tools-bridge`, etc.) no longer match reality; those surfaces now live in this repo.
+> **⚠ Archival only — NOT the current ownership model.** This section is preserved as a historical snapshot of the boundary that pi-shell-acp operated under before the entwurf consolidation. Do **not** quote it as current policy, and do **not** propagate its claims into new docs. For current ownership, read `## Entwurf Orchestration` and `## Scope` (Layer A / Layer B). Specific path references in the old boundary (`agent-config/pi-extensions/...`, `agent-config/mcp/pi-tools-bridge`, etc.) no longer match reality; those surfaces now live in this repo.
+>
+> Term mapping: the original frozen quotes below were authored before the `delegate` → `entwurf` rename (`cc6508a`). Where the snapshots say "entwurf" today, the original wording was "delegate"; the rename was applied uniformly across this file by sed at commit time, including these quotes. The historical meaning is unchanged.
 
 **Frozen thesis — English (pre-entwurf):**
 
-> pi-shell-acp is the thin ACP bridge product. It guarantees backend continuity and explicit MCP injection. Entwurf/resume/async orchestration belongs to the consuming harness (currently agent-config), not to this bridge repo.
+> pi-shell-acp is the thin ACP bridge product. It guarantees backend continuity and explicit MCP injection. Delegate/resume/async orchestration belongs to the consuming harness (currently agent-config), not to this bridge repo.
 
 **Frozen 운영 원칙 — Korean (pre-entwurf):**
 
-> pi-shell-acp는 얇은 ACP 브리지다. entwurf/resume/async 자체를 소유하지 않는다. 그 위의 MCP 표면과 orchestration은 소비 하네스(agent-config)의 책임이다.
+> pi-shell-acp는 얇은 ACP 브리지다. delegate/resume/async 자체를 소유하지 않는다. 그 위의 MCP 표면과 orchestration은 소비 하네스(agent-config)의 책임이다.
 
-Why the boundary moved: experience showed the entwurf surface, target registry, identity preservation, and the MCP adapters that promote pi-side tools to ACP hosts all cluster around the ACP session lifecycle this repo already owned. Splitting them across two repos produced seam churn without a real boundary gain. See `## Entwurf Orchestration § Migration Plan` for the step-by-step transition.
+Why the boundary moved: experience showed the delegate (now entwurf) surface, target registry, identity preservation, and the MCP adapters that promote pi-side tools to ACP hosts all cluster around the ACP session lifecycle this repo already owned. Splitting them across two repos produced seam churn without a real boundary gain. See `## Entwurf Orchestration § Migration history` for the step-by-step transition.
 
-Legacy env var note — `PI_ENTWURF_ACP_FOR_CODEX=1` was a pre-registry heuristic for Codex-via-ACP routing. It is superseded by the entwurf target registry (`pi/entwurf-targets.json`). If you see it in older notes, treat it as legacy.
+Legacy env var note — `PI_DELEGATE_ACP_FOR_CODEX=1` (renamed to `PI_ENTWURF_ACP_FOR_CODEX` at `cc6508a`) was a pre-registry heuristic for Codex-via-ACP routing. It is superseded by the entwurf target registry (`pi/entwurf-targets.json`). If you see either name in older notes, treat it as legacy.
 
 ---
 
@@ -498,11 +497,11 @@ For cross-process continuity, verify with the same pi session file:
 ```bash
 cd /path/to/consumer-project
 SESSION_FILE=$(mktemp /tmp/pi-shell-acp-XXXXXX.jsonl)
-pi --session "$SESSION_FILE" --model pi-shell-acp/claude-sonnet-4-6 -p 'Remember this exact secret token for later: test-token-123. Reply only READY.'
-pi --session "$SESSION_FILE" --model pi-shell-acp/claude-sonnet-4-6 -p 'What was the secret token? Reply with the token only.'
+pi --session "$SESSION_FILE" --model pi-shell-acp/claude-sonnet-4-6 -p 'The codename is owl. Reply with READY only, no explanation.'
+pi --session "$SESSION_FILE" --model pi-shell-acp/claude-sonnet-4-6 -p 'What was the codename I just gave you? Reply in one word only.'
 ```
 
-Expected: second process returns `test-token-123`.
+Expected: second process returns `owl`. Use non-sensitive plaintext (`codename`, `owl`) per [VERIFY.md §0A wording guide](./VERIFY.md#verification-prompt-wording--avoid-safety-interpretation-contamination) — never `secret token` / `password` / `API key`, those trigger Claude's safety path and produce a refusal that looks like a continuity failure.
 
 For fallback boundary, ensure `cwd:` sessions do not create persisted cache records.
 
