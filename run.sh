@@ -39,7 +39,7 @@ Usage:
   ./run.sh check-mcp                  # local deterministic check of normalizeMcpServers() — no Claude/ACP subprocess
   ./run.sh check-backends             # local deterministic check of backend launch resolution + backend-specific _meta shape
   ./run.sh check-registration         # local deterministic check of per-runtime provider registration semantics
-  ./run.sh check-models               # local deterministic check of MODELS contextWindow cap (default 200K + opt-in override)
+  ./run.sh check-models               # local deterministic check of MODELS contextWindow defaults (sonnet 200K, opus 1M) + override
   ./run.sh check-compaction-handoff   # local deterministic check of post-compaction summary + kept-turn projection into systemPromptAppend
   ./run.sh check-claude-sessions [project-dir]  # compare pi persisted sessions vs Claude SDK session visibility
   ./run.sh verify-resume [project-dir] # exact pi -> ACP -> Claude continuity check with visible acpSessionId diagnostics
@@ -1311,7 +1311,7 @@ check_models() {
       --rootDir "$REPO_DIR"
   )
 
-  # Run twice: once with default cap (200K), once with override (1M).
+  # Run three times: defaults, explicit override, bogus override.
   # Each run imports a FRESH module URL so the top-level CLAUDE_CONTEXT_CAP
   # constant is recomputed from the env seen at import time.
   (cd "$REPO_DIR" && VERIFY_DIR="$verify_dir" node --input-type=module <<'EOF'
@@ -1347,7 +1347,7 @@ async function collectModels(envOverride) {
   return new Map(captured.models.map((m) => [m.id, m]));
 }
 
-// --- Pass 1: curated surface + default cap (200K) ---
+// --- Pass 1: curated surface + default Claude defaults ---
 {
   const models = await collectModels(undefined);
 
@@ -1384,15 +1384,21 @@ async function collectModels(envOverride) {
     assert.ok(!models.has(id), `non-curated model ${id} must not be exposed by pi-shell-acp`);
   }
 
-  // Claude 200K cap — the two curated 1M-capable models (sonnet-4-6, opus-4-7)
-  // must be capped down without the env override.
-  const oneMClaude = ['claude-sonnet-4-6', 'claude-opus-4-7'];
-  for (const id of oneMClaude) {
-    const m = models.get(id);
-    assert.ok(m, `curated Claude model missing: ${id}`);
+  // Claude defaults: sonnet stays at 200K, opus surfaces at 1M.
+  {
+    const sonnet = models.get('claude-sonnet-4-6');
+    assert.ok(sonnet, 'curated Claude model missing: claude-sonnet-4-6');
     assert.equal(
-      m.contextWindow, 200000,
-      `default: ${id} contextWindow should be capped at 200000, got ${m.contextWindow}`,
+      sonnet.contextWindow, 200000,
+      `default: claude-sonnet-4-6 contextWindow should be 200000, got ${sonnet.contextWindow}`,
+    );
+  }
+  for (const id of ['claude-opus-4-6', 'claude-opus-4-7']) {
+    const m = models.get(id);
+    if (!m) continue;
+    assert.equal(
+      m.contextWindow, 1000000,
+      `default: ${id} contextWindow should be 1000000, got ${m.contextWindow}`,
     );
   }
 
@@ -1423,24 +1429,22 @@ async function collectModels(envOverride) {
     'gpt-5.5 at 1,050,000 context = openai source bug (should be openai-codex 400,000)',
   );
 
-  console.log('[check-models] pass 1 (curated surface + default 200K cap + codex source): ok');
+  console.log('[check-models] pass 1 (curated surface + Claude defaults + codex source): ok');
 }
 
-// --- Pass 2: explicit 1M opt-in ---
+// --- Pass 2: explicit override respected ---
 {
   const models = await collectModels('1000000');
-  const id = 'claude-sonnet-4-6';
-  const m = models.get(id);
-  if (m) {
+  for (const id of ['claude-sonnet-4-6', 'claude-opus-4-7']) {
+    const m = models.get(id);
+    if (!m) continue;
     assert.equal(
       m.contextWindow,
       1_000_000,
       `override: ${id} contextWindow should be 1000000 with PI_SHELL_ACP_CLAUDE_CONTEXT=1000000, got ${m.contextWindow}`,
     );
-    console.log('[check-models] pass 2 (PI_SHELL_ACP_CLAUDE_CONTEXT=1000000 opt-in): ok');
-  } else {
-    console.log('[check-models] pass 2 skipped (claude-sonnet-4-6 not in registry)');
   }
+  console.log('[check-models] pass 2 (PI_SHELL_ACP_CLAUDE_CONTEXT=1000000 override): ok');
 }
 
 // --- Pass 3: bogus override falls back to default ---

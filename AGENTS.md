@@ -187,7 +187,7 @@ The stabilization round between step 5 (ingestion) and step 6 (rename) locked th
 | Curated model surface | `claude-sonnet-4-6`, `claude-opus-4-7`, `gpt-5.2`, `gpt-5.4`, `gpt-5.4-mini`, `gpt-5.5` |
 | Codex metadata source | `getModels("openai-codex")` (NOT `"openai"`) |
 | `gpt-5.5` context window | `400,000` (openai-codex source; openai source claim of `1,050,000` is not served by codex-acp) |
-| Claude context cap | `200,000` default; `PI_SHELL_ACP_CLAUDE_CONTEXT=1000000` opt-in |
+| Claude context cap | `claude-sonnet-4-6`: `200,000` default; `claude-opus-4-6` / `claude-opus-4-7`: `1,000,000` default; `PI_SHELL_ACP_CLAUDE_CONTEXT=<N>` override |
 | Delegate target registry | 10 entries — 2 Claude, 4 native Codex, 4 ACP Codex (`explicitOnly`) |
 
 Stabilization commits (read in order for the release story):

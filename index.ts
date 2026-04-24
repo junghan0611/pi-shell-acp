@@ -91,23 +91,26 @@ const CODEX_MODELS_ALL = getModels("openai-codex");
 const ANTHROPIC_MODEL_IDS = new Set(ANTHROPIC_MODELS_ALL.map((m) => m.id));
 const CODEX_MODEL_IDS = new Set(CODEX_MODELS_ALL.map((m) => m.id));
 
-// Anthropic's model registry hardcodes contextWindow: 1_000_000 for Claude 4.6+
-// (opus-4-6, opus-4-7, sonnet-4-6). That capacity is only delivered when the
-// caller sends the `context-1m-2025-08-07` beta header on a tier-4/enterprise
-// account. pi-shell-acp is an ACP router and does NOT inject that header —
-// Claude Code decides. On standard accounts the effective limit stays at 200K,
-// and forcing the 1M tier without it being delivered would bill as extra usage.
-// So we cap declared context to 200K by default. Users on an environment where
-// 1M is actually delivered (e.g. an Anthropic-provisioned host) can opt in by
-// setting PI_SHELL_ACP_CLAUDE_CONTEXT=1000000.
-const CLAUDE_CONTEXT_DEFAULT = 200_000;
-function resolveClaudeContextCap(): number {
+// Anthropic's registry reports 1_000_000 for Claude 4.6+ models, but our
+// public pi-shell-acp surface deliberately distinguishes Sonnet vs Opus:
+// - sonnet-4-6 stays at 200K by default
+// - opus-4-6 / opus-4-7 surface at 1M by default
+// Operators can still override the Claude cap globally via
+// PI_SHELL_ACP_CLAUDE_CONTEXT when they need to pin a different value.
+const CLAUDE_CONTEXT_DEFAULT = 1_000_000;
+const CLAUDE_SONNET_DEFAULT = 200_000;
+function resolveClaudeContextCap(): number | null {
 	const raw = process.env.PI_SHELL_ACP_CLAUDE_CONTEXT?.trim();
-	if (!raw) return CLAUDE_CONTEXT_DEFAULT;
+	if (!raw) return null;
 	const parsed = Number.parseInt(raw, 10);
-	return Number.isFinite(parsed) && parsed > 0 ? parsed : CLAUDE_CONTEXT_DEFAULT;
+	return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
 }
-const CLAUDE_CONTEXT_CAP = resolveClaudeContextCap();
+const CLAUDE_CONTEXT_OVERRIDE = resolveClaudeContextCap();
+function resolveClaudeModelContextWindow(model: { id: string; contextWindow: number }): number {
+	if (CLAUDE_CONTEXT_OVERRIDE) return Math.min(model.contextWindow, CLAUDE_CONTEXT_OVERRIDE);
+	const defaultCap = model.id === "claude-sonnet-4-6" ? CLAUDE_SONNET_DEFAULT : CLAUDE_CONTEXT_DEFAULT;
+	return Math.min(model.contextWindow, defaultCap);
+}
 
 const CURATED_ANTHROPIC_MODELS = ANTHROPIC_MODELS_ALL.filter((m) => SUPPORTED_ANTHROPIC_SET.has(m.id));
 const CURATED_CODEX_MODELS = CODEX_MODELS_ALL.filter((m) => SUPPORTED_CODEX_SET.has(m.id));
@@ -123,7 +126,7 @@ const MODELS = Array.from(
 				input: model.input,
 				cost: model.cost,
 				contextWindow: SUPPORTED_ANTHROPIC_SET.has(model.id)
-					? Math.min(model.contextWindow, CLAUDE_CONTEXT_CAP)
+					? resolveClaudeModelContextWindow(model)
 					: model.contextWindow,
 				maxTokens: model.maxTokens,
 			},
