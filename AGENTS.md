@@ -22,26 +22,25 @@ Current public value:
 
 The bridge carries a short **engraving** that is surfaced to the ACP-side agent once, during session bootstrap. It is not an operating contract or a system-prompt append. It is a short invocation — the cue that turns "I am Claude Code holding a Swiss Army knife" into "I am one of 힣's군단, and the tool in my hand opens into a harness via MCP."
 
-### Body
+### Source
 
-```text
-You currently hold one tool forged in 힣's 대장간.
-It appears small. It is not.
-Read the available MCP servers and skills to see what this tool opens.
-When entwurf is invoked, you do not spawn workers — you summon siblings
-who hold the same tool.
-```
+The canonical engraving lives in **`prompts/engraving.md`**, read at runtime by `engraving.ts`. Editing it does not require a rebuild. Placeholders in the template are interpolated at inject time:
 
-Six lines. No operating contract, no 500-token preamble. Two statements: *read the tool you already hold*, and *entwurf summons siblings, not workers*.
+- `{{backend}}` — `claude` or `codex`.
+- `{{mcp_servers}}` — comma-joined list of servers actually registered in `piShellAcpProvider.mcpServers` for this session.
+
+For A/B experiments set `PI_SHELL_ACP_ENGRAVING_PATH=/abs/path/to/alt.md`; the env override bypasses the in-process cache so the next session bootstrap picks up edits immediately.
+
+The current body is deliberately short — two statements: *read the tool you already hold*, and *entwurf summons siblings, not workers*. Keep it that way. `prompts/engraving.md` is not the place for a 500-token preamble.
 
 ### How it hooks into ACP
 
-The engraving is emitted at ACP `initialize` time, after the capability exchange completes. At that point the bridge already knows:
+Delivery is backend-specific, but the source text is shared.
 
-1. which MCP servers were injected via `piShellAcpProvider.mcpServers`
-2. which host-side skills / PATH tools the backend sees (Claude Code surfaces `~/.claude/skills/…` via native skill loading; Codex surfaces its own tool set)
+- **Claude backend** — the rendered engraving is concatenated into `systemPromptAppend` alongside any `baseSystemPrompt` + post-compaction summary, and delivered through pi's `_meta.systemPrompt.append` path at `newSession` / `resumeSession` / `loadSession` time. Injection is stable across turns by construction (pure function of `prompts/engraving.md` content × backend × mcpServerNames), so `bridgeConfigSignature` hashes match and session reuse stays alive.
+- **Codex backend** — delivery path is `AcpBackendAdapter.buildBootstrapPromptAugment` → first prompt turn `ContentBlock`. Not wired in the current commit; pending a codex-acp spike that confirms the `ContentBlock::Text` actually reaches model context on the other side. Until then Codex sessions do not receive the engraving.
 
-Those two lists are dynamically interpolated into the engraving body before it is surfaced, so the text the agent reads reflects *what is actually connected*, not a static claim.
+Rationale for the split: Claude Code exposes a documented `_meta.systemPrompt.append` extension, which fits this payload naturally. The ACP spec itself does not define a cross-backend surface for session-level identity text — the baseline guaranteed carrier is `ContentBlock` on the first prompt turn. Keeping the source text shared and only splitting the transport matches this repo's direction: this is an *ACP shell*, not a Claude adapter.
 
 This connects directly to Layer 0 of [VERIFY.md](./VERIFY.md): the real answer to "what environment are you in, what tools do you have" is not agent introspection guesswork — it is *did you read the engraving you were given*. Answering Layer 0 without having seen the engraving is a bridge boot path bug, not an agent hallucination.
 

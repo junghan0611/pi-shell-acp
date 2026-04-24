@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { applyBridgePromptEvent, finalizeAcpStreamState, type AcpPiStreamState } from "./event-mapper.js";
 import { cancelActivePrompt, cleanupBridgeSessionProcess, closeBridgeSession, describeBridgeSession, ensureBridgeSession, getBridgeErrorDetails, normalizeMcpServers, sendPrompt, setActivePromptHandler, type AcpBackend, type ClaudeSettingSource, type McpServerInputMap } from "./acp-bridge.js";
 import { detectCompactionContext, renderCompactionSystemPromptAppend } from "./compaction-context.js";
+import { loadEngraving } from "./engraving.js";
 import type { McpServer } from "@agentclientprotocol/sdk";
 
 const PROVIDER_ID = "pi-shell-acp";
@@ -409,10 +410,25 @@ function streamShellAcp(model: Model<any>, context: Context, options?: SimpleStr
 			const compaction = providerSettings.backend === "claude" ? detectCompactionContext(context) : null;
 			const baseSystemPrompt = providerSettings.appendSystemPrompt ? context.systemPrompt : undefined;
 			const compactionAppend = compaction ? renderCompactionSystemPromptAppend(compaction) : undefined;
+
+			// Engraving — self-recognition prompt from prompts/engraving.md,
+			// injected on Claude via systemPromptAppend alongside
+			// baseSystemPrompt + compactionAppend. Stable by construction so
+			// bridgeConfigSignature hashes match across turns and the reuse
+			// branch stays alive. Codex delivery lives on the adapter path
+			// (to be wired after the ContentBlock delivery spike).
+			const engraving = providerSettings.backend === "claude"
+				? loadEngraving({
+					backend: providerSettings.backend,
+					mcpServerNames: providerSettings.mcpServers.map((s) => s.name),
+				})
+				: null;
+
+			const systemPromptParts = [baseSystemPrompt, engraving ?? undefined, compactionAppend].filter(
+				(part): part is string => typeof part === "string" && part.length > 0,
+			);
 			const mergedSystemPromptAppend =
-				baseSystemPrompt && compactionAppend
-					? `${baseSystemPrompt}\n\n${compactionAppend}`
-					: (compactionAppend ?? baseSystemPrompt);
+				systemPromptParts.length > 0 ? systemPromptParts.join("\n\n") : undefined;
 
 			bridgeSession = await ensureBridgeSession({
 				sessionKey,
