@@ -92,28 +92,32 @@ Five surfaces move into this repo. Landing positions are provisional and will be
 
 **"One project" principle — preserved, not split.** agent-config's AGENTS.md Entwurf Orchestration section states: *"After migration both live together inside pi-shell-acp; the 'one project' principle is preserved, just with a new home."* This repo honors that contract. `pi-extensions`-equivalent surface and `mcp/*` adapters live side-by-side here; they are not to be split into sibling repos later.
 
-### Runtime compatibility at ingestion
+### Runtime compatibility — aligned to pi 0.70.0
 
-Ingested code was authored against the agent-config runtime. To preserve exact behavior under verbatim ingestion, this repo pins the same package versions agent-config resolves in its pnpm lockfile.
+This repo pins exact pi library versions that match the pi runtime users actually install. pi is a fast-moving tool; users update immediately. Carrying an old library pin into a public release invites drift from day one.
 
-| Package | agent-config (pnpm lock) | pi-shell-acp devDeps | Rationale |
-|---------|--------------------------|----------------------|-----------|
-| `@mariozechner/pi-coding-agent` | `0.67.2` | `0.67.2` (exact pin) | `AgentToolResult` / tool execute signature drifted across 0.67.x → 0.69.x; `delegate.ts` written against 0.67.2 shape |
-| `@mariozechner/pi-ai` | `0.67.2` | `0.67.2` (exact pin) | same transitive lineage |
-| `@sinclair/typebox` | n/a (transitive) | `^0.34.0` | direct import in `delegate.ts`; added at ingestion |
+| Package | pi-shell-acp devDeps | Rationale |
+|---------|----------------------|-----------|
+| `@mariozechner/pi-coding-agent` | `0.70.0` (exact pin) | matches current pi runtime; exact pin for release reproducibility |
+| `@mariozechner/pi-ai` | `0.70.0` (exact pin) | same |
+| `@sinclair/typebox` | `^0.34.0` | direct import in `pi-extensions/delegate.ts` |
 
-pi runtime itself is **0.70.0** on this machine; the version pins above are library-type pins for build-time correctness only. They do not constrain which pi binary the spawn path invokes.
+**0.70.0 adaptation log** (landed in commit `da97fa9`, authored as "Commit A" in the stabilization round):
 
-**Why not bump to 0.70.0 at ingestion.** Verbatim ingestion carries both the code and its working environment. Bumping to 0.70.0 exposed real type drift (`AgentToolResult` requires `details`, tool execute signature adds `signal/onUpdate/ctx` params). That is an adaptation task, not an ingestion task. It belongs in a follow-up commit after step 6 rename — a clean "library bump + api adapt" unit of work, not tangled with ingestion.
+- `AgentToolResult<T>` no longer carries `isError`. 0.70.0 docstring: *"Throw on failure instead of encoding errors in content"*. All six `isError: ...` usages in `pi-extensions/delegate.ts` removed; error paths now distinguished via `content` text + structured `details` only.
+- Tool `execute` signature gained a 5th required param `ctx: ExtensionContext`. Three handlers updated (`delegate`, `delegate_status`, `delegate_resume`).
+- `AgentToolResult<T>.details: T` is required. Two partial-update `onUpdate` callbacks fixed with `details: {}`.
+- Each execute annotated with explicit return type `Promise<AgentToolResult<unknown>>` — locks the runtime contract at the function boundary.
+- TS2589 "Type instantiation excessively deep" on delegate tool registration (0.70.0 `registerTool` couples typebox `Static<TParams>` with `TDetails` inference; delegate's 6-Optional + nested-Union params exceeded recursion depth) worked around with a localized `registerTool` cast — execute bodies still typed.
+
+A brief 0.67.2 pin lived in commit `768baf4` (step 5 verbatim ingestion) as an intermediate step; `da97fa9` replaced it. The history is preserved but the current state is 0.70.0-aligned.
 
 ### Typecheck boundary
 
-`tsconfig.json` excludes `pi-extensions/` and `mcp/` from the root typecheck:
+`tsconfig.json` excludes only `node_modules` and `mcp/` from the root typecheck.
 
 - `mcp/*` are self-contained npm subprojects with their own `tsconfig.json` + `dist/` (they own their typecheck).
-- `pi-extensions/` is excluded because agent-config runs this code through the pi jiti runtime, not through `tsc`. The code carries pre-existing type-lint debt that jiti tolerates at runtime. Including it in the root typecheck would fail with drift that exists in the source repo too — verbatim ingestion means inheriting that condition.
-
-A follow-up task ("post-ingestion typecheck hardening") will either bring `pi-extensions/` under the root typecheck after a library bump + type-annotation pass, or carve out a separate `tsconfig.pi-extensions.json` with loosened strictness. Tracked separately from the rename (step 6).
+- `pi-extensions/` **is covered** by the root typecheck (as of `da97fa9`). Previously excluded because the ingested code had pre-existing type drift against pi library types; the 0.70.0 adaptation closed that gap. Now a real typecheck gate, not an escape hatch.
 
 ### Phase 0.5 — sync/async mode contract (completed upstream at agent-config `e5aa5a1`)
 
@@ -158,6 +162,46 @@ These are deterministic gates. They fail fast and are cheap to re-run.
 Passing Axis 1 alone is not enough. Pre-Phase-0.5 we saw a green protocol smoke next to a broken interview; that failure mode is specifically what the two-axis rule exists to catch.
 
 **Evidence requirement.** Each ingestion commit records Axis 1 sentinel artifacts + Axis 2 interview transcript summary in the commit body, the same way agent-config `e5aa5a1` recorded its smoke evidence. "It worked on my machine" is not evidence; artifact paths and token echoes are.
+
+### Release Baseline (post-stabilization)
+
+The stabilization round between step 5 (ingestion) and step 6 (rename) locked the following runtime state — the release target for the first public `pi-shell-acp` cut that bundles entwurf orchestration:
+
+| Surface | State |
+|---------|-------|
+| pi runtime | `0.70.0` |
+| `@mariozechner/pi-ai` | exact `0.70.0` |
+| `@mariozechner/pi-coding-agent` | exact `0.70.0` |
+| `pi-extensions/` | covered by root typecheck |
+| Curated model surface | `claude-sonnet-4-6`, `claude-opus-4-7`, `gpt-5.2`, `gpt-5.4`, `gpt-5.4-mini`, `gpt-5.5` |
+| Codex metadata source | `getModels("openai-codex")` (NOT `"openai"`) |
+| `gpt-5.5` context window | `400,000` (openai-codex source; openai source claim of `1,050,000` is not served by codex-acp) |
+| Claude context cap | `200,000` default; `PI_SHELL_ACP_CLAUDE_CONTEXT=1000000` opt-in |
+| Delegate target registry | 10 entries — 2 Claude, 4 native Codex, 4 ACP Codex (`explicitOnly`) |
+
+Stabilization commits (read in order for the release story):
+
+| SHA | Title | Purpose |
+|-----|-------|---------|
+| `768baf4` | Step 5 verbatim ingestion | Move the 5 surfaces + smoke script from agent-config. Temporary `0.67.2` pin + `pi-extensions` typecheck exclude as intermediate step. |
+| `da97fa9` | Commit A — 0.70.0 align + delegate.ts API adapt | Exact `0.70.0` pin on pi libs. Remove `isError` (6 sites). Add `ctx` to 3 execute signatures. Add `details` to 2 onUpdate callbacks. Explicit `Promise<AgentToolResult<unknown>>` returns. TS2589 workaround. `pi-extensions` back in typecheck. |
+| `060c412` | Commit B — curate model surface + fix codex metadata source | Replace wholesale `getModels("anthropic") + getModels("openai")` with curated allowlist against `getModels("openai-codex")`. Fix `gpt-5.5` ctx regression (1.05M → 400K). Rewrite `check-models` with exact allowlist + forbidden-list + codex context gates. |
+| `9269771` | Commit C — gpt-5.5 in delegate registry | Add `openai-codex/gpt-5.5` (native) + `pi-shell-acp/gpt-5.5` (explicitOnly). Cost warning in `$notes`. Update `$comment` to point at pi-shell-acp AGENTS.md (was agent-config pre-migration). |
+
+Axis 1 gates at release baseline (all pass against the state above):
+
+```text
+npm run typecheck               clean (root + mcp subprojects)
+npm run check-registration      7/7
+npm run check-mcp               15/15
+npm run check-models            3/3 (curated + cap + override)
+npm run check-backends          12/12
+mcp/pi-tools-bridge/test.sh     15/15
+scripts/session-messaging-smoke 4/4  (artifact: /tmp/sms-D-final-*.json)
+pi -e . --list-models pi-shell-acp  → 6 curated models, gpt-5.5 at 400K
+```
+
+Axis 2 — VERIFY.md §1A Layer 0–4 interview — is owned by the agent inside a `pi-shell-acp/<model>` session, not by this Claude Code session. It is pending capture before step 6 rename begins.
 
 ### Superseded Boundary
 
