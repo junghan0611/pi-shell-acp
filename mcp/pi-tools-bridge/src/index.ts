@@ -253,14 +253,10 @@ const server = new McpServer({ name: "pi-tools-bridge", version: "0.1.0" });
 server.tool(
   "send_to_session",
   "Send a message to another running pi session via its control socket. " +
-    "Target by sessionId or alias name. Requires the target pi to have been launched with --session-control. " +
-    "Use list_sessions first if you need to discover what targets are reachable. " +
-    "Messaging discipline — 'Send is throw, not wait': this bridge surface is " +
-    "fire-and-forget on purpose (no wait_until parameter exposed). Delivery is " +
-    "confirmed, a full turn result is not. If you need the target's answer, " +
-    "let the target reply with its own send_to_session addressed to your " +
-    "sender_info. If you need a result the *caller* owns (not a notification), " +
-    "the correct surface is delegate(mode=async) + delegate_resume, not this tool.",
+    "Target by sessionId or alias name. The target must be running with --session-control. " +
+    "This MCP surface is fire-and-forget: delivery is confirmed, a turn result is not. " +
+    "If you need a reply, let the target answer with its own send_to_session. " +
+    "If the caller needs a result it owns, use delegate(mode=async) + delegate_resume instead.",
   {
     target: z.string().min(1).describe("Session id or alias registered under pi control dir"),
     message: z.string().min(1).describe("Message text to deliver"),

@@ -1075,53 +1075,23 @@ function registerSessionTool(pi: ExtensionAPI, state: SocketState): void {
 		description: `Interact with another running pi session via its control socket.
 
 Actions:
-- send: Send a message (default). Requires 'message' parameter.
+- send: Send a message (default). Requires 'message'.
 - get_message: Get the most recent assistant message.
-- clear: Rewind session to initial state.
+- clear: Rewind the target session.
 
-Target selection:
+Target:
 - sessionId: UUID of the session.
 - sessionName: session name (alias from /name).
 
-Wait behavior (only for action=send):
-- wait_until=message_processed: Returns immediately after message is queued. Recommended.
-- wait_until=turn_end: DISCOURAGED. Attempts to wait for the target's next turn to
-  complete and return its last assistant message. This is native-path best-effort
-  only and is structurally unreliable once the call traverses MCP / ACP hops —
-  the delivery and the turn itself both succeed, but the turn_end correlation
-  back to this specific call is not a strong contract. Use the reply-back
-  pattern instead: the target replies by calling send_to_session on its side,
-  addressed to the sender_info it received. If you need a result the caller
-  *owns*, use delegate(mode=async) + delegate_resume — that is the orchestration
-  channel, session-messaging is the notify channel.
+For action=send:
+- mode: steer (immediate) or follow_up (after task).
+- wait_until=message_processed: queue ack only. Recommended.
+- wait_until=turn_end: native-path best-effort only. Prefer reply-back via send_to_session.
 
-CLI bridge (for shell scripts/background jobs):
-- Current session id is available in shell/bash as $PI_SESSION_ID (set when --session-control is enabled).
-- Use $PI_SESSION_ID when you need the current session; do not call list_sessions just to discover your own id.
-- Target session must be running with --session-control.
-- One-shot startup send is available via extension flags:
-  --session-control
-  --control-session <session-name|session-id>
-  --send-session-message <text>
-  --send-session-mode <steer|follow_up> (optional, default: steer)
-  --send-session-wait <turn_end|message_processed> (optional)
-  --send-session-include-sender-info (optional, advanced; default: off)
-- Startup sends are one-way by default (no sender_info), which avoids reply attempts to short-lived 'pi -p' sender sessions.
-- If a script needs a response, use --send-session-wait turn_end and read stdout.
-- Example script usage (one-way):
-  pi -p --session-control --control-session "$PI_SESSION_ID" --send-session-message "Background task finished" --send-session-mode follow_up --send-session-wait message_processed
-- Example request/response usage:
-  pi -p --session-control --control-session "$PI_SESSION_ID" --send-session-message "What is the current time?" --send-session-wait turn_end
+Use this tool for notification / peer messaging. If the caller needs a result it owns,
+prefer delegate(mode=async) + delegate_resume instead.
 
-Messaging discipline — "Send is throw, not wait":
-- Default to fire-and-forget (no wait_until, or wait_until=message_processed).
-- If you need the target's answer, include sender_info and let the target send
-  a reply back to you with its own send_to_session. Do NOT combine sender_info
-  with wait_until — waiting is redundant and can duplicate responses.
-- If you need a result the *caller* owns (not a notification), the correct
-  surface is delegate(mode=async) + delegate_resume, not wait_until=turn_end.
-
-Messages automatically include sender session info for replies.`,
+Messages include sender session info for replies.`,
 		parameters: Type.Object({
 			sessionId: Type.Optional(Type.String({ description: "Target session id (UUID)" })),
 			sessionName: Type.Optional(Type.String({ description: "Target session name (alias)" })),
@@ -1141,9 +1111,8 @@ Messages automatically include sender session info for replies.`,
 			wait_until: Type.Optional(
 				StringEnum(["turn_end", "message_processed"] as const, {
 					description:
-						"Wait behavior for send action. Prefer message_processed. turn_end " +
-						"is native-path best-effort and unreliable across MCP/ACP hops — " +
-						"use the reply-back pattern or delegate(mode=async) instead.",
+						"Wait behavior for send. Prefer message_processed. turn_end is best-effort only; " +
+						"prefer reply-back via send_to_session or delegate(mode=async) when you need a caller-owned result.",
 				}),
 			),
 		}),

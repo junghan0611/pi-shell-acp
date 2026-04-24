@@ -228,6 +228,15 @@ type AcpBackendAdapter = {
 	stderrLabel: string;
 	resolveLaunch(): AcpLaunchSpec;
 	buildSessionMeta(params: BackendSessionMetaParams, normalizedSystemPrompt: string | undefined): Record<string, any> | undefined;
+	/**
+	 * Optional: turn a bootstrap-time augmentation string (e.g. the rendered
+	 * engraving) into ContentBlocks that should be prepended to the FIRST
+	 * prompt sent to a freshly-opened ACP session. Used for backends without
+	 * a _meta.systemPrompt.append style extension (e.g. Codex ACP), so that
+	 * this repo can still deliver identity context across ACP peers that only
+	 * accept the spec-baseline ContentBlock carrier. Return undefined to skip.
+	 */
+	buildBootstrapPromptAugment?(augmentText: string): PromptContentBlock[] | undefined;
 };
 
 type PersistedBridgeSessionRecord = {
@@ -235,6 +244,7 @@ type PersistedBridgeSessionRecord = {
 	acpSessionId: string;
 	cwd: string;
 	systemPromptAppend?: string | null;
+	bootstrapPromptAugment?: string | null;
 	bridgeConfigSignature: string;
 	contextMessageSignatures: string[];
 	updatedAt: string;
@@ -262,6 +272,10 @@ export type AcpBridgeSession = {
 	acpSessionId: string;
 	modelId?: string;
 	systemPromptAppend?: string;
+	/** Normalized augment string routed via adapter.buildBootstrapPromptAugment on the first prompt of a bootstrapPath="new" session. */
+	bootstrapPromptAugment?: string;
+	/** ContentBlocks to prepend to the NEXT sendPrompt call, then cleared. Populated on new-session bootstrap for backends whose adapter implements buildBootstrapPromptAugment. */
+	bootstrapPromptAugmentPending?: PromptContentBlock[];
 	settingSources: ClaudeSettingSource[];
 	strictMcpConfig: boolean;
 	mcpServers: McpServer[];
@@ -280,6 +294,8 @@ export type EnsureBridgeSessionParams = {
 	backend: AcpBackend;
 	modelId?: string;
 	systemPromptAppend?: string;
+	/** Augmentation text delivered to the backend on the first prompt of a new session via adapter.buildBootstrapPromptAugment — typically the rendered engraving for backends without a systemPromptAppend extension (e.g. Codex). */
+	bootstrapPromptAugment?: string;
 	settingSources: ClaudeSettingSource[];
 	strictMcpConfig: boolean;
 	mcpServers: McpServer[];
@@ -509,18 +525,31 @@ function buildClaudeSessionMeta(
 	return meta;
 }
 
+function buildCodexBootstrapPromptAugment(augmentText: string): PromptContentBlock[] | undefined {
+	const text = augmentText?.trim();
+	if (!text) return undefined;
+	// Codex ACP has no _meta.systemPrompt.append-style extension exposed to us;
+	// the spec-baseline identity-delivery carrier is a ContentBlock on the
+	// first prompt turn. We prepend one text block so the engraving lands in
+	// the turn context the model actually sees on session bootstrap.
+	return [{ type: "text", text }];
+}
+
 const ACP_BACKEND_ADAPTERS: Record<AcpBackend, AcpBackendAdapter> = {
 	claude: {
 		id: "claude",
 		stderrLabel: "claude-agent-acp stderr",
 		resolveLaunch: resolveClaudeAcpLaunch,
 		buildSessionMeta: buildClaudeSessionMeta,
+		// Claude receives the engraving via _meta.systemPrompt.append; no
+		// first-prompt ContentBlock augmentation needed.
 	},
 	codex: {
 		id: "codex",
 		stderrLabel: "codex-acp stderr",
 		resolveLaunch: resolveCodexAcpLaunch,
 		buildSessionMeta: () => undefined,
+		buildBootstrapPromptAugment: buildCodexBootstrapPromptAugment,
 	},
 };
 
@@ -590,11 +619,14 @@ function parsePersistedSessionRecord(raw: unknown, sessionKey: string): Persiste
 	if (!isNonEmptyString(record["updatedAt"])) return undefined;
 	const systemPromptAppend = record["systemPromptAppend"];
 	if (!(systemPromptAppend == null || typeof systemPromptAppend === "string")) return undefined;
+	const bootstrapPromptAugment = record["bootstrapPromptAugment"];
+	if (!(bootstrapPromptAugment == null || typeof bootstrapPromptAugment === "string")) return undefined;
 	return {
 		sessionKey,
 		acpSessionId: record["acpSessionId"] as string,
 		cwd: record["cwd"] as string,
 		systemPromptAppend: (systemPromptAppend ?? null) as string | null,
+		bootstrapPromptAugment: (bootstrapPromptAugment ?? null) as string | null,
 		bridgeConfigSignature: record["bridgeConfigSignature"] as string,
 		contextMessageSignatures: [...(record["contextMessageSignatures"] as string[])],
 		updatedAt: record["updatedAt"] as string,
@@ -629,6 +661,7 @@ function persistBridgeSessionRecord(session: AcpBridgeSession): void {
 		acpSessionId: session.acpSessionId,
 		cwd: session.cwd,
 		systemPromptAppend: session.systemPromptAppend ?? null,
+		bootstrapPromptAugment: session.bootstrapPromptAugment ?? null,
 		bridgeConfigSignature: session.bridgeConfigSignature,
 		contextMessageSignatures: [...session.contextMessageSignatures],
 		updatedAt: new Date().toISOString(),
@@ -665,14 +698,16 @@ function detectSessionCapabilities(initializeResult: InitializeResponse): Bridge
 }
 
 function isSessionCompatible(
-	session: Pick<AcpBridgeSession, "cwd" | "backend" | "systemPromptAppend" | "bridgeConfigSignature" | "contextMessageSignatures">,
+	session: Pick<AcpBridgeSession, "cwd" | "backend" | "systemPromptAppend" | "bootstrapPromptAugment" | "bridgeConfigSignature" | "contextMessageSignatures">,
 	params: EnsureBridgeSessionParams,
 	normalizedSystemPrompt: string | undefined,
+	normalizedBootstrapAugment: string | undefined,
 ): boolean {
 	return (
 		session.cwd === params.cwd &&
 		session.backend === params.backend &&
 		session.systemPromptAppend === normalizedSystemPrompt &&
+		session.bootstrapPromptAugment === normalizedBootstrapAugment &&
 		session.bridgeConfigSignature === params.bridgeConfigSignature &&
 		hasPrefix(session.contextMessageSignatures, params.contextMessageSignatures)
 	);
@@ -682,10 +717,12 @@ function isPersistedSessionCompatible(
 	record: PersistedBridgeSessionRecord,
 	params: EnsureBridgeSessionParams,
 	normalizedSystemPrompt: string | undefined,
+	normalizedBootstrapAugment: string | undefined,
 ): boolean {
 	return (
 		record.cwd === params.cwd &&
 		normalizeText(record.systemPromptAppend) === normalizedSystemPrompt &&
+		normalizeText(record.bootstrapPromptAugment) === normalizedBootstrapAugment &&
 		record.bridgeConfigSignature === params.bridgeConfigSignature &&
 		hasPrefix(record.contextMessageSignatures, params.contextMessageSignatures)
 	);
@@ -1013,6 +1050,7 @@ async function createBridgeProcess(params: EnsureBridgeSessionParams): Promise<A
 		acpSessionId: "",
 		modelId: params.modelId,
 		systemPromptAppend: normalizeText(params.systemPromptAppend),
+		bootstrapPromptAugment: normalizeText(params.bootstrapPromptAugment),
 		settingSources: [...params.settingSources],
 		strictMcpConfig: params.strictMcpConfig,
 		mcpServers: [...params.mcpServers],
@@ -1049,6 +1087,17 @@ async function createBridgeProcess(params: EnsureBridgeSessionParams): Promise<A
 	return session;
 }
 
+function armBootstrapPromptAugment(session: AcpBridgeSession): void {
+	if (session.bootstrapPath !== "new") return;
+	const augmentText = session.bootstrapPromptAugment;
+	if (!augmentText) return;
+	const adapter = resolveAcpBackendAdapter(session.backend);
+	const blocks = adapter.buildBootstrapPromptAugment?.(augmentText);
+	if (blocks && blocks.length > 0) {
+		session.bootstrapPromptAugmentPending = blocks;
+	}
+}
+
 async function startNewBridgeSession(
 	params: EnsureBridgeSessionParams,
 	invalidationHint?: { reason: BootstrapInvalidationReason; previousAcpSessionId: string },
@@ -1070,6 +1119,7 @@ async function startNewBridgeSession(
 		if (invalidationHint) {
 			session.persistedAcpSessionId = invalidationHint.previousAcpSessionId;
 		}
+		armBootstrapPromptAugment(session);
 		await enforceRequestedSessionModel(session, params.modelId);
 		bridgeSessions.set(params.sessionKey, session);
 		persistBridgeSessionRecord(session);
@@ -1163,6 +1213,7 @@ async function bootstrapPersistedBridgeSession(
 		session.modelId = resolveModelIdFromSessionResponse(created, params.modelId);
 		session.bootstrapPath = "new";
 		session.persistedAcpSessionId = shouldInvalidatePersisted ? record.acpSessionId : undefined;
+		armBootstrapPromptAugment(session);
 		await enforceRequestedSessionModel(session, params.modelId);
 		bridgeSessions.set(params.sessionKey, session);
 		persistBridgeSessionRecord(session);
@@ -1184,13 +1235,15 @@ async function bootstrapPersistedBridgeSession(
 
 export async function ensureBridgeSession(params: EnsureBridgeSessionParams): Promise<AcpBridgeSession> {
 	const normalizedSystemPrompt = normalizeText(params.systemPromptAppend);
+	const normalizedBootstrapAugment = normalizeText(params.bootstrapPromptAugment);
 	const normalizedParams: EnsureBridgeSessionParams = {
 		...params,
 		systemPromptAppend: normalizedSystemPrompt,
+		bootstrapPromptAugment: normalizedBootstrapAugment,
 	};
 	const existing = bridgeSessions.get(params.sessionKey);
 	const existingCompatible = existing
-		? isSessionCompatible(existing, normalizedParams, normalizedSystemPrompt)
+		? isSessionCompatible(existing, normalizedParams, normalizedSystemPrompt, normalizedBootstrapAugment)
 		: false;
 	if (existing && existingCompatible && !existing.closed && isChildAlive(existing.child)) {
 		if (params.modelId && existing.modelId !== params.modelId) {
@@ -1252,7 +1305,7 @@ export async function ensureBridgeSession(params: EnsureBridgeSessionParams): Pr
 
 	const persisted = readPersistedSessionRecord(params.sessionKey);
 	if (persisted) {
-		if (!isPersistedSessionCompatible(persisted, normalizedParams, normalizedSystemPrompt)) {
+		if (!isPersistedSessionCompatible(persisted, normalizedParams, normalizedSystemPrompt, normalizedBootstrapAugment)) {
 			logBridgeBootstrapInvalidate(params.sessionKey, "incompatible_config", persisted.acpSessionId);
 			deletePersistedSessionRecord(params.sessionKey);
 			return await startNewBridgeSession(normalizedParams, {
@@ -1277,9 +1330,15 @@ export async function sendPrompt(
 	session: AcpBridgeSession,
 	prompt: PromptContentBlock[],
 ): Promise<PromptResponse> {
+	// First prompt after a bootstrapPath="new" session may carry an adapter-
+	// supplied ContentBlock prepend (the rendered engraving on Codex, etc.).
+	// Consume the pending slot exactly once so subsequent turns stay clean.
+	const pending = session.bootstrapPromptAugmentPending;
+	session.bootstrapPromptAugmentPending = undefined;
+	const effectivePrompt = pending && pending.length > 0 ? [...pending, ...prompt] : prompt;
 	return await (session.connection as any).prompt({
 		sessionId: session.acpSessionId,
-		prompt,
+		prompt: effectivePrompt,
 	});
 }
 

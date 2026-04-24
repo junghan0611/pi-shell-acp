@@ -412,23 +412,31 @@ function streamShellAcp(model: Model<any>, context: Context, options?: SimpleStr
 			const compactionAppend = compaction ? renderCompactionSystemPromptAppend(compaction) : undefined;
 
 			// Engraving — self-recognition prompt from prompts/engraving.md,
-			// injected on Claude via systemPromptAppend alongside
-			// baseSystemPrompt + compactionAppend. Stable by construction so
-			// bridgeConfigSignature hashes match across turns and the reuse
-			// branch stays alive. Codex delivery lives on the adapter path
-			// (to be wired after the ContentBlock delivery spike).
-			const engraving = providerSettings.backend === "claude"
-				? loadEngraving({
-					backend: providerSettings.backend,
-					mcpServerNames: providerSettings.mcpServers.map((s) => s.name),
-				})
-				: null;
+			// rendered once here and delivered per-backend:
+			// - Claude: concatenated into systemPromptAppend alongside
+			//   baseSystemPrompt + compactionAppend, routed through pi's
+			//   _meta.systemPrompt.append path.
+			// - Codex: passed as bootstrapPromptAugment; the Codex backend
+			//   adapter turns it into a ContentBlock::Text prepended to the
+			//   first prompt of a new session, since codex-acp has no
+			//   equivalent _meta extension we can rely on.
+			// The rendered output is stable across turns (pure function of
+			// template × backend × mcpServerNames), so bridgeConfigSignature
+			// + systemPromptAppend + bootstrapPromptAugment hashes all match
+			// on reuse and session continuity is preserved.
+			const engraving = loadEngraving({
+				backend: providerSettings.backend,
+				mcpServerNames: providerSettings.mcpServers.map((s) => s.name),
+			});
+			const claudeEngraving = providerSettings.backend === "claude" ? engraving : null;
+			const codexEngraving = providerSettings.backend === "codex" ? engraving : null;
 
-			const systemPromptParts = [baseSystemPrompt, engraving ?? undefined, compactionAppend].filter(
+			const systemPromptParts = [baseSystemPrompt, claudeEngraving ?? undefined, compactionAppend].filter(
 				(part): part is string => typeof part === "string" && part.length > 0,
 			);
 			const mergedSystemPromptAppend =
 				systemPromptParts.length > 0 ? systemPromptParts.join("\n\n") : undefined;
+			const bootstrapPromptAugment = codexEngraving && codexEngraving.length > 0 ? codexEngraving : undefined;
 
 			bridgeSession = await ensureBridgeSession({
 				sessionKey,
@@ -436,6 +444,7 @@ function streamShellAcp(model: Model<any>, context: Context, options?: SimpleStr
 				backend: providerSettings.backend,
 				modelId: model.id,
 				systemPromptAppend: mergedSystemPromptAppend,
+				bootstrapPromptAugment,
 				settingSources: providerSettings.settingSources,
 				strictMcpConfig: providerSettings.strictMcpConfig,
 				mcpServers: providerSettings.mcpServers,
