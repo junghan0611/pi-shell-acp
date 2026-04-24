@@ -234,7 +234,7 @@ The `## Historical Boundary` section below is **archival reference only** — fr
 
 > **⚠ Archival only — NOT the current ownership model.** This section is preserved as a historical snapshot of the boundary that pi-shell-acp operated under before the entwurf consolidation. Do **not** quote it as current policy, and do **not** propagate its claims into new docs. For current ownership, read `## Entwurf Orchestration` and `## Scope` (Layer A / Layer B). Specific path references in the old boundary (`agent-config/pi-extensions/...`, `agent-config/mcp/pi-tools-bridge`, etc.) no longer match reality; those surfaces now live in this repo.
 >
-> Term mapping: the original frozen quotes below were authored before the `delegate` → `entwurf` rename (`cc6508a`). Where the snapshots say "entwurf" today, the original wording was "delegate"; the rename was applied uniformly across this file by sed at commit time, including these quotes. The historical meaning is unchanged.
+> Term mapping: the frozen quotes below were authored before the `delegate` → `entwurf` rename (`cc6508a`) and are preserved verbatim — the rename intentionally did *not* touch them, so the historical surface stays intact for future readers. Read every "delegate" in the snapshots as today's "entwurf"; everywhere outside these quote blocks (code, flags, paths, env, prose) `cc6508a` performed the rename uniformly.
 
 **Frozen thesis — English (pre-entwurf):**
 
