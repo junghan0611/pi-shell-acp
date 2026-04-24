@@ -513,35 +513,6 @@ Strategic direction: backend choice must not change pi's role as the primary har
 
 ---
 
-## Known Upstream Issues
-
-Issues that affect the pi-shell-acp user experience but whose fix lives **outside this repo**. Tracked here so a future editor understands why a given symptom is not something this repo can resolve locally.
-
-### pi footer `context %` conflates cacheRead with live context
-
-**Symptom.** On a session where cache-heavy turns dominate, pi's TUI footer reports a very high context-usage percentage — e.g. `78.9% / 1.0M` against an opus model — even when the live conversation transcript is small. It appears as if pi-shell-acp is "overreporting" the context window.
-
-**Actual cause.** pi-coding-agent's `calculateContextTokens(usage)` at `pi-mono/packages/coding-agent/src/core/compaction/compaction.ts:135-136` computes the context metric as:
-
-```
-totalTokens || input + output + cacheRead + cacheWrite
-```
-
-That metric is an **API billing total**, not a live-context occupancy, and it is the same function used for:
-- footer percent display (`modes/interactive/components/footer.ts`)
-- compaction timing decisions (`compaction.ts:202`)
-- per-session accounting (`agent-session.ts:1827`)
-
-So when a turn has a 769K `cacheRead` token payload (cheap, large, expected for long prompt-cache sessions), pi reads ~789K of 1,000,000 as the current context fill and may even trigger compaction prematurely. This is not cosmetic — it changes operator behaviour on long sessions.
-
-**Why it looks like a pi-shell-acp issue.** This repo recently changed opus models to default 1,000,000 contextWindow (commit `3a4dedf`). That declaration is the *denominator* the footer divides against; it is an input to pi's computation, not the cause. Keeping the declaration honest to model capacity while pi's policy is cacheRead-inclusive makes the percent look worse on opus specifically, which is why the issue is surfacing now.
-
-**What this repo cannot do.** Fix the percent semantics — the cache-inclusive policy is owned by pi-coding-agent, in a function that is reused for footer + compaction + per-session accounting. Any local compensation here (e.g. subtracting cacheRead from the declared contextWindow) would break every other consumer of pi-coding-agent that reads the same declaration honestly.
-
-**What this repo does.** See `docs/upstream-issues/pi-footer-context-percent.md` for the ready-to-file upstream issue (reproduction, code path, two proposed fixes). File the issue against pi-coding-agent; link the filed URL here.
-
----
-
 ## Working Style
 
 Prefer surgical changes.

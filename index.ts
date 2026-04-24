@@ -331,10 +331,27 @@ function applyPromptUsage(model: Model<any>, output: AssistantMessage, promptRes
 	output.usage.output = Number(usage.outputTokens ?? 0);
 	output.usage.cacheRead = Number(usage.cachedReadTokens ?? 0);
 	output.usage.cacheWrite = Number(usage.cachedWriteTokens ?? 0);
-	output.usage.totalTokens = Number(
-		usage.totalTokens ??
-			output.usage.input + output.usage.output + output.usage.cacheRead + output.usage.cacheWrite,
-	);
+	// Context-metric alignment with pi native behaviour.
+	//
+	// pi-coding-agent's calculateContextTokens(usage) reads usage.totalTokens
+	// first and falls back to input+output+cacheRead+cacheWrite only when
+	// totalTokens is 0. That metric drives BOTH the TUI footer context-%
+	// display AND compaction timing decisions.
+	//
+	// The ACP backends we route (Claude Code, Codex) use prompt caching very
+	// aggressively on their side, so cacheRead often dominates totals (e.g.
+	// 769K cacheRead inside a 789K turn). On pi native the same metric shape
+	// exists but cacheRead is usually ~0 because pi-ai doesn't inject
+	// cache_control the way Claude Code does. The observable mismatch on ACP
+	// routes: the footer looks near-full even when the live conversation is
+	// small, and compaction fires early.
+	//
+	// We keep cacheRead / cacheWrite populated (billing cost in calculateCost
+	// below reads them), but set totalTokens to input+output only — the same
+	// shape a pi native provider produces when prompt caching is not active.
+	// Result: pi's context metric reflects live-conversation growth, compaction
+	// timing stays honest, and cost accounting stays accurate.
+	output.usage.totalTokens = output.usage.input + output.usage.output;
 	calculateCost(model, output.usage);
 }
 
