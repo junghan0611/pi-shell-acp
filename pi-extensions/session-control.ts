@@ -155,6 +155,11 @@ interface SocketState {
 	alias: string | null;
 	aliasTimer: ReturnType<typeof setInterval> | null;
 	turnEndSubscriptions: TurnEndSubscription[];
+	// Monotonic turnIndex of the most recent turn_end fired while this extension
+	// was loaded. Used as a baseline so that a `wait_until=turn_end` subscriber
+	// ignores the turn that was already running when it subscribed.
+	// Undefined until the first turn_end fires.
+	lastTurnIndex?: number;
 }
 
 // ============================================================================
@@ -597,7 +602,16 @@ async function handleCommand(
 			socket.once("close", cleanup);
 			socket.once("error", cleanup);
 
-			respond(true, "subscribe", { subscriptionId, event: "turn_end" });
+			// Baseline: if a subscriber comes in while a turn is already running, we must
+			// not surface *that* turn_end back as "the result of my send" — it was in
+			// flight before our send arrived. We hand the subscriber the latest
+			// completed turnIndex we have seen so it can filter to turn_end events
+			// with a strictly greater turnIndex.
+			respond(true, "subscribe", {
+				subscriptionId,
+				event: "turn_end",
+				baselineTurnIndex: state.lastTurnIndex,
+			});
 			return;
 		}
 		respond(false, "subscribe", undefined, `Unknown event type: ${command.event}`);
@@ -755,6 +769,11 @@ async function sendRpcCommand(
 
 		let buffer = "";
 		let response: RpcResponse | null = null;
+		// turn_end correlation: set from the subscribe response. Any turn_end
+		// with turnIndex <= baselineTurnIndex is the in-flight turn that was
+		// already running when we subscribed and is NOT the answer to our send.
+		let baselineTurnIndex: number | undefined;
+		let baselineResolved = false;
 
 		const cleanup = () => {
 			clearTimeout(timeoutHandle);
@@ -762,13 +781,18 @@ async function sendRpcCommand(
 		};
 
 		socket.on("connect", () => {
-			socket.write(`${JSON.stringify(command)}\n`);
-
-			// If waiting for turn_end, also subscribe
+			// Order matters for turn_end correlation.
+			// Subscribe FIRST so the server registers us before it starts
+			// processing the send (which triggers the turn whose turn_end
+			// we want to catch). Writing send first opens a race where the
+			// subscribe arrives too late and we miss the right turn_end,
+			// or catch a stale turn_end from a turn that was already in
+			// flight.
 			if (waitForEvent === "turn_end") {
 				const subscribeCmd: RpcSubscribeCommand = { type: "subscribe", event: "turn_end" };
 				socket.write(`${JSON.stringify(subscribeCmd)}\n`);
 			}
+			socket.write(`${JSON.stringify(command)}\n`);
 		});
 
 		socket.on("data", (chunk) => {
@@ -785,6 +809,14 @@ async function sendRpcCommand(
 
 					// Handle response
 					if (msg.type === "response") {
+						if (msg.command === "subscribe" && waitForEvent === "turn_end" && !baselineResolved) {
+							// Capture baseline turnIndex from subscribe response so
+							// we can filter out the pre-existing in-flight turn_end.
+							const data = msg.data as { baselineTurnIndex?: number } | undefined;
+							baselineTurnIndex = data?.baselineTurnIndex;
+							baselineResolved = true;
+							continue;
+						}
 						if (msg.command === command.type) {
 							response = msg;
 							// If not waiting for event, we're done
@@ -795,12 +827,25 @@ async function sendRpcCommand(
 								return;
 							}
 						}
-						// Ignore subscribe response
 						continue;
 					}
 
 					// Handle turn_end event
 					if (msg.type === "event" && msg.event === "turn_end" && waitForEvent === "turn_end") {
+						// Discard any turn_end whose turnIndex is not strictly
+						// greater than the baseline we saw at subscribe time.
+						// Those belong to the turn that was already running
+						// before our send arrived.
+						const eventTurnIndex = typeof msg.data?.turnIndex === "number" ? msg.data.turnIndex : undefined;
+						if (
+							baselineResolved &&
+							typeof baselineTurnIndex === "number" &&
+							typeof eventTurnIndex === "number" &&
+							eventTurnIndex <= baselineTurnIndex
+						) {
+							continue;
+						}
+
 						cleanup();
 						socket.end();
 						if (!response) {
@@ -994,6 +1039,10 @@ export default function (pi: ExtensionAPI) {
 
 	// Fire turn_end events to subscribers
 	pi.on("turn_end", (event: TurnEndEvent, ctx: ExtensionContext) => {
+		// Track the latest turnIndex seen by this extension regardless of whether
+		// anyone is subscribed — future subscribers need this as a baseline.
+		state.lastTurnIndex = event.turnIndex;
+
 		if (state.turnEndSubscriptions.length === 0) return;
 
 		void syncAlias(state, ctx);
