@@ -1841,7 +1841,7 @@ validate_pi_tools_bridge() {
 
   log "pi-tools-bridge: install + build + validate..."
 
-  if ! (cd "$bridge_dir" && pnpm install --silent); then
+  if ! (cd "$bridge_dir" && pnpm install --silent --frozen-lockfile); then
     fail "pi-tools-bridge: pnpm install failed"
     return 1
   fi
@@ -2044,7 +2044,7 @@ setup_all() {
   echo "[setup] scope:   full bridge + entwurf orchestration install"
   echo "[setup] verification: smoke-all + Axis 1 interview gates (pi-tools-bridge, pi-native async, sentinel, session-messaging)"
 
-  (cd "$REPO_DIR" && pnpm install)
+  (cd "$REPO_DIR" && pnpm install --frozen-lockfile)
   check_global_claude_acp
   check_global_codex_acp
   sync_auth
