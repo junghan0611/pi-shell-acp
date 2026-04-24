@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { spawn, type ChildProcessByStdio } from "node:child_process";
+import { execFileSync, spawn, type ChildProcessByStdio } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { homedir } from "node:os";
@@ -498,6 +498,98 @@ function resolveCodexAcpLaunch(): AcpLaunchSpec {
 	};
 }
 
+// Cached so we run ldd at most once per process — libc never changes mid-run.
+let cachedClaudeCodeExecutable: string | null | undefined;
+
+function detectLinuxLibc(): "glibc" | "musl" {
+	// `ldd --version` prints "(GNU libc) X.Y" on glibc and the literal token
+	// "musl libc" on musl. The check is deliberately tolerant — anything we
+	// can't classify falls through to glibc, which is the default on every
+	// mainstream Linux distro this bridge is run on.
+	try {
+		const out = execFileSync("ldd", ["--version"], {
+			encoding: "utf8",
+			timeout: 2000,
+			stdio: ["ignore", "pipe", "pipe"],
+		});
+		if (/musl/i.test(out)) return "musl";
+	} catch {
+		// ldd missing or non-zero: musl distros sometimes exit non-zero from
+		// `ldd --version`; check the captured stderr opportunistically too.
+	}
+	return "glibc";
+}
+
+function resolveClaudeCodeExecutable(): string | undefined {
+	if (cachedClaudeCodeExecutable !== undefined) {
+		return cachedClaudeCodeExecutable ?? undefined;
+	}
+
+	const envOverride = process.env.PI_SHELL_ACP_CLAUDE_CODE_PATH?.trim();
+	if (envOverride) {
+		cachedClaudeCodeExecutable = envOverride;
+		return envOverride;
+	}
+
+	// Why we override at all:
+	// claude-agent-sdk@0.2.114+ ships a libc-aware native binary as a sibling
+	// optionalDependency (e.g. `claude-agent-sdk-linux-arm64-musl`). Its
+	// auto-detect probes `[musl, glibc]` in that fixed order, picks whichever
+	// is hoisted into node_modules, and treats finding *either* package as
+	// success. pnpm — including pi's global install — does not filter
+	// optionalDependencies by `libc`, so on a glibc host both variants land in
+	// the store and the musl ELF wins. Spawning it then fails with ENOENT
+	// because the musl interpreter (`/lib/ld-musl-<arch>.so.1`) is absent on
+	// glibc systems (NixOS, Debian, etc.), surfacing through the ACP bridge as
+	// "Internal error" with no useful tail. We sidestep the auto-detect by
+	// resolving the variant ourselves with libc taken into account, then fall
+	// back to the bundled pure-JS `cli.js` if no native variant is reachable.
+	const require = createRequire(import.meta.url);
+	const arch = process.arch;
+	let nativeCandidates: string[];
+	if (process.platform === "linux") {
+		const libc = detectLinuxLibc();
+		nativeCandidates = libc === "musl"
+			? [`linux-${arch}-musl`, `linux-${arch}`]
+			: [`linux-${arch}`, `linux-${arch}-musl`];
+	} else {
+		nativeCandidates = [`${process.platform}-${arch}`];
+	}
+
+	const binaryName = process.platform === "win32" ? "claude.exe" : "claude";
+	for (const variant of nativeCandidates) {
+		try {
+			const pkgJsonPath = require.resolve(
+				`@anthropic-ai/claude-agent-sdk-${variant}/package.json`,
+			);
+			const candidate = join(dirname(pkgJsonPath), binaryName);
+			if (existsSync(candidate)) {
+				cachedClaudeCodeExecutable = candidate;
+				return candidate;
+			}
+		} catch {
+			// Package not present for this variant — try the next.
+		}
+	}
+
+	try {
+		const sdkPkgPath = require.resolve(
+			"@anthropic-ai/claude-agent-sdk/package.json",
+		);
+		const cliJs = join(dirname(sdkPkgPath), "cli.js");
+		if (existsSync(cliJs)) {
+			cachedClaudeCodeExecutable = cliJs;
+			return cliJs;
+		}
+	} catch {
+		// SDK is required by claude-agent-acp; if it's truly missing there is
+		// nothing we can repair from here. Let the SDK's own auto-detect run.
+	}
+
+	cachedClaudeCodeExecutable = null;
+	return undefined;
+}
+
 function buildClaudeSessionMeta(
 	params: BackendSessionMetaParams,
 	normalizedSystemPrompt: string | undefined,
@@ -507,6 +599,10 @@ function buildClaudeSessionMeta(
 		tools: { type: "preset", preset: "claude_code" },
 		settingSources: [...params.settingSources],
 	};
+	const claudeCodeExecutable = resolveClaudeCodeExecutable();
+	if (claudeCodeExecutable) {
+		claudeCodeOptions.pathToClaudeCodeExecutable = claudeCodeExecutable;
+	}
 	if (params.strictMcpConfig) {
 		claudeCodeOptions.extraArgs = {
 			...(claudeCodeOptions.extraArgs ?? {}),
