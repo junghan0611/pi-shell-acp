@@ -21,6 +21,10 @@ The goal is simple:
 - keep each ACP backend as itself
 - keep this repo as a **small bridge**, not a second harness
 
+![pi-shell-acp demo](docs/assets/pi-shell-acp-demo.gif)
+
+Curated ACP-backed models — and the agent on the other side knows it's reached *through* this bridge.
+
 > **Product scope.** `pi-shell-acp` bundles the ACP bridge and the entwurf orchestration surface in one project: entwurf spawn, entwurf-target registry, identity preservation, pi-side MCP adapter (`mcp/pi-tools-bridge`), and the Claude Code ↔ pi session bridge (`mcp/session-bridge`). The earlier "thin bridge, orchestration elsewhere" thesis has been superseded — see AGENTS.md `§Entwurf Orchestration` for the narrative and migration history. External harnesses (e.g. [agent-config](https://github.com/junghan0611/agent-config) as a pi skills/prompts package) can consume this repo without owning any of the surfaces above.
 
 ## Current Guarantees
