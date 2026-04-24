@@ -22,7 +22,7 @@ PROVIDER_ID="pi-shell-acp"
 usage() {
   cat <<'EOF'
 Usage:
-  ./run.sh setup [project-dir]        # pnpm install + sync auth alias + install package + smoke-all (Claude + Codex)
+  ./run.sh setup [project-dir]        # pnpm install + sync auth + install + smoke-all + Axis 1 gates (bridge, native async, session-messaging, sentinel)
   ./run.sh smoke [project-dir]        # Claude runtime smoke (backward-compatible default)
   ./run.sh smoke-claude [project-dir] # explicit Claude runtime smoke
   ./run.sh smoke-codex [project-dir]  # explicit Codex runtime smoke
@@ -32,6 +32,10 @@ Usage:
   ./run.sh smoke-model-switch [project-dir] # strict dual-backend model switch observability gate (reuse 3 branches)
   ./run.sh smoke-delegate-resume [project-dir] # bridge-level delegate-style continuity gate (Claude=resume, Codex=load)
   ./run.sh smoke-compaction [project-dir] # strict post-compaction handoff gate (Claude recalls pi-side summary token + reuses session)
+  ./run.sh check-bridge               # pi-tools-bridge direct MCP smoke + test.sh + ACP visibility/invocation (claude+codex)
+  ./run.sh check-native-async         # pi-native async delegate spawn smoke (pi -e pi-extensions/delegate.ts)
+  ./run.sh sentinel [args...]         # delegate 6-cell diagonal matrix (sync+resume × parent×target)
+  ./run.sh session-messaging [args...] # 4-case session-messaging smoke (native/ACP cross-matrix)
   ./run.sh check-mcp                  # local deterministic check of normalizeMcpServers() — no Claude/ACP subprocess
   ./run.sh check-backends             # local deterministic check of backend launch resolution + backend-specific _meta shape
   ./run.sh check-registration         # local deterministic check of per-runtime provider registration semantics
@@ -57,6 +61,12 @@ require_cmd() {
     exit 1
   }
 }
+
+log()  { echo "  $*"; }
+ok()   { echo "  ✅ $*"; }
+warn() { echo "  ⚠ $*"; }
+fail() { echo "  ❌ $*"; }
+section() { echo ""; echo "=== $* ==="; }
 
 normalize_project_dir() {
   python3 - "$1" <<'PY'
@@ -1727,6 +1737,289 @@ check_global_codex_acp() {
   fi
 }
 
+# --- Axis 1 interview-prerequisite gates (ported from agent-config pre-Phase-4) ---
+#
+# These three validators complement the local deterministic check_* gates by
+# actually exercising the runtime surfaces the agent interview depends on:
+#
+#   1. pi-tools-bridge as a standalone MCP server (tools/list + protocol suite)
+#   2. pi-tools-bridge visibility + callability from inside a pi-shell-acp
+#      ACP session, for both backends (claude + codex)
+#   3. pi-native async delegate spawn via `pi -e pi-extensions/delegate.ts`
+#
+# AGENTS.md §Ingestion Gates (Axis 1) names these as required gates that must
+# pass before the Axis 2 agent interview can be re-run. They were implemented
+# in agent-config and deleted there in Phase 4 alongside the migrated code;
+# their canonical home is now this repo.
+
+pi_tools_bridge_require_tools() {
+  local raw="$1"
+  local backend_label="$2"
+  local tool
+
+  if [[ "$raw" == *"NOT_VISIBLE"* ]]; then
+    echo "$raw" >&2
+    fail "pi-tools-bridge: $backend_label returned NOT_VISIBLE"
+    return 1
+  fi
+
+  if [[ "$raw" != *"pi-tools-bridge"* ]] && [[ "$raw" != *"pi_tools_bridge"* ]]; then
+    echo "$raw" >&2
+    fail "pi-tools-bridge: $backend_label visibility output missing pi-tools-bridge prefix"
+    return 1
+  fi
+
+  for tool in session_search knowledge_search send_to_session list_sessions delegate delegate_resume; do
+    if [[ "$raw" != *"$tool"* ]]; then
+      echo "$raw" >&2
+      fail "pi-tools-bridge: $backend_label missing tool $tool"
+      return 1
+    fi
+  done
+
+  return 0
+}
+
+validate_pi_tools_bridge_backend() {
+  local backend_label="$1"
+  local model="$2"
+  local raw
+
+  if ! raw=$(cd "$REPO_DIR" && pi -e "$REPO_DIR" --provider pi-shell-acp --model "$model" -p '지금 이 세션에서 보이는 MCP 도구 중 이름에 pi-tools-bridge 또는 pi_tools_bridge 가 포함된 도구가 있으면 정확한 도구 이름만 쉼표로 나열해. 설명 금지. 없으면 정확히 NOT_VISIBLE 만 답해.'); then
+    fail "pi-tools-bridge: $backend_label visibility smoke failed"
+    return 1
+  fi
+  pi_tools_bridge_require_tools "$raw" "$backend_label" || return 1
+  ok "pi-tools-bridge visibility via pi-shell-acp ($backend_label: $raw)"
+
+  if ! raw=$(cd "$REPO_DIR" && pi -e "$REPO_DIR" --provider pi-shell-acp --model "$model" -p 'send_to_session 도구가 보이면 반드시 그 도구를 실제로 1회 호출해. target은 __definitely_does_not_exist__, message는 "ping", mode는 follow_up 으로 해. functions.send_input 같은 다른 도구는 절대 쓰지 마. 응답은 두 줄만: 1) TOOL:<사용한 도구명 또는 NONE> 2) RESULT:<성공/실패 핵심 메시지 한 줄>. 도구가 안 보이면 TOOL:NONE / RESULT:not visible 로만 답해.' ); then
+    fail "pi-tools-bridge: $backend_label invocation smoke failed"
+    return 1
+  fi
+
+  if [[ "$raw" != *"send_to_session"* ]]; then
+    echo "$raw" >&2
+    fail "pi-tools-bridge: $backend_label invocation did not use send_to_session"
+    return 1
+  fi
+
+  if [[ "$raw" != *"[tool:failed]"* ]] && [[ "$raw" != *"RESULT:실패"* ]] && [[ "$raw" != *"RESULT:failure"* ]]; then
+    echo "$raw" >&2
+    fail "pi-tools-bridge: $backend_label invocation did not clearly surface a failure result"
+    return 1
+  fi
+
+  # Robustness: the model paraphrases the tool error in many ways. The most
+  # reliable anchor is the bogus target name itself — if it appears in the
+  # response, the model engaged with the actual tool result. Phrase patterns
+  # are kept as fallbacks for older outputs / different model behavior.
+  if [[ "$raw" != *"__definitely_does_not_exist__"* ]] && \
+     [[ "$raw" != *"No pi control socket"* ]] && \
+     [[ "$raw" != *"control socket"* ]] && \
+     [[ "$raw" != *"컨트롤 소켓"* ]] && \
+     [[ "$raw" != *"대상 세션"* ]] && \
+     [[ "$raw" != *"미존재"* ]] && \
+     [[ "$raw" != *"존재하지"* ]] && \
+     [[ "$raw" != *"소켓"* ]] && \
+     [[ "$raw" != *"not found"* ]] && \
+     [[ "$raw" != *"no such"* ]]; then
+    echo "$raw" >&2
+    fail "pi-tools-bridge: $backend_label invocation did not surface the expected missing-target boundary"
+    return 1
+  fi
+  ok "pi-tools-bridge invocation via pi-shell-acp ($backend_label)"
+}
+
+validate_pi_tools_bridge() {
+  local bridge_dir="$REPO_DIR/mcp/pi-tools-bridge"
+  local raw
+
+  if [ ! -f "$bridge_dir/package.json" ]; then
+    fail "pi-tools-bridge: repo content missing at $bridge_dir"
+    return 1
+  fi
+
+  log "pi-tools-bridge: install + build + validate..."
+
+  if ! (cd "$bridge_dir" && pnpm install --silent); then
+    fail "pi-tools-bridge: pnpm install failed"
+    return 1
+  fi
+  ok "pi-tools-bridge pnpm install"
+
+  if ! (cd "$bridge_dir" && pnpm run build); then
+    fail "pi-tools-bridge: build failed"
+    return 1
+  fi
+  ok "pi-tools-bridge build"
+
+  if ! raw=$(cd "$bridge_dir" && node --input-type=module <<'JS'
+import { spawn } from 'node:child_process';
+
+const child = spawn('./start.sh');
+let stdout = '';
+let stderr = '';
+let done = false;
+
+function finishOk(trimmed) {
+  if (done) return;
+  done = true;
+  clearTimeout(timer);
+  if (stderr.trim()) console.error(stderr.trim());
+  const msg = JSON.parse(trimmed);
+  const tools = msg?.result?.tools;
+  if (!Array.isArray(tools)) {
+    console.error('tools/list response missing result.tools');
+    process.exit(1);
+  }
+  const names = tools.map((t) => t?.name).sort();
+  const expected = ['delegate', 'delegate_resume', 'knowledge_search', 'list_sessions', 'send_to_session', 'session_search'];
+  for (const name of expected) {
+    if (!names.includes(name)) {
+      console.error(`missing MCP tool: ${name}`);
+      process.exit(1);
+    }
+  }
+  console.log(names.join(','));
+  child.kill('SIGTERM');
+  process.exit(0);
+}
+
+child.stdout.on('data', (d) => {
+  stdout += d.toString();
+  const trimmed = stdout.trim();
+  if (trimmed) finishOk(trimmed);
+});
+child.stderr.on('data', (d) => { stderr += d.toString(); });
+child.stdin.write(JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }) + '\n');
+
+const timer = setTimeout(() => {
+  child.kill('SIGKILL');
+  console.error('pi-tools-bridge direct smoke timeout');
+  process.exit(1);
+}, 3000);
+
+child.on('error', (err) => {
+  if (done) return;
+  clearTimeout(timer);
+  console.error(String(err));
+  process.exit(1);
+});
+
+child.on('close', () => {
+  if (done) return;
+  clearTimeout(timer);
+  const trimmed = stdout.trim();
+  if (!trimmed) {
+    if (stderr.trim()) console.error(stderr.trim());
+    console.error('empty tools/list response');
+    process.exit(1);
+  }
+  finishOk(trimmed);
+});
+JS
+  ); then
+    fail "pi-tools-bridge: direct MCP smoke failed"
+    return 1
+  fi
+  ok "pi-tools-bridge direct MCP smoke ($raw)"
+
+  if ! (cd "$bridge_dir" && ./test.sh >/dev/null); then
+    fail "pi-tools-bridge: protocol/negative-path tests failed"
+    return 1
+  fi
+  ok "pi-tools-bridge test.sh"
+
+  # Qualified model ids here: the validation routes through pi-shell-acp explicitly.
+  # The prefix stays redundant with the function's internal `--provider pi-shell-acp`
+  # pin, but it documents intent at the call site.
+  validate_pi_tools_bridge_backend "claude" "pi-shell-acp/claude-sonnet-4-6" || return 1
+  validate_pi_tools_bridge_backend "codex" "pi-shell-acp/gpt-5.2" || return 1
+}
+
+# pi-native async delegate spawn smoke. Loads the native delegate.ts directly
+# and asks a cheap model to invoke `delegate` in async mode against a bogus
+# host. We read pi's --mode json event stream so the gate inspects the tool's
+# *actual* sync return (which contains "Async delegate spawned" + Task ID),
+# not the model's natural-language interpretation. We also grep explicitly for
+# the regression class PM flagged: a stale `explicitExtensions` reference in
+# runDelegateAsync would surface as a ReferenceError in the tool result.
+validate_pi_native_async_delegate() {
+  local raw
+  log "pi-native: async delegate spawn smoke (model: gpt-5.4-mini)..."
+
+  if ! raw=$(cd "$REPO_DIR" && pi -p \
+              --mode json \
+              --no-extensions \
+              -e "$REPO_DIR/pi-extensions/delegate.ts" \
+              --provider openai-codex \
+              --model gpt-5.4-mini \
+              'delegate 도구를 task="noop", host="__native_async_smoke_bogus__", mode="async" 인수로 정확히 1회 호출하라. 도구의 첫 sync 응답을 그대로 echo하라. 그 다음에 도착하는 follow-up 메시지는 무시하고 더 출력하지 마라.' 2>&1); then
+    echo "$raw" >&2
+    fail "pi-native async delegate smoke: pi -p exited non-zero"
+    return 1
+  fi
+
+  # Regression class PM flagged: stale variable name in runDelegateAsync.
+  #
+  # NOTE on here-strings: $raw can exceed 800KB (pi --mode json is chatty),
+  # and `set -o pipefail` is active. The pattern `echo "$raw" | grep -q ...`
+  # races — grep -q exits 0 on first match, echo then gets SIGPIPE (rc=141),
+  # and pipefail elevates the whole pipe's rc to 141 → `if` sees "fail" even
+  # though the match happened. Observed in setup runs where raw > ~500KB.
+  # Here-strings (`<<< "$raw"`) feed stdin without a pipeline, sidestepping
+  # pipefail entirely. Keep this form for any grep check on large $raw.
+  if grep -qE 'ReferenceError.*explicitExtensions|explicitExtensions is not defined' <<< "$raw"; then
+    echo "$raw" >&2
+    fail "pi-native async: ReferenceError on 'explicitExtensions' (stale variable resurfaced)"
+    return 1
+  fi
+
+  # The sync tool return contains these strings verbatim — independent of how
+  # the model paraphrases. Either marker proves the spawn completed cleanly.
+  if grep -qE 'Async delegate spawned|Task ID:' <<< "$raw"; then
+    local taskid
+    # `head -1` still closes its stdin early, which can send SIGPIPE back
+    # to grep under pipefail. Swallow the rc so the assignment survives —
+    # the captured string is the only thing we need.
+    taskid=$(grep -oE 'Task ID: [a-f0-9]+' <<< "$raw" | head -1 || true)
+    ok "pi-native async delegate spawn (${taskid:-Task ID present})"
+    return 0
+  fi
+
+  echo "$raw" >&2
+  fail "pi-native async delegate produced neither Task ID nor a recognized error"
+  return 1
+}
+
+check_bridge() {
+  section "pi-tools-bridge (direct MCP + backend visibility)"
+  validate_pi_tools_bridge
+}
+
+check_native_async() {
+  section "pi-native async delegate spawn"
+  validate_pi_native_async_delegate
+}
+
+sentinel_run() {
+  local sentinel="$REPO_DIR/scripts/sentinel-runner.sh"
+  if [ ! -x "$sentinel" ]; then
+    fail "sentinel: $sentinel not found or not executable"
+    return 1
+  fi
+  "$sentinel" "$@"
+}
+
+session_messaging_run() {
+  local smoke="$REPO_DIR/scripts/session-messaging-smoke.sh"
+  if [ ! -x "$smoke" ]; then
+    fail "session-messaging: $smoke not found or not executable"
+    return 1
+  fi
+  "$smoke" "$@"
+}
+
 # setup_all — full pi-shell-acp install.
 #
 # Installs the bridge + entwurf orchestration surface (delegate registry,
@@ -1749,7 +2042,7 @@ setup_all() {
   echo "[setup] repo:    $REPO_DIR"
   echo "[setup] project: $project_dir"
   echo "[setup] scope:   full bridge + entwurf orchestration install"
-  echo "[setup] verification: smoke-all (Claude + Codex)"
+  echo "[setup] verification: smoke-all + Axis 1 interview gates (pi-tools-bridge, pi-native async, sentinel, session-messaging)"
 
   (cd "$REPO_DIR" && pnpm install)
   check_global_claude_acp
@@ -1774,6 +2067,33 @@ setup_all() {
   check_compaction_handoff
 
   smoke_all "$project_dir"
+
+  # Axis 1 interview-prerequisite gates. AGENTS.md §Ingestion Gates names
+  # these as required before the Axis 2 agent interview can be re-run.
+  # Ported from agent-config pre-Phase-4 (validator bodies) + 7545af8
+  # (session-messaging matrix) + pre-Phase-4 sentinel invocation. Default ON
+  # here; agent-config (consumer) does not run these anymore.
+  section "Axis 1 gate: pi-tools-bridge (direct MCP + backend visibility)"
+  validate_pi_tools_bridge
+
+  section "Axis 1 gate: pi-native async delegate spawn"
+  validate_pi_native_async_delegate
+
+  section "Axis 1 gate: session-messaging 4-case matrix"
+  session_messaging_run
+
+  section "Axis 1 gate: sentinel (delegate 6-cell matrix)"
+  if sentinel_run; then
+    ok "sentinel 6/6 PASS"
+  else
+    fail "sentinel: one or more cells failed — see table above and artifact"
+    echo ""
+    echo "DONE: pi-shell-acp setup complete (with sentinel failures)"
+    return 1
+  fi
+
+  echo ""
+  echo "DONE: pi-shell-acp setup + Axis 1 gates green. Axis 2 interview may proceed."
 }
 
 cmd=${1:-}
@@ -1807,6 +2127,20 @@ case "$cmd" in
     ;;
   smoke-compaction)
     smoke_compaction "$TARGET_PROJECT_DIR"
+    ;;
+  check-bridge)
+    check_bridge
+    ;;
+  check-native-async)
+    check_native_async
+    ;;
+  sentinel)
+    shift || true
+    sentinel_run "$@"
+    ;;
+  session-messaging)
+    shift || true
+    session_messaging_run "$@"
     ;;
   check-mcp)
     check_mcp
