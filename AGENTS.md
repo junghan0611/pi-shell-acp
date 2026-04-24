@@ -87,7 +87,7 @@ Five surfaces move into this repo. Landing positions are provisional and will be
 | `pi-extensions/delegate.ts`            | `entwurf/spawn.ts` (or similar)               | pi-native spawn entry                                            |
 | `pi-extensions/lib/delegate-core.ts`   | `entwurf/core.ts`                             | shared core: registry resolution + identity lock                 |
 | `pi/delegate-targets.json`             | `entwurf/targets.json`                        | SSOT allowlist of `(provider, model)` pairs                      |
-| `mcp/pi-tools-bridge/`                 | `mcp/pi-tools-bridge/`                        | MCP adapter exposing entwurf + session_search/knowledge_search to ACP hosts |
+| `mcp/pi-tools-bridge/`                 | `mcp/pi-tools-bridge/`                        | MCP adapter exposing entwurf (delegate/delegate_resume) + session-control (send_to_session/list_sessions) to ACP hosts |
 | `mcp/session-bridge/`                  | `mcp/session-bridge/`                         | Claude Code ↔ pi Unix-socket session bridge                      |
 
 **"One project" principle — preserved, not split.** agent-config's AGENTS.md Entwurf Orchestration section states: *"After migration both live together inside pi-shell-acp; the 'one project' principle is preserved, just with a new home."* This repo honors that contract. `pi-extensions`-equivalent surface and `mcp/*` adapters live side-by-side here; they are not to be split into sibling repos later.
@@ -156,7 +156,7 @@ These are deterministic gates. They fail fast and are cheap to re-run.
 **Axis 2 — Agent interview (local to this repo's VERIFY.md).** A real `pi-shell-acp/<model>` session must answer VERIFY.md §1A Layer 0–4 with the new in-repo entwurf surface, not the agent-config one.
 
 - Layer 0 — does the session read the engraving (`## Engraving`) and recognize entwurf as a first-class tool in this repo, not a referenced one?
-- Layer 2 — does pi-facing MCP (now including `pi-tools-bridge` hosted here) actually reach the turn? Can the agent see and call entwurf/session_search/knowledge_search?
+- Layer 2 — does pi-facing MCP (now including `pi-tools-bridge` hosted here) actually reach the turn? Can the agent see and call the four exposed tools (entwurf's `delegate`/`delegate_resume` and session-control's `send_to_session`/`list_sessions`)?
 - Layer 3 — does identity preservation (the Resume Lock) hold when the entwurf resume is invoked from an in-session agent, not from a command-line `pi -p`?
 
 Passing Axis 1 alone is not enough. Pre-Phase-0.5 we saw a green protocol smoke next to a broken interview; that failure mode is specifically what the two-axis rule exists to catch.
@@ -198,7 +198,7 @@ pnpm run typecheck                   clean (root + mcp subprojects)
 ./run.sh check-backends              12/12
 ./run.sh check-compaction-handoff    pass
 ./run.sh smoke-all                   claude + codex bridge prompt ok
-./run.sh check-bridge                pi-tools-bridge direct MCP (6 tools) + test.sh (15/15) + in-ACP visibility+invocation for claude and codex
+./run.sh check-bridge                pi-tools-bridge direct MCP (4 tools — narrow scope, see src/index.ts header) + test.sh (13/13) + in-ACP visibility+invocation for claude and codex
 ./run.sh check-native-async          pi-native async delegate spawn (Task ID captured)
 ./run.sh session-messaging           4/4  (native→ACP, mcp→native, mcp→ACP, native→native)
 ./run.sh sentinel                    6/6  (parent ∈ {native, acp-claude, acp-codex} × target models)

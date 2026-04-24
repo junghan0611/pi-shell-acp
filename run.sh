@@ -1769,7 +1769,9 @@ pi_tools_bridge_require_tools() {
     return 1
   fi
 
-  for tool in session_search knowledge_search send_to_session list_sessions delegate delegate_resume; do
+  # Bridge exposes a deliberately narrow set: session_search / knowledge_search
+  # are intentionally NOT here — those are skill-side concerns (see mcp/pi-tools-bridge/src/index.ts header).
+  for tool in send_to_session list_sessions delegate delegate_resume; do
     if [[ "$raw" != *"$tool"* ]]; then
       echo "$raw" >&2
       fail "pi-tools-bridge: $backend_label missing tool $tool"
@@ -1834,24 +1836,12 @@ validate_pi_tools_bridge() {
   local bridge_dir="$REPO_DIR/mcp/pi-tools-bridge"
   local raw
 
-  if [ ! -f "$bridge_dir/package.json" ]; then
-    fail "pi-tools-bridge: repo content missing at $bridge_dir"
+  if [ ! -x "$bridge_dir/start.sh" ]; then
+    fail "pi-tools-bridge: launcher missing at $bridge_dir/start.sh"
     return 1
   fi
 
-  log "pi-tools-bridge: install + build + validate..."
-
-  if ! (cd "$bridge_dir" && pnpm install --silent --frozen-lockfile); then
-    fail "pi-tools-bridge: pnpm install failed"
-    return 1
-  fi
-  ok "pi-tools-bridge pnpm install"
-
-  if ! (cd "$bridge_dir" && pnpm run build); then
-    fail "pi-tools-bridge: build failed"
-    return 1
-  fi
-  ok "pi-tools-bridge build"
+  log "pi-tools-bridge: direct MCP smoke (strip-types launcher, no build step)"
 
   if ! raw=$(cd "$bridge_dir" && node --input-type=module <<'JS'
 import { spawn } from 'node:child_process';
@@ -1873,7 +1863,7 @@ function finishOk(trimmed) {
     process.exit(1);
   }
   const names = tools.map((t) => t?.name).sort();
-  const expected = ['delegate', 'delegate_resume', 'knowledge_search', 'list_sessions', 'send_to_session', 'session_search'];
+  const expected = ['delegate', 'delegate_resume', 'list_sessions', 'send_to_session'];
   for (const name of expected) {
     if (!names.includes(name)) {
       console.error(`missing MCP tool: ${name}`);
@@ -2038,6 +2028,18 @@ setup_all() {
   require_cmd pnpm
   require_cmd python3
   require_cmd pi
+  require_cmd node
+
+  # MCP bridge launchers run via `node --experimental-strip-types` (stable in
+  # Node 23.6, experimental from 22.6). Anything older lacks the flag, and an
+  # ACP session would hit a cryptic "unknown argument" rather than a clear
+  # setup-time error. Fail early with an actionable message. package.json
+  # engines.node mirrors this floor.
+  if ! node -e 'const [M,m]=process.versions.node.split(".").map(Number); process.exit((M>22||(M===22&&m>=6))?0:1)'; then
+    echo "[setup] pi-shell-acp requires Node >= 22.6.0 (got $(node -v))" >&2
+    echo "[setup] MCP bridge launchers depend on --experimental-strip-types." >&2
+    exit 1
+  fi
 
   echo "[setup] repo:    $REPO_DIR"
   echo "[setup] project: $project_dir"

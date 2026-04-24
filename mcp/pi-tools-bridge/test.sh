@@ -1,21 +1,27 @@
 #!/usr/bin/env bash
 # pi-tools-bridge smoke tests.
 #
-# Two layers:
-#   1. Protocol parity — tools/list must return exactly the expected tool names.
-#      No external deps. Always runnable.
-#   2. End-to-end (opt-in via E2E=1) — exercises knowledge_search against a real
-#      embedding provider, and send_to_session against a non-existent target to
-#      assert the error path.
+# Exercises the four tools the bridge is allowed to expose (narrow scope —
+# anything the MCP bridge doesn't strictly need to bridge pi lives as a skill
+# instead):
+#   - send_to_session
+#   - list_sessions
+#   - delegate
+#   - delegate_resume
 #
-# Usage:
-#   ./test.sh              # protocol-only
-#   E2E=1 ./test.sh        # full suite (requires ~/.env.local + andenken index)
+# Layers:
+#   1. tools/list parity
+#   2. unknown-tool error surface
+#   3. send_to_session negative path (bogus target)
+#   4. delegate registry rejection
+#
+# Runs straight against start.sh (no build step — src/*.ts is loaded by
+# --experimental-strip-types).
 
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
-EXPECTED_TOOLS=("session_search" "knowledge_search" "send_to_session" "list_sessions" "delegate" "delegate_resume")
+EXPECTED_TOOLS=("send_to_session" "list_sessions" "delegate" "delegate_resume")
 PASS=0
 FAIL=0
 
@@ -24,17 +30,6 @@ green() { printf '\033[32m%s\033[0m\n' "$1"; }
 
 ok()   { green "  ✓ $1"; PASS=$((PASS+1)); }
 fail() { red   "  ✗ $1"; FAIL=$((FAIL+1)); }
-
-DIST_ENTRY="$HERE/dist/mcp/pi-tools-bridge/src/index.js"
-CORE_SRC="$HERE/../../pi-extensions/lib/delegate-core.ts"
-
-# Build if stale.
-if [ ! -f "$DIST_ENTRY" ] \
-   || [ "$HERE/src/index.ts" -nt "$DIST_ENTRY" ] \
-   || [ "$CORE_SRC" -nt "$DIST_ENTRY" ]; then
-  echo "[build]"
-  (cd "$HERE" && npm run build >/dev/null)
-fi
 
 rpc() {
   # stdin: newline-delimited JSON-RPC requests
@@ -267,29 +262,6 @@ if echo "$REGISTRY_NEG" | grep -q '"isError":true' \
   ok "unregistered (provider, model) rejected with allowed-list hint"
 else
   fail "unregistered tuple did not surface registry rejection: ${REGISTRY_NEG:0:300}"
-fi
-
-# ----------------------------------------------------------------------------
-# 5. E2E (opt-in) — real knowledge_search call
-# ----------------------------------------------------------------------------
-
-if [ "${E2E:-0}" = "1" ]; then
-  echo "[5] e2e knowledge_search"
-  RESULT=$(
-    {
-      printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"0"}}}'
-      printf '%s\n' '{"jsonrpc":"2.0","method":"notifications/initialized"}'
-      printf '%s\n' '{"jsonrpc":"2.0","id":11,"method":"tools/call","params":{"name":"knowledge_search","arguments":{"query":"MCP bridge","limit":2}}}'
-      sleep 30
-    } | timeout 60 "$HERE/start.sh" 2>/dev/null | grep '"id":11' || true
-  )
-  if echo "$RESULT" | grep -q '"count"'; then
-    ok "knowledge_search returned a count field"
-  else
-    fail "knowledge_search produced no count field: ${RESULT:0:200}"
-  fi
-else
-  echo "[5] e2e skipped (set E2E=1 to run)"
 fi
 
 # ----------------------------------------------------------------------------

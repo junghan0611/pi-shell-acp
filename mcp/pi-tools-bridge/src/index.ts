@@ -13,15 +13,18 @@
  * Wiring: registered only via piShellAcpProvider.mcpServers in pi settings.
  * No ambient discovery. The bridge never auto-promotes pi extension tools.
  *
- * Phase-1 (currently exposed):
- *   - session_search   → andenken cli.js search-sessions
- *   - knowledge_search → andenken cli.js search-knowledge
+ * Currently exposed tools (scope is deliberately narrow — anything that can live
+ * as a local skill should live as a skill, not here):
  *   - send_to_session  → pi control.ts Unix-socket RPC
- *   - delegate         → pi-extensions/lib/delegate-core (sync mode only)
- *
- * Phase-2a (this round, additive):
  *   - list_sessions    — active pi control sockets only (see control.ts getLiveSessions)
+ *   - delegate         → pi-extensions/lib/delegate-core (sync mode only)
  *   - delegate_resume  — saved delegate session revival by taskId (sync only)
+ *
+ * Not here on purpose: semantic memory / session search / knowledge-base search.
+ * Those are personal-workflow surfaces and live as Claude Code / Codex skills
+ * (the "semantic-memory" skill, which in turn shells out to the user's
+ * embedding CLI). Keeping them out of the MCP bridge is what lets pi-shell-acp
+ * be a generic public package rather than a reflection of one operator's setup.
  *
  * Phase-2b deferred to a separate design round:
  *   - delegate_status + mode=async — couples with completion-notification contract that MCP
@@ -55,7 +58,6 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
-import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import * as fs from "node:fs/promises";
 import * as net from "node:net";
@@ -71,105 +73,14 @@ import {
   markDelegateTargetUsed,
   resolveGuardTargetKey,
   DEFAULT_DELEGATE_MODEL,
-} from "../../../pi-extensions/lib/delegate-core.js";
+} from "../../../pi-extensions/lib/delegate-core.ts";
 
 const HOME = os.homedir();
-
-const DEFAULT_ANDENKEN_DIR = path.join(HOME, "repos", "gh", "andenken");
 const DEFAULT_CONTROL_DIR = path.join(HOME, ".pi", "session-control");
-
-const ANDENKEN_DIR = process.env.ANDENKEN_DIR ?? DEFAULT_ANDENKEN_DIR;
 const CONTROL_DIR = process.env.PI_CONTROL_DIR ?? DEFAULT_CONTROL_DIR;
 const SOCKET_SUFFIX = ".sock";
 
-const CLI_TIMEOUT_MS = Number(process.env.PI_TOOLS_BRIDGE_CLI_TIMEOUT_MS ?? 90_000);
 const RPC_TIMEOUT_MS = Number(process.env.PI_TOOLS_BRIDGE_RPC_TIMEOUT_MS ?? 5_000);
-
-// ============================================================================
-// andenken CLI resolution
-// ============================================================================
-
-interface CliTarget {
-  cmd: string;
-  baseArgs: string[];
-  cwd: string;
-}
-
-let cachedAndenken: CliTarget | Error | null = null;
-
-function resolveAndenken(): CliTarget {
-  if (cachedAndenken instanceof Error) throw cachedAndenken;
-  if (cachedAndenken) return cachedAndenken;
-
-  const dist = path.join(ANDENKEN_DIR, "dist", "cli.js");
-  const src = path.join(ANDENKEN_DIR, "cli.ts");
-  const tsx = path.join(ANDENKEN_DIR, "node_modules", ".bin", "tsx");
-
-  let target: CliTarget;
-  if (existsSync(dist)) {
-    target = { cmd: process.execPath, baseArgs: [dist], cwd: ANDENKEN_DIR };
-  } else if (existsSync(src) && existsSync(tsx)) {
-    target = { cmd: tsx, baseArgs: [src], cwd: ANDENKEN_DIR };
-  } else {
-    const err = new Error(
-      `andenken not found. Looked for ${dist} and ${src}+tsx. ` +
-        `Install andenken or set ANDENKEN_DIR env.`,
-    );
-    cachedAndenken = err;
-    throw err;
-  }
-  cachedAndenken = target;
-  return target;
-}
-
-interface CliResult {
-  stdout: string;
-  stderr: string;
-  code: number;
-}
-
-function runAndenken(args: string[]): Promise<CliResult> {
-  const target = resolveAndenken();
-  return new Promise((resolve, reject) => {
-    const child = spawn(target.cmd, [...target.baseArgs, ...args], {
-      cwd: target.cwd,
-      env: process.env,
-    });
-    let stdout = "";
-    let stderr = "";
-    const timer = setTimeout(() => {
-      child.kill("SIGKILL");
-      reject(new Error(`andenken CLI timeout after ${CLI_TIMEOUT_MS}ms`));
-    }, CLI_TIMEOUT_MS);
-    child.stdout.on("data", (c) => (stdout += c.toString()));
-    child.stderr.on("data", (c) => (stderr += c.toString()));
-    child.on("error", (e) => {
-      clearTimeout(timer);
-      reject(e);
-    });
-    child.on("close", (code) => {
-      clearTimeout(timer);
-      resolve({ stdout, stderr, code: code ?? -1 });
-    });
-  });
-}
-
-async function callAndenken(
-  subcommand: "search-sessions" | "search-knowledge",
-  query: string,
-  limit: number | undefined,
-): Promise<string> {
-  const args: string[] = [subcommand, query];
-  if (typeof limit === "number" && Number.isFinite(limit)) {
-    args.push("--limit", String(Math.max(1, Math.floor(limit))));
-  }
-  const r = await runAndenken(args);
-  if (r.code !== 0) {
-    const msg = r.stderr.trim() || r.stdout.trim() || `andenken ${subcommand} exited ${r.code}`;
-    throw new Error(msg);
-  }
-  return r.stdout.trim();
-}
 
 // ============================================================================
 // pi control-socket RPC (for send_to_session)
@@ -333,62 +244,11 @@ function textErr(msg: string) {
   return { content: [{ type: "text" as const, text: msg }], isError: true };
 }
 
-function applySourceFilter(rawJson: string, source: "pi" | "claude", limit: number): string {
-  try {
-    const obj = JSON.parse(rawJson) as { results?: Array<{ source?: string }>; count?: number };
-    if (!Array.isArray(obj.results)) return rawJson;
-    const filtered = obj.results.filter((r) => r.source === source).slice(0, limit);
-    return JSON.stringify({ ...obj, results: filtered, count: filtered.length });
-  } catch {
-    return rawJson;
-  }
-}
-
 // ============================================================================
 // MCP server
 // ============================================================================
 
 const server = new McpServer({ name: "pi-tools-bridge", version: "0.1.0" });
-
-server.tool(
-  "session_search",
-  "Semantic search over past pi + Claude Code sessions (andenken). " +
-    "Returns JSON with matched chunks. Prefer over grep for finding past discussions.",
-  {
-    query: z.string().min(1).describe("Search query (Korean or English)"),
-    limit: z.number().int().positive().max(50).optional().describe("Max results, default 8"),
-    source: z.enum(["pi", "claude"]).optional().describe("Filter by source"),
-  },
-  async ({ query, limit, source }) => {
-    const effectiveLimit = limit ?? 8;
-    // Over-fetch when filtering client-side so filtered results still hit the target size.
-    const fetchLimit = source ? Math.min(effectiveLimit * 4, 50) : effectiveLimit;
-    try {
-      let text = await callAndenken("search-sessions", query, fetchLimit);
-      if (source) text = applySourceFilter(text, source, effectiveLimit);
-      return textOk(text);
-    } catch (err) {
-      return textErr(`session_search error: ${err instanceof Error ? err.message : String(err)}`);
-    }
-  },
-);
-
-server.tool(
-  "knowledge_search",
-  "Semantic search over the org-mode knowledge base (~/org/, 3000+ notes, Korean↔English cross-lingual).",
-  {
-    query: z.string().min(1).describe("Search query"),
-    limit: z.number().int().positive().max(50).optional().describe("Max results, default 8"),
-  },
-  async ({ query, limit }) => {
-    try {
-      const text = await callAndenken("search-knowledge", query, limit);
-      return textOk(text);
-    } catch (err) {
-      return textErr(`knowledge_search error: ${err instanceof Error ? err.message : String(err)}`);
-    }
-  },
-);
 
 server.tool(
   "send_to_session",
