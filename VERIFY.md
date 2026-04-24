@@ -97,38 +97,99 @@ The goals are:
 
 ## 1. Setup
 
-### 1.1 Variables
+pi-shell-acp supports two legitimate install paths. Pick the one that matches the machine you are on. Both paths end in the same runtime state (a valid `.pi/settings.json` with `piShellAcpProvider.mcpServers` wired) — they differ in who owns the checkout and whether you intend to edit it.
+
+| Path | Who | Shape | Example target |
+|------|-----|-------|----------------|
+| **A — Consumer** | end-user of pi | `pi install git:…` + one `run.sh install .` | fresh pi machine (Oracle server, new laptop) |
+| **B — Developer** | contributor / first user | `git clone …` + `pi install ./` + `run.sh install …` | primary dev machine (ThinkPad, NUC) |
+
+### 1.1 Path A — consumer install
+
+Use when you want to *use* pi-shell-acp but will not edit it.
 
 ```bash
-export REPO_DIR=/path/to/pi-shell-acp
+# 1. register with pi (pi auto-clones + installs deps into its managed checkout)
+pi install git:github.com/junghan0611/pi-shell-acp
+
+# 2. wire the bundled mcpServers into a consumer project
+cd /path/to/consumer-project
+~/.pi/agent/git/github.com/junghan0611/pi-shell-acp/run.sh install .
+
+# 3. verify model surface
+pi --list-models pi-shell-acp
+
+# 4. one-turn smoke
+pi --model pi-shell-acp/claude-sonnet-4-6 -p 'ok만 답하세요'
+```
+
+Expected:
+- step 1 — pi prints package install messages; `pi list` afterwards shows `git:github.com/junghan0611/pi-shell-acp` under `User packages` with a path under `~/.pi/agent/git/github.com/junghan0611/pi-shell-acp`.
+- step 2 — `install: added piShellAcpProvider.mcpServers.pi-tools-bridge` + `install: added piShellAcpProvider.mcpServers.session-bridge` + `install: updated <project>/.pi/settings.json`.
+- step 3 — curated model surface prints (claude-sonnet-4-6, claude-opus-4-7, gpt-5.2, gpt-5.4, gpt-5.4-mini, gpt-5.5).
+- step 4 — bridge response of `ok`.
+
+Notes:
+- The checkout path `~/.pi/agent/git/github.com/junghan0611/pi-shell-acp` is pi-managed. Do not edit files there on a consumer machine — `pi update` would overwrite local edits.
+- Step 2 is still required after `pi install git:…`. `pi install` only adds the package to `~/.pi/agent/settings.json#packages`; it does not pre-wire the per-project `piShellAcpProvider.mcpServers` entries. `./run.sh install .` is what produces a working ACP-visible MCP surface in the current project.
+
+### 1.2 Path B — developer install
+
+Use when you will edit this repo and want a fast inner loop (`npm run typecheck`, `./run.sh smoke-all`).
+
+```bash
+# 1. clone + deps
+git clone https://github.com/junghan0611/pi-shell-acp /path/to/pi-shell-acp
+cd /path/to/pi-shell-acp
+npm install   # or: pnpm install
+
+# 2. register the local checkout with pi (relative or absolute path both fine)
+pi install ./
+
+# 3. wire mcpServers into a consumer project
+./run.sh install /path/to/consumer-project
+
+# 4. deterministic gates
+npm run typecheck
+npm run check-mcp
+npm run check-backends
+npm run check-registration
+
+# 5. dual-backend runtime smoke gate
+./run.sh smoke-all /path/to/consumer-project
+```
+
+Expected:
+- step 2 — the checkout path is added to `~/.pi/agent/settings.json#packages`; `pi list` shows it under `User packages`.
+- step 3 — same log lines as Path A step 2.
+- step 4 — each `check-*` gate prints `[check-*] N assertions ok` (typecheck emits nothing on success).
+- step 5 — `[smoke-all] Claude + Codex runtime smokes: ok`.
+
+Re-running step 3 is idempotent. User-authored `mcpServers.<name>` overrides with a different command survive the re-run and are annotated `preserved (user override: …)`. `./run.sh remove /path/to/consumer-project` deletes only entries whose command matches the repo-authored launcher path; user overrides stay.
+
+### 1.3 Variables (referenced by the rest of this document)
+
+```bash
+# Path A
+export REPO_DIR=$HOME/.pi/agent/git/github.com/junghan0611/pi-shell-acp
+# Path B (pick one)
+# export REPO_DIR=/path/to/pi-shell-acp
+
 export PROJECT_DIR=/path/to/consumer-project
 export CACHE_DIR=$HOME/.pi/agent/cache/pi-shell-acp/sessions
 mkdir -p "$CACHE_DIR"
 ```
 
-### 1.2 Install / Smoke
+### 1.4 Setup shortcut (either path)
 
-To verify from an actual consumer project:
+From the checkout:
 
 ```bash
 cd "$REPO_DIR"
 ./run.sh setup "$PROJECT_DIR"
 ```
 
-Quick re-verification:
-
-```bash
-cd "$REPO_DIR"
-npm run typecheck
-npm run check-mcp            # pi-facing MCP normalization pure-logic gate (no Claude/ACP subprocess)
-./run.sh smoke "$PROJECT_DIR"
-```
-
-Expected results:
-- typecheck passes
-- check-mcp passes (`[check-mcp] N assertions ok`)
-- `--list-models pi-shell-acp` succeeds
-- bridge prompt smoke succeeds
+`setup` is a convenience that runs `install` + `smoke-all` in sequence, so a green `setup` implies both the settings.json wiring and the dual-backend runtime are healthy.
 
 ---
 
