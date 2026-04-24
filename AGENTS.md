@@ -142,7 +142,15 @@ Incoming with the artifacts above, already established upstream:
 
 > Send is throw, not wait. An agent sends and moves on. If a reply is needed, the message itself asks the recipient to send back. If the work is truly important, use `entwurf` (own the outcome) instead of a message (notify and move on).
 
-Practical consequence at ingestion: `send_to_session` and `list_sessions` move here; `wait_until` is intentionally not bridged to MCP. Blocking is a design smell in this model.
+**Three-layer split this principle enforces across the repo:**
+
+| Surface | Contract | Reason |
+|---------|----------|--------|
+| `mcp/pi-tools-bridge.send_to_session` (MCP / ACP peers) | **Fire-and-forget only.** `target`, `message`, `mode?` — no `wait_until` parameter is exposed. Return is delivery ack, not a turn result. | MCP/ACP adds hops (caller → control socket → target pi → ACP backend → tool call → followUp injection → turn → turn_end → correlation back). Strong wait_until contract is structurally unreliable once more than one of those hops is crossed. Observed live: delivery succeeds, the target really does produce and log an assistant message with `sender_info`, but the wait_until=turn_end correlation still returns stale / none / timeout. |
+| `pi-extensions/session-control.ts` native `send_to_session` (same pi runtime, same control plane) | `wait_until=turn_end` is **retained but discouraged.** It is best-effort operator debug convenience — useful inside one machine where you just want to poke at a peer session and read its next reply. Description explicitly tells the agent to prefer the reply-back pattern or `delegate(mode=async)` + `delegate_resume`. The `baa608a` fix (baseline turnIndex on subscribe response + subscribe-before-send on the client) narrows the native race but does not change the underlying correlation-is-weak reality once any layer is added. | Armin's original surface kept for native-path parity; not a core public contract. |
+| `delegate(mode=async)` + `delegate_resume` | **This is how you own a result.** Spawn owns the session, resume joins it, no timing correlation dance. | The orchestration channel lives separately from the notification channel. Session-messaging is "notify and move on", `delegate` is "I need the outcome". |
+
+Practical phrasing for agent-facing docs and prompts: **"If you need a result the caller owns, it's delegate(async). If you just need the other side to hear you, it's send_to_session with no wait."**
 
 ### Ingestion Gates
 

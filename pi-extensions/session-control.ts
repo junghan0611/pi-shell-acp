@@ -1084,8 +1084,16 @@ Target selection:
 - sessionName: session name (alias from /name).
 
 Wait behavior (only for action=send):
-- wait_until=turn_end: Wait for the turn to complete, returns last assistant message.
-- wait_until=message_processed: Returns immediately after message is queued.
+- wait_until=message_processed: Returns immediately after message is queued. Recommended.
+- wait_until=turn_end: DISCOURAGED. Attempts to wait for the target's next turn to
+  complete and return its last assistant message. This is native-path best-effort
+  only and is structurally unreliable once the call traverses MCP / ACP hops —
+  the delivery and the turn itself both succeed, but the turn_end correlation
+  back to this specific call is not a strong contract. Use the reply-back
+  pattern instead: the target replies by calling send_to_session on its side,
+  addressed to the sender_info it received. If you need a result the caller
+  *owns*, use delegate(mode=async) + delegate_resume — that is the orchestration
+  channel, session-messaging is the notify channel.
 
 CLI bridge (for shell scripts/background jobs):
 - Current session id is available in shell/bash as $PI_SESSION_ID (set when --session-control is enabled).
@@ -1105,9 +1113,15 @@ CLI bridge (for shell scripts/background jobs):
 - Example request/response usage:
   pi -p --session-control --control-session "$PI_SESSION_ID" --send-session-message "What is the current time?" --send-session-wait turn_end
 
-Note: If you ask the target session to reply back via sender_info, do not use wait_until; waiting is redundant and can duplicate responses.
+Messaging discipline — "Send is throw, not wait":
+- Default to fire-and-forget (no wait_until, or wait_until=message_processed).
+- If you need the target's answer, include sender_info and let the target send
+  a reply back to you with its own send_to_session. Do NOT combine sender_info
+  with wait_until — waiting is redundant and can duplicate responses.
+- If you need a result the *caller* owns (not a notification), the correct
+  surface is delegate(mode=async) + delegate_resume, not wait_until=turn_end.
 
-Messages automatically include sender session info for replies. When you want a response, instruct the target session to reply directly to the sender by calling send_to_session with the sender_info reference (do not poll get_message).`,
+Messages automatically include sender session info for replies.`,
 		parameters: Type.Object({
 			sessionId: Type.Optional(Type.String({ description: "Target session id (UUID)" })),
 			sessionName: Type.Optional(Type.String({ description: "Target session name (alias)" })),
@@ -1126,7 +1140,10 @@ Messages automatically include sender session info for replies. When you want a 
 			),
 			wait_until: Type.Optional(
 				StringEnum(["turn_end", "message_processed"] as const, {
-					description: "Wait behavior for send action",
+					description:
+						"Wait behavior for send action. Prefer message_processed. turn_end " +
+						"is native-path best-effort and unreliable across MCP/ACP hops — " +
+						"use the reply-back pattern or delegate(mode=async) instead.",
 				}),
 			),
 		}),
