@@ -1,33 +1,36 @@
 /**
- * delegate — 독립 에이전트 프로세스에 태스크 위임
+ * delegate — delegate a task to an independent agent process.
  *
- * 홈 에이전트(힣의 분신)가 실무 에이전트를 스폰하여 작업을 위임한다.
- * 서브에이전트가 아니라 독립 프로세스 간 대화.
- * 로컬과 리모트(SSH) 동일 패턴.
+ * Spawns a dedicated pi process to run a task rather than using a sub-agent
+ * inside the caller. It's inter-process coordination, not recursion inside
+ * one session. Local and SSH-remote spawns follow the same pattern.
  *
- * 모드:
- *   sync  — 완료까지 블로킹, 결과 리턴. (기본)
- *   async — 스폰 후 즉시 리턴. 완료 시 분신 세션에 알림.
- *           세션이 남아 resume 가능.
+ * Modes:
+ *   sync  — block until completion, return the result. (default)
+ *   async — spawn and return immediately; notify the caller session on
+ *           completion. The delegate session persists and is resumable.
  *
- * sync 실행 코어는 `./lib/delegate-core.js`로 분리되어 있다.
- * 같은 코어를 `mcp/pi-tools-bridge`가 MCP tool로 재노출한다 — 로직은 한 군데, 노출면만 둘.
+ * The sync path lives in `./lib/delegate-core.js` so the same core can be
+ * re-exposed by `mcp/pi-tools-bridge` as an MCP tool — single logic, two
+ * surfaces.
  *
- * 비동기 delegate의 핵심:
- *   - 분신 세션이 --session-control로 소켓을 노출 (control.ts peer)
- *   - delegate는 소켓 없이 실행 (소켓 서버가 pi -p의 exit을 막으므로)
- *   - 완료 시 proc.on('close') → 분신에게 followUp 메시지 주입
- *   - delegate_status로 상태 조회 (pid + JSONL 파싱)
+ * Async delegate wiring:
+ *   - the caller session exposes a Unix socket via --session-control
+ *     (see `pi-extensions/session-control.ts` — the peer extension)
+ *   - the delegate itself runs WITHOUT --session-control, because a socket
+ *     server would keep `pi -p` from exiting
+ *   - on completion, proc.on('close') injects a followUp message into the
+ *     caller session
+ *   - delegate_status reports live state (pid + JSONL parse)
  *
- * 사용:
- *   LLM이 delegate tool 호출 → 별도 pi 프로세스 스폰
- *   /delegate "태스크" → 커맨드로 직접 실행
+ * Usage:
+ *   LLM calls the `delegate` tool  → a separate pi process is spawned
+ *   /delegate "task"               → command-line form
  *
- * 의존:
- *   - control.ts (peer extension, ~/.pi/agent/extensions/control.ts)
- *     분신 세션에 --session-control 필요 (delegate에는 불필요)
- *
- * Epic: agent-config-8sm (힣의 분신)
+ * Runtime dependency:
+ *   - `pi-extensions/session-control.ts` loaded in the CALLER session, with
+ *     `--session-control` enabled there. The delegate itself does not need
+ *     the extension.
  */
 
 import type { AgentToolResult, ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
@@ -67,7 +70,7 @@ function getParentSessionId(pi: ExtensionAPI): string {
 const DELEGATE_ENTRY_TYPE = "delegate-task";
 const SESSIONS_BASE = path.join(os.homedir(), ".pi", "agent", "sessions");
 
-/** taskId로 전체 sessions 디렉토리에서 delegate 세션 파일 검색 */
+/** Find the delegate session file for the given taskId by scanning sessions/. */
 function findDelegateSession(taskId: string): string | null {
   const active = activeDelegates.get(taskId);
   if (active?.sessionFile) return active.sessionFile;
@@ -122,7 +125,7 @@ const activeDelegates = new Map<string, AsyncDelegateInfo & { proc?: ChildProces
 
 const analyzeSessionFile = analyzeSessionFileLike;
 
-/** 프로세스가 살아있는지 확인 */
+/** Cheap liveness check for a given pid. */
 function isProcessAlive(pid: number): boolean {
   try {
     process.kill(pid, 0);
@@ -133,7 +136,7 @@ function isProcessAlive(pid: number): boolean {
 }
 
 // ============================================================================
-// Async delegate (B안: control.ts 패턴)
+// Async delegate (session-control peer pattern)
 // ============================================================================
 
 async function runDelegateAsync(
@@ -166,8 +169,9 @@ async function runDelegateAsync(
   const sessionFile = path.join(sessionDir, `${timestamp}_delegate-${taskId}.jsonl`);
   const routing = getRegistryRouting(target, isRemote);
 
-  // --no-extensions: global extensions가 이벤트 루프를 잡아 pi -p exit을 막음
-  // --session-control 제외: 소켓 서버가 exit을 막음
+  // --no-extensions: global extensions would hold the event loop and block
+  //                  `pi -p` from exiting after the task completes.
+  // No --session-control: the socket server would keep the process alive.
   const piArgs = [
     "--mode", "json",
     "-p",
@@ -334,7 +338,7 @@ async function runDelegateAsync(
 
 export default function (pi: ExtensionAPI) {
 
-  // --- session_start: 활성 delegate 복원 ---
+  // --- session_start: restore active delegates ---
   pi.on("session_start", async (_event, ctx) => {
     for (const entry of ctx.sessionManager.getEntries()) {
       if (entry.type === "custom" && (entry as { customType?: string }).customType === DELEGATE_ENTRY_TYPE) {
@@ -455,7 +459,7 @@ export default function (pi: ExtensionAPI) {
         };
       }
 
-      // sync mode — delegate-core 공유
+      // sync mode — shares the delegate-core path with mcp/pi-tools-bridge
       const result = await runDelegateSync(params.task, {
         host: params.host,
         cwd: params.cwd,
@@ -632,7 +636,7 @@ export default function (pi: ExtensionAPI) {
     },
   });
 
-  // --- /delegate 커맨드 ---
+  // --- /delegate command ---
   pi.registerCommand("delegate", {
     description: "Delegate task to independent agent — /delegate [async] [host:] task",
     handler: async (args, ctx) => {
@@ -983,7 +987,7 @@ export default function (pi: ExtensionAPI) {
     },
   });
 
-  // --- /delegate-status 커맨드 ---
+  // --- /delegate-status command ---
   pi.registerCommand("delegate-status", {
     description: "Show status of async delegates",
     handler: async (_args, ctx) => {
