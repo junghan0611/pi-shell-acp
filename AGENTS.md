@@ -188,20 +188,34 @@ Stabilization commits (read in order for the release story):
 | `060c412` | Commit B — curate model surface + fix codex metadata source | Replace wholesale `getModels("anthropic") + getModels("openai")` with curated allowlist against `getModels("openai-codex")`. Fix `gpt-5.5` ctx regression (1.05M → 400K). Rewrite `check-models` with exact allowlist + forbidden-list + codex context gates. |
 | `9269771` | Commit C — gpt-5.5 in delegate registry | Add `openai-codex/gpt-5.5` (native) + `pi-shell-acp/gpt-5.5` (explicitOnly). Cost warning in `$notes`. Update `$comment` to point at pi-shell-acp AGENTS.md (was agent-config pre-migration). |
 
-Axis 1 gates at release baseline (all pass against the state above):
+Axis 1 gates at release baseline (all pass against the state above, post Phase 5 wiring in `a70500a`):
 
 ```text
-npm run typecheck               clean (root + mcp subprojects)
-npm run check-registration      7/7
-npm run check-mcp               15/15
-npm run check-models            3/3 (curated + cap + override)
-npm run check-backends          12/12
-mcp/pi-tools-bridge/test.sh     15/15
-scripts/session-messaging-smoke 4/4  (artifact: /tmp/sms-D-final-*.json)
-pi -e . --list-models pi-shell-acp  → 6 curated models, gpt-5.5 at 400K
+pnpm run typecheck                   clean (root + mcp subprojects)
+./run.sh check-registration          7/7
+./run.sh check-mcp                   15/15
+./run.sh check-models                3/3 (curated + cap + override)
+./run.sh check-backends              12/12
+./run.sh check-compaction-handoff    pass
+./run.sh smoke-all                   claude + codex bridge prompt ok
+./run.sh check-bridge                pi-tools-bridge direct MCP (6 tools) + test.sh (15/15) + in-ACP visibility+invocation for claude and codex
+./run.sh check-native-async          pi-native async delegate spawn (Task ID captured)
+./run.sh session-messaging           4/4  (native→ACP, mcp→native, mcp→ACP, native→native)
+./run.sh sentinel                    6/6  (parent ∈ {native, acp-claude, acp-codex} × target models)
+pi -e . --list-models pi-shell-acp   → 6 curated models, gpt-5.5 at 400K
 ```
 
-Axis 2 — VERIFY.md §1A Layer 0–4 interview — is owned by the agent inside a `pi-shell-acp/<model>` session, not by this Claude Code session. It is pending capture before step 6 rename begins.
+All of the above are now wired into `./run.sh setup`, which fails loudly on any single gate regression. `npm run` usages in this section were rewritten to `./run.sh` / `pnpm run` after the pnpm migration in `3bf5f8f`. The last four gates — `check-bridge`, `check-native-async`, `session-messaging`, `sentinel` — moved into this repo's `run.sh` in Phase 5 (`a70500a`); agent-config deleted its copies of the same logic in Phase 4 (`05d525b`).
+
+Most recent green run: 2026-04-24, all gates pass on fresh install (clean `node_modules` + `dist`), artifacts:
+
+```text
+/tmp/pi-shell-acp-setup-v2.log
+/tmp/session-messaging-smoke-20260424-110103.json
+/tmp/sentinel-20260424-110111.json
+```
+
+Axis 2 — VERIFY.md §1A Layer 0–4 interview — is owned by the agent inside a `pi-shell-acp/<model>` session, not by this Claude Code session. With Axis 1 confirmed green end-to-end, the Axis 2 interview is now unblocked (step 6 rename gate precondition).
 
 ### Superseded Boundary
 
