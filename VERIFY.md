@@ -100,8 +100,8 @@ The goals are:
 ### 1.1 Variables
 
 ```bash
-export REPO_DIR=/home/junghan/repos/gh/pi-shell-acp
-export PROJECT_DIR=/home/junghan/repos/gh/agent-config
+export REPO_DIR=/path/to/pi-shell-acp
+export PROJECT_DIR=/path/to/consumer-project
 export CACHE_DIR=$HOME/.pi/agent/cache/pi-shell-acp/sessions
 mkdir -p "$CACHE_DIR"
 ```
@@ -459,7 +459,7 @@ Register one experimental pi-facing MCP (e.g., `session-bridge`) in the project 
     "mcpServers": {
       "session-bridge": {
         "command": "node",
-        "args": ["/home/junghan/repos/gh/agent-config/mcp/session-bridge/server.js"]
+        "args": ["/path/to/consumer-project/mcp/session-bridge/server.js"]
       }
     }
   }
@@ -584,7 +584,7 @@ Semantics (actual rules, not just observability):
 Smoke:
 
 ```bash
-./run.sh smoke-model-switch /home/junghan/repos/gh/agent-config
+./run.sh smoke-model-switch /path/to/consumer-project
 ```
 
 Pass criteria (both Claude/Codex per backend):
@@ -618,7 +618,7 @@ Cleanup invariant (actual rules, not just observability):
 Smoke:
 
 ```bash
-./run.sh smoke-cancel /home/junghan/repos/gh/agent-config
+./run.sh smoke-cancel /path/to/consumer-project
 ```
 
 Pass criteria:
@@ -640,7 +640,7 @@ What this smoke proves is **bridge-level continuity**: "pi-shell-acp can continu
 Smoke:
 
 ```bash
-./run.sh smoke-delegate-resume /home/junghan/repos/gh/agent-config
+./run.sh smoke-delegate-resume /path/to/consumer-project
 ```
 
 Pass criteria:

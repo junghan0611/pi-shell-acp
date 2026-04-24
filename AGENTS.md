@@ -416,21 +416,6 @@ Primary references:
 - https://github.com/agentclientprotocol
 - https://github.com/junghan0611/agent-config
 
-Local reference paths on this machine:
-
-```text
-/home/junghan/doomemacs/.local/straight/repos/acp.el/acp.el
-/home/junghan/doomemacs/.local/straight/repos/agent-shell/agent-shell.el
-```
-
-Use them as semantic references for:
-- capability detection
-- `resume > load > new`
-- session bootstrap discipline
-- why agent-shell can feel smoother on resume UX even when pi intentionally does not hydrate backend transcripts
-
-Do not import their UI/transcript/session-browser machinery unless there is a very strong reason.
-
 ---
 
 ## Verification
@@ -460,8 +445,8 @@ npm run typecheck
 npm run check-registration
 npm run check-mcp     # pure logic gate, no Claude/ACP subprocess
 npm run check-backends
-npm run check-claude-sessions -- /home/junghan/repos/gh/agent-config
-./run.sh smoke /home/junghan/repos/gh/agent-config
+npm run check-claude-sessions -- /path/to/consumer-project
+./run.sh smoke /path/to/consumer-project
 ```
 
 This axis is cheap, fast, deterministic. Run on every meaningful change.
@@ -486,7 +471,7 @@ For any change that touches backend selection, launch resolution, session bootst
    - `npm run check-mcp`
    - `npm run check-backends`
 2. operator-facing runtime smoke passes for **Claude**
-   - `./run.sh smoke /home/junghan/repos/gh/agent-config`
+   - `./run.sh smoke /path/to/consumer-project`
 3. operator-facing runtime smoke passes for **Codex**
    - either a dedicated `./run.sh smoke-codex ...` / `./run.sh smoke-all ...`
    - or an equivalent explicit Codex smoke path with the exact command recorded in the result
@@ -501,7 +486,7 @@ If one backend is only covered by deterministic checks but not runtime smoke, do
 For cross-process continuity, verify with the same pi session file:
 
 ```bash
-cd /home/junghan/repos/gh/agent-config
+cd /path/to/consumer-project
 SESSION_FILE=$(mktemp /tmp/pi-shell-acp-XXXXXX.jsonl)
 pi --session "$SESSION_FILE" --model pi-shell-acp/claude-sonnet-4-6 -p 'Remember this exact secret token for later: test-token-123. Reply only READY.'
 pi --session "$SESSION_FILE" --model pi-shell-acp/claude-sonnet-4-6 -p 'What was the secret token? Reply with the token only.'

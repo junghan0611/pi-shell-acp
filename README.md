@@ -136,17 +136,6 @@ These are the main references behind this repo:
 - [junghan0611/agent-config](https://github.com/junghan0611/agent-config)
   - Real consumer repo where `pi-shell-acp` is installed and validated via `./run.sh setup`
 
-### Local reference paths used during development
-
-On this machine, the most important local reference files are:
-
-```text
-/home/junghan/doomemacs/.local/straight/repos/acp.el/acp.el
-/home/junghan/doomemacs/.local/straight/repos/agent-shell/agent-shell.el
-```
-
-When working on session bootstrap, capability detection, or resume/load behavior, compare conceptually against those files — but only port the minimal semantics needed here.
-
 ## Quick Start
 
 ### Local check
@@ -158,17 +147,17 @@ npm run typecheck
 npm run check-registration                               # deterministic per-runtime provider registration gate
 npm run check-mcp                                        # deterministic MCP validation gate (no Claude/ACP subprocess)
 npm run check-backends                                   # deterministic backend launch/meta gate (no ACP subprocess)
-npm run check-claude-sessions -- /home/junghan/repos/gh/agent-config  # verify pi persisted sessions are visible to Claude SDK
-./run.sh smoke /home/junghan/repos/gh/agent-config       # Claude runtime smoke (backward-compatible default)
-./run.sh smoke-codex /home/junghan/repos/gh/agent-config # Codex runtime smoke
-./run.sh smoke-all /home/junghan/repos/gh/agent-config   # required dual-backend runtime smoke gate
-./run.sh verify-resume /home/junghan/repos/gh/agent-config             # exact pi -> ACP -> Claude continuity check with acpSessionId diagnostics
+npm run check-claude-sessions -- /path/to/consumer-project  # verify pi persisted sessions are visible to Claude SDK
+./run.sh smoke /path/to/consumer-project       # Claude runtime smoke (backward-compatible default)
+./run.sh smoke-codex /path/to/consumer-project # Codex runtime smoke
+./run.sh smoke-all /path/to/consumer-project   # required dual-backend runtime smoke gate
+./run.sh verify-resume /path/to/consumer-project             # exact pi -> ACP -> Claude continuity check with acpSessionId diagnostics
 ```
 
 ### Use from pi
 
 ```bash
-cd ~/repos/gh/agent-config
+cd /path/to/consumer-project
 pi --list-models pi-shell-acp
 pi --model pi-shell-acp/claude-sonnet-4-6 -p 'ok만 답하세요'
 ```
@@ -263,7 +252,7 @@ Install / verify:
 pnpm add -g @zed-industries/codex-acp@0.11.1
 which codex-acp
 pnpm list -g --depth=0 | grep codex-acp
-./run.sh smoke-codex /home/junghan/repos/gh/agent-config
+./run.sh smoke-codex /path/to/consumer-project
 ```
 
 The first-class Codex smoke defaults to `gpt-5.2`, which is a more reliable operator-facing runtime check than `codex-mini-latest` on ChatGPT-backed Codex accounts. (`gpt-5.4` was the previous default but has been observed to be service-unstable in practice.)
@@ -297,7 +286,7 @@ The long-term direction is backend-agnostic capability parity: if pi exposes MCP
 ## Cross-Process Continuity Test
 
 ```bash
-cd ~/repos/gh/agent-config
+cd /path/to/consumer-project
 SESSION_FILE=$(mktemp /tmp/pi-shell-acp-XXXXXX.jsonl)
 pi --session "$SESSION_FILE" --model pi-shell-acp/claude-sonnet-4-6 -p 'Remember this exact secret token for later: test-token-123. Reply only READY.'
 pi --session "$SESSION_FILE" --model pi-shell-acp/claude-sonnet-4-6 -p 'What was the secret token? Reply with the token only.'
@@ -313,8 +302,8 @@ test-token-123
 For operator-facing identity verification, run:
 
 ```bash
-cd ~/repos/gh/pi-shell-acp
-./run.sh verify-resume /home/junghan/repos/gh/agent-config
+cd /path/to/pi-shell-acp
+./run.sh verify-resume /path/to/consumer-project
 ```
 
 What to look for:
@@ -341,10 +330,10 @@ and make sure `codex-acp` is resolvable, or set `CODEX_ACP_COMMAND='...'` explic
 Use first-class command paths instead of hidden env overrides:
 
 ```bash
-./run.sh smoke /home/junghan/repos/gh/agent-config        # Claude runtime smoke (kept for backward compatibility)
-./run.sh smoke-claude /home/junghan/repos/gh/agent-config # explicit Claude runtime smoke
-./run.sh smoke-codex /home/junghan/repos/gh/agent-config  # explicit Codex runtime smoke (default model: gpt-5.2)
-./run.sh smoke-all /home/junghan/repos/gh/agent-config    # required dual-backend runtime verification
+./run.sh smoke /path/to/consumer-project        # Claude runtime smoke (kept for backward compatibility)
+./run.sh smoke-claude /path/to/consumer-project # explicit Claude runtime smoke
+./run.sh smoke-codex /path/to/consumer-project  # explicit Codex runtime smoke (default model: gpt-5.2)
+./run.sh smoke-all /path/to/consumer-project    # required dual-backend runtime verification
 ```
 
 `smoke-all` is the review/setup quality gate for a repo that publicly claims Claude + Codex support.
