@@ -114,9 +114,9 @@ A brief 0.67.2 pin lived in commit `768baf4` (step 5 verbatim ingestion) as an i
 
 ### Typecheck boundary
 
-`tsconfig.json` excludes only `node_modules` and `mcp/` from the root typecheck.
+`tsconfig.json` excludes `node_modules` and `mcp/` from the root typecheck.
 
-- `mcp/*` are self-contained npm subprojects with their own `tsconfig.json` + `dist/` (they own their typecheck).
+- `mcp/*` is plain source under the single root package (no sub-package, no `tsconfig.json`, no `dist/` — that layout was removed in `035254b`). At runtime each bridge launcher (`mcp/*/start.sh`) runs `node --experimental-strip-types` on `src/*.ts` directly. `mcp/` is excluded from root tsc because `check-models` needs tsc to emit a verification build, and pulling bridge sources in would require `allowImportingTsExtensions: true` which forces `noEmit: true`. Bridge code is instead covered by behavioral tests (`mcp/pi-tools-bridge/test.sh`) plus a parse-time smoke at every ACP session boot. Acceptable tradeoff for a small, isolated surface.
 - `pi-extensions/` **is covered** by the root typecheck (as of `da97fa9`). Previously excluded because the ingested code had pre-existing type drift against pi library types; the 0.70.0 adaptation closed that gap. Now a real typecheck gate, not an escape hatch.
 
 ### Phase 0.5 — sync/async mode contract (completed upstream at agent-config `e5aa5a1`)
@@ -126,7 +126,7 @@ Phase 0.5 landed in [agent-config `e5aa5a1`](https://github.com/junghan0611/agen
 **What it did.** `delegate_resume` previously had cross-surface asymmetry: pi-native was async (followUp delivery), MCP bridge was already sync. `e5aa5a1` added `mode: "sync" | "async"` (default `"sync"`) on the pi-native surface, wiring the sync branch to the same `runDelegateResumeSync` the MCP bridge already called. Async branch is byte-identical to the pre-commit detached-followUp path.
 
 **Evidence carried into ingestion.**
-- MCP bridge test.sh: 15/15 baseline
+- MCP bridge test.sh: 15/15 baseline at `e5aa5a1`; now 13/13 after the narrow-scope cleanup in `035254b` (two E2E assertions tied to the removed `session_search`/`knowledge_search` tools went with them)
 - sentinel cell 1 (native → `openai-codex/gpt-5.2`): sync inline return, identity preserved, model=gpt-5.2. Artifact `/tmp/sentinel-phase05-cell1.json`.
 - ad-hoc async smoke: Resume ID 7d7c5b84 spawned detached (PID 54061), followUp semantics unchanged.
 - callsite audit: only LLM-driven tool invocations consume `delegate_resume` — no internal callers break from the default flip.
@@ -147,7 +147,7 @@ Practical consequence at ingestion: `send_to_session` and `list_sessions` move h
 
 **Axis 1 — Protocol smoke (inherited from agent-config).** The smoke paths that validated entwurf in agent-config must pass against the same surfaces hosted here.
 
-- `mcp/pi-tools-bridge/test.sh` — full protocol tests (15/15 baseline at `e5aa5a1`)
+- `mcp/pi-tools-bridge/test.sh` — protocol + negative-path tests (15/15 baseline at `e5aa5a1`; 13/13 after narrow-scope cleanup at `035254b`)
 - entwurf spawn sentinel cell (sync + async variants) — the same sentinel artifact shape agent-config used at `e5aa5a1` (`/tmp/sentinel-phase05-cell1.json`)
 - `scripts/session-messaging-smoke.sh` — **4-case matrix**: native→native (baseline), native→ACP, MCP→native, MCP→ACP. Originally framed as a "3-way" matrix; the actual smoke in agent-config `7545af8` includes the native↔native baseline as a fourth case to catch regressions in the non-ACP path.
 
@@ -191,7 +191,7 @@ Stabilization commits (read in order for the release story):
 Axis 1 gates at release baseline (all pass against the state above, post Phase 5 wiring in `a70500a`):
 
 ```text
-pnpm run typecheck                   clean (root + mcp subprojects)
+pnpm run typecheck                   clean (root; mcp/* excluded — see § Typecheck boundary)
 ./run.sh check-registration          7/7
 ./run.sh check-mcp                   15/15
 ./run.sh check-models                3/3 (curated + cap + override)

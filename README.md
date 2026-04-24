@@ -103,7 +103,7 @@ This is a deliberate architectural choice: `pi-shell-acp` persists only enough t
 | `pi-extensions/delegate.ts`            | pi-native delegate spawn (sync + async modes, Phase 0.5)         |
 | `pi-extensions/lib/delegate-core.ts`   | shared core: registry resolution + Identity Preservation Rule    |
 | `pi/delegate-targets.json`             | SSOT allowlist of `(provider, model)` spawn targets              |
-| `mcp/pi-tools-bridge/`                 | MCP adapter promoting pi-side tools (delegate, session_search, knowledge_search, send_to_session, list_sessions) to ACP hosts |
+| `mcp/pi-tools-bridge/`                 | MCP adapter promoting pi-side tools (`send_to_session`, `list_sessions`, `delegate`, `delegate_resume`) to ACP hosts. Deliberately narrow — semantic/knowledge search is a skill concern, not a bridge concern. |
 | `mcp/session-bridge/`                  | Claude Code ↔ pi Unix-socket session bridge (wire-compatible with pi's `control.ts`) |
 | `scripts/session-messaging-smoke.sh`   | 4-case matrix verifying send_to_session across native/ACP senders × native/ACP targets |
 
@@ -236,7 +236,7 @@ Notes:
 - The bridge session signature includes the selected backend and the SHA-256 hash of the canonical `mcpServers` shape — changing either invalidates the persisted session automatically, so the bridge never silently reuses a stale backend/config combination.
 - This bridge does **not** read `~/.mcp.json` or any other ambient backend config. If you want a server exposed, list it here.
 - Invalid `mcpServers` entries fail fast with a single aggregated error (`McpServerConfigError`) that names every offending server — no silent skips. Validate locally with `npm run check-mcp` before shipping a config.
-- pi-native extension tools (`delegate`, `session_search`, `knowledge_search`, …) are **not** auto-promoted. If you want them inside Claude, build a dedicated external MCP adapter and register it here. *(Current state. In the entwurf migration, `pi-tools-bridge` — the MCP adapter that promotes the pi-side surface — moves into this repo and becomes a first-class component; see AGENTS.md `## Entwurf Orchestration`.)*
+- pi-native extension tools are **not** auto-promoted into ACP sessions. The in-repo `mcp/pi-tools-bridge/` is the canonical MCP adapter that promotes the narrow pi-side surface (`send_to_session`, `list_sessions`, `delegate`, `delegate_resume`) — register it here by name. External adapters remain possible for additional surfaces, but the defaults stay narrow. See AGENTS.md `## Entwurf Orchestration`.
 
 After updating `agent-config`, verify:
 

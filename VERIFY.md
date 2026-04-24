@@ -177,7 +177,7 @@ Fail:
 
 ### 1A.3 Layer 2 — Does It Understand the pi-facing MCP Tool Boundary?
 
-Intent: **Prevent tool confusion.** By default, pi custom tools (`delegate`, `session_search`, `knowledge_search`, etc.) not being visible is normal. What matters is "does it honestly say whether it can see them, and not pretend it can when it can't."
+Intent: **Prevent tool confusion.** By default, pi custom tools (`delegate`, `delegate_resume`, `send_to_session`, `list_sessions`) not being visible is normal — they appear only when the `pi-tools-bridge` MCP adapter is explicitly registered in settings. What matters is "does the session honestly say whether it can see them, and not pretend it can when it can't."
 
 Pass:
 - Says tools it cannot see are not visible (e.g., "delegate tool not visible", "pi custom tools not visible")
@@ -185,7 +185,7 @@ Pass:
 
 Fail:
 - Pretends to use a tool it cannot see
-- Mimics delegate/session_search by recursively calling `pi` via `bash`
+- Mimics `delegate` / `send_to_session` by recursively calling `pi` via `bash`
 - Blindly uses only one side when asked about the boundary
 
 Note: check the default visibility boundary together with the operator verification in §8.4, §8.5.
@@ -410,7 +410,7 @@ Observation points:
 
 ### 8.4 pi Custom Tool Visibility Check — Current Key Suspect Point
 
-What we're looking at here is not native tools like `bash`, `read`, `grep`, but **whether pi's custom tools (`delegate`, `delegate_status`, `session_search`, `knowledge_search`, etc.) are visible when going through ACP**.
+What we're looking at here is not native tools like `bash`, `read`, `grep`, but **whether pi's custom tools (`delegate`, `delegate_resume`, `send_to_session`, `list_sessions` — the narrow set exposed by `mcp/pi-tools-bridge/` as of `035254b`) are visible when going through ACP**.
 
 Verification intent: inside the `pi-shell-acp/claude-sonnet-4-6` target, ask "can you see this tool?" and have it reply "not visible" if it cannot. Agreed exact responses:
 - Single delegate visibility: `delegate tool not visible`
@@ -432,8 +432,8 @@ Current code suspect points:
 That is, with the current default (no configuration), **Claude Code native tools are visible but pi custom tools are not** — this is the normal state.
 
 This boundary judgment applies equally to Codex, not just Claude. However, MCP tool name notation may differ slightly between backends.
-- Claude example: `mcp__pi-tools-bridge__session_search`
-- Codex example: `mcp__pi_tools_bridge__session_search`
+- Claude example: `mcp__pi-tools-bridge__send_to_session`
+- Codex example: `mcp__pi_tools_bridge__send_to_session`
 
 Therefore, it's safer to set the verification criterion on whether **bridge name (`pi-tools-bridge` / `pi_tools_bridge`) + tool suffix** appear together.
 
