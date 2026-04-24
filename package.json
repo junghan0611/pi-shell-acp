@@ -13,17 +13,19 @@
     "@agentclientprotocol/claude-agent-acp": "0.30.0",
     "@agentclientprotocol/sdk": "0.19.1",
     "@modelcontextprotocol/sdk": "^1.12.1",
+    "@sinclair/typebox": "^0.34.0",
     "@zed-industries/codex-acp": "0.11.1",
     "zod": "^3.25.0 || ^4.0.0"
   },
   "peerDependencies": {
     "@mariozechner/pi-ai": "*",
-    "@mariozechner/pi-coding-agent": "*"
+    "@mariozechner/pi-coding-agent": "*",
+    "@mariozechner/pi-tui": "*"
   },
   "devDependencies": {
     "@mariozechner/pi-ai": "0.70.0",
     "@mariozechner/pi-coding-agent": "0.70.0",
-    "@sinclair/typebox": "^0.34.0",
+    "@mariozechner/pi-tui": "0.70.0",
     "@types/node": "^24.3.0",
     "typescript": "^6.0.2"
   },

@@ -7,5 +7,5 @@
     "strict": false,
     "skipLibCheck": true
   },
-  "exclude": ["node_modules", "mcp"]
+  "exclude": ["node_modules", "mcp", "pi-extensions/session-control.ts"]
 }

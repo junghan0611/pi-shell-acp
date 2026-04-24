@@ -3,5 +3,6 @@ node_modules/
 .tmp-verify/
 /.agent-shell/
 /.codex
+/.claude
 
 CHECKLIST.md

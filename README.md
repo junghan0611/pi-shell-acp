@@ -102,9 +102,10 @@ This is a deliberate architectural choice: `pi-shell-acp` persists only enough t
 |----------------------------------------|------------------------------------------------------------------|
 | `pi-extensions/delegate.ts`            | pi-native delegate spawn (sync + async modes, Phase 0.5)         |
 | `pi-extensions/lib/delegate-core.ts`   | shared core: registry resolution + Identity Preservation Rule    |
+| `pi-extensions/session-control.ts`     | pi session-control server — opens `~/.pi/session-control/<id>.sock`, handles `send`/`get_message`/`clear`/`abort`/`subscribe turn_end` RPC, registers the native `send_to_session` tool. Ingested from [Armin Ronacher's `agent-stuff`](https://github.com/mitsuhiko/agent-stuff) (Apache 2.0), with `get_summary` dropped to avoid a `pi-ai.complete` dependency. |
 | `pi/delegate-targets.json`             | SSOT allowlist of `(provider, model)` spawn targets              |
-| `mcp/pi-tools-bridge/`                 | MCP adapter promoting pi-side tools (`send_to_session`, `list_sessions`, `delegate`, `delegate_resume`) to ACP hosts. Deliberately narrow — semantic/knowledge search is a skill concern, not a bridge concern. |
-| `mcp/session-bridge/`                  | Claude Code ↔ pi Unix-socket session bridge (wire-compatible with pi's `control.ts`) |
+| `mcp/pi-tools-bridge/`                 | MCP adapter promoting pi-side tools (`send_to_session`, `list_sessions`, `delegate`, `delegate_resume`) to ACP hosts. Depends on `pi-extensions/session-control.ts` being loaded in the *target* pi session to have a socket to talk to. Deliberately narrow — semantic/knowledge search is a skill concern, not a bridge concern. |
+| `mcp/session-bridge/`                  | Claude Code ↔ pi Unix-socket session bridge (wire-compatible with pi's session-control) |
 | `scripts/session-messaging-smoke.sh`   | 4-case matrix verifying send_to_session across native/ACP senders × native/ACP targets |
 
 The identifier `delegate` is the current in-repo name. A single rename commit to `entwurf` is pending as the final cosmetic step of the migration — see AGENTS.md `§Entwurf Orchestration § Migration Plan (step 6)`.

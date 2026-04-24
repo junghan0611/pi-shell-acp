@@ -80,27 +80,29 @@ This asymmetry is load-bearing. Do not "fix" it prematurely.
 
 ### Incoming Artifacts
 
-Five surfaces move into this repo. Landing positions are provisional and will be finalized at ingestion time.
+Six surfaces move into this repo. Landing positions are provisional and will be finalized at ingestion time.
 
-| Source (agent-config)                  | Destination (pi-shell-acp, planned)           | Purpose                                                          |
+| Source                                 | Destination (pi-shell-acp, planned)           | Purpose                                                          |
 |----------------------------------------|-----------------------------------------------|------------------------------------------------------------------|
-| `pi-extensions/delegate.ts`            | `entwurf/spawn.ts` (or similar)               | pi-native spawn entry                                            |
-| `pi-extensions/lib/delegate-core.ts`   | `entwurf/core.ts`                             | shared core: registry resolution + identity lock                 |
-| `pi/delegate-targets.json`             | `entwurf/targets.json`                        | SSOT allowlist of `(provider, model)` pairs                      |
-| `mcp/pi-tools-bridge/`                 | `mcp/pi-tools-bridge/`                        | MCP adapter exposing entwurf (delegate/delegate_resume) + session-control (send_to_session/list_sessions) to ACP hosts |
-| `mcp/session-bridge/`                  | `mcp/session-bridge/`                         | Claude Code ↔ pi Unix-socket session bridge                      |
+| `pi-extensions/delegate.ts` (agent-config) | `entwurf/spawn.ts` (or similar)           | pi-native spawn entry                                            |
+| `pi-extensions/lib/delegate-core.ts` (agent-config) | `entwurf/core.ts`                | shared core: registry resolution + identity lock                 |
+| `pi/delegate-targets.json` (agent-config) | `entwurf/targets.json`                     | SSOT allowlist of `(provider, model)` pairs                      |
+| `mcp/pi-tools-bridge/` (agent-config)  | `mcp/pi-tools-bridge/`                        | MCP adapter exposing entwurf (delegate/delegate_resume) + session-control (send_to_session/list_sessions) to ACP hosts |
+| `mcp/session-bridge/` (agent-config)   | `mcp/session-bridge/`                         | Claude Code ↔ pi Unix-socket session bridge                      |
+| `extensions/control.ts` (Armin agent-stuff, Apache 2.0) | `pi-extensions/session-control.ts` | pi session-control server (Unix socket, RPC protocol, `send_to_session` native tool). Closes the hidden runtime dependency that previously made pi-tools-bridge require a private consumer repo to work. |
 
-**"One project" principle — preserved, not split.** agent-config's AGENTS.md Entwurf Orchestration section states: *"After migration both live together inside pi-shell-acp; the 'one project' principle is preserved, just with a new home."* This repo honors that contract. `pi-extensions`-equivalent surface and `mcp/*` adapters live side-by-side here; they are not to be split into sibling repos later.
+**"One project" principle — preserved, not split.** agent-config's AGENTS.md Entwurf Orchestration section states: *"After migration both live together inside pi-shell-acp; the 'one project' principle is preserved, just with a new home."* This repo honors that contract. `pi-extensions`-equivalent surface and `mcp/*` adapters live side-by-side here; they are not to be split into sibling repos later. The session-control extension is the public counterpart of this principle — pi-shell-acp owns the server side of `send_to_session`, not just the bridge-side caller.
 
 ### Runtime compatibility — aligned to pi 0.70.0
 
 This repo pins exact pi library versions that match the pi runtime users actually install. pi is a fast-moving tool; users update immediately. Carrying an old library pin into a public release invites drift from day one.
 
-| Package | pi-shell-acp devDeps | Rationale |
-|---------|----------------------|-----------|
-| `@mariozechner/pi-coding-agent` | `0.70.0` (exact pin) | matches current pi runtime; exact pin for release reproducibility |
-| `@mariozechner/pi-ai` | `0.70.0` (exact pin) | same |
-| `@sinclair/typebox` | `^0.34.0` | direct import in `pi-extensions/delegate.ts` |
+| Package | pi-shell-acp where | Rationale |
+|---------|---------------------|-----------|
+| `@mariozechner/pi-coding-agent` | peerDep + devDep `0.70.0` | matches current pi runtime; exact pin for release reproducibility |
+| `@mariozechner/pi-ai` | peerDep + devDep `0.70.0` | `StringEnum` / `TextContent` used by session-control.ts |
+| `@mariozechner/pi-tui` | peerDep + devDep `0.70.0` | `Box/Container/Markdown/Spacer/Text` used by session-control.ts tool-result renderer (message-received / clear) |
+| `@sinclair/typebox` | runtime dep `^0.34.0` | `Type.*` used by `pi-extensions/delegate.ts` + `pi-extensions/session-control.ts`; moved to runtime deps so `pi install git:…` (which runs `npm install --omit=dev`) still resolves it |
 
 **0.70.0 adaptation log** (landed in commit `da97fa9`, authored as "Commit A" in the stabilization round):
 
@@ -114,10 +116,11 @@ A brief 0.67.2 pin lived in commit `768baf4` (step 5 verbatim ingestion) as an i
 
 ### Typecheck boundary
 
-`tsconfig.json` excludes `node_modules` and `mcp/` from the root typecheck.
+`tsconfig.json` excludes `node_modules`, `mcp/`, and `pi-extensions/session-control.ts` from the root typecheck.
 
 - `mcp/*` is plain source under the single root package (no sub-package, no `tsconfig.json`, no `dist/` — that layout was removed in `035254b`). At runtime each bridge launcher (`mcp/*/start.sh`) runs `node --experimental-strip-types` on `src/*.ts` directly. `mcp/` is excluded from root tsc because `check-models` needs tsc to emit a verification build, and pulling bridge sources in would require `allowImportingTsExtensions: true` which forces `noEmit: true`. Bridge code is instead covered by behavioral tests (`mcp/pi-tools-bridge/test.sh`) plus a parse-time smoke at every ACP session boot. Acceptable tradeoff for a small, isolated surface.
-- `pi-extensions/` **is covered** by the root typecheck (as of `da97fa9`). Previously excluded because the ingested code had pre-existing type drift against pi library types; the 0.70.0 adaptation closed that gap. Now a real typecheck gate, not an escape hatch.
+- `pi-extensions/delegate.ts` + `pi-extensions/lib/*` **are covered** by the root typecheck (as of `da97fa9`). Previously excluded because the ingested code had pre-existing type drift against pi library types; the 0.70.0 adaptation closed that gap.
+- `pi-extensions/session-control.ts` is **excluded** from the root typecheck. The ingested Armin `control.ts` uses `pi-coding-agent` / `pi-ai` / `@sinclair/typebox` surfaces (`StringEnum` return type, `pi.on("session_switch")` / `session_fork`, `AgentToolResult.isError`, etc.) that no longer line up with the 0.70.0 declared types on our end. The runtime behaviour still works — pi loads the extension via strip-types at session start — so we treat it the same way as `mcp/*`: runtime-verified, outside the root typecheck. Pull it back in when Armin's type shape and our pin converge, not by editing the ingested source to chase our local tsc opinion.
 
 ### Phase 0.5 — sync/async mode contract (completed upstream at agent-config `e5aa5a1`)
 
