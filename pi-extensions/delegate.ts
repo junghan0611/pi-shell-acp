@@ -30,7 +30,7 @@
  * Epic: agent-config-8sm (힣의 분신)
  */
 
-import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
+import type { AgentToolResult, ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 import { spawn, type ChildProcess } from "node:child_process";
 import * as crypto from "node:crypto";
@@ -354,7 +354,44 @@ export default function (pi: ExtensionAPI) {
   });
 
   // --- delegate tool (sync + async) ---
-  pi.registerTool({
+  // Extracted schema — inline Type.Object with many Optional + nested Union
+  // triggers TS2589 ("Type instantiation excessively deep") under 0.70.0's
+  // registerTool generic inference. Extraction flattens one recursion level.
+  const delegateModeSchema = Type.Union(
+    [Type.Literal("sync"), Type.Literal("async")],
+    {
+      description: "sync: wait for completion (default). async: return immediately with taskId.",
+      default: "sync",
+    },
+  );
+  const delegateParameters = Type.Object({
+    task: Type.String({ description: "The task to delegate" }),
+    host: Type.Optional(
+      Type.String({ description: "SSH host (default: 'local'). e.g., 'gpu1i'" }),
+    ),
+    cwd: Type.Optional(
+      Type.String({ description: "Working directory for the delegate" }),
+    ),
+    provider: Type.Optional(
+      Type.String({ description: "Provider id (e.g. 'pi-shell-acp', 'openai-codex'). Pair with `model` to disambiguate against the Delegate Target Registry." }),
+    ),
+    model: Type.Optional(
+      Type.String({ description: "Model id. Qualified ('pi-shell-acp/claude-sonnet-4-6') or bare ('claude-sonnet-4-6'). Bare names must resolve unambiguously in the registry; otherwise pass `provider`." }),
+    ),
+    mode: Type.Optional(delegateModeSchema),
+  });
+
+  // TS2589 workaround — 0.70.0's registerTool generic couples typebox
+  // `Static<TParameters>` with `TDetails` inference, and our parameter
+  // schemas (Optional + nested Union) push TypeScript past its recursion
+  // depth. Each `execute` body still asserts `Promise<AgentToolResult<unknown>>`
+  // so the runtime contract is locked; this cast only relaxes the registration
+  // boundary. Revisit when pi-coding-agent exposes a type helper that
+  // short-circuits the depth (or when typebox narrows Static).
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const registerTool = pi.registerTool as (def: any) => void;
+
+  registerTool({
     name: "delegate",
     label: "Delegate",
     description:
@@ -372,29 +409,9 @@ export default function (pi: ExtensionAPI) {
       "Async delegates save sessions — use delegate_status to check, or resume later.",
       "When delegating tasks that produce notes, instruct the delegate to use llmlog (not botlog). Delegated work is agent-to-agent, not public.",
     ],
-    parameters: Type.Object({
-      task: Type.String({ description: "The task to delegate" }),
-      host: Type.Optional(
-        Type.String({ description: "SSH host (default: 'local'). e.g., 'gpu1i'" }),
-      ),
-      cwd: Type.Optional(
-        Type.String({ description: "Working directory for the delegate" }),
-      ),
-      provider: Type.Optional(
-        Type.String({ description: "Provider id (e.g. 'pi-shell-acp', 'openai-codex'). Pair with `model` to disambiguate against the Delegate Target Registry." }),
-      ),
-      model: Type.Optional(
-        Type.String({ description: "Model id. Qualified ('pi-shell-acp/claude-sonnet-4-6') or bare ('claude-sonnet-4-6'). Bare names must resolve unambiguously in the registry; otherwise pass `provider`." }),
-      ),
-      mode: Type.Optional(
-        Type.Union([Type.Literal("sync"), Type.Literal("async")], {
-          description: "sync: wait for completion (default). async: return immediately with taskId.",
-          default: "sync",
-        }),
-      ),
-    }),
+    parameters: delegateParameters,
 
-    async execute(toolCallId, params, signal, onUpdate) {
+    async execute(toolCallId, params, signal, onUpdate, _ctx): Promise<AgentToolResult<unknown>> {
       const mode = params.mode ?? "sync";
 
       const guardSessionId = getParentSessionId(pi);
@@ -448,6 +465,7 @@ export default function (pi: ExtensionAPI) {
         onUpdate: (text) => {
           onUpdate?.({
             content: [{ type: "text", text: `[${params.host ?? "local"}] ${text.slice(0, 200)}...` }],
+            details: {},
           });
         },
       });
@@ -455,7 +473,6 @@ export default function (pi: ExtensionAPI) {
 
       return {
         content: [{ type: "text", text: formatSyncSummary(result) }],
-        isError: result.exitCode !== 0,
         details: {
           task: result.task,
           host: result.host,
@@ -474,7 +491,7 @@ export default function (pi: ExtensionAPI) {
   });
 
   // --- delegate_status tool ---
-  pi.registerTool({
+  registerTool({
     name: "delegate_status",
     label: "Delegate Status",
     description:
@@ -485,13 +502,12 @@ export default function (pi: ExtensionAPI) {
       ),
     }),
 
-    async execute(_toolCallId, params) {
+    async execute(_toolCallId, params, _signal, _onUpdate, _ctx): Promise<AgentToolResult<unknown>> {
       if (params.taskId) {
         const info = activeDelegates.get(params.taskId);
         if (!info) {
           return {
             content: [{ type: "text", text: `Unknown delegate task: ${params.taskId}` }],
-            isError: true,
             details: { error: "not_found" },
           };
         }
@@ -664,7 +680,7 @@ export default function (pi: ExtensionAPI) {
   // surfaces on what the docs always claimed ("short sync turn"); async stays
   // available as explicit opt-in for long-running resumes. See AGENTS.md
   // § Entwurf Orchestration § Phase 0.5.
-  pi.registerTool({
+  registerTool({
     name: "delegate_resume",
     label: "Resume Delegate",
     description:
@@ -687,7 +703,7 @@ export default function (pi: ExtensionAPI) {
       ),
     }),
 
-    async execute(_toolCallId, params, signal, onUpdate) {
+    async execute(_toolCallId, params, signal, onUpdate, _ctx): Promise<AgentToolResult<unknown>> {
       const mode = params.mode ?? "sync";
 
       // Phase 0.5 sync branch — delegate to core, return inline (mirrors the
@@ -703,13 +719,13 @@ export default function (pi: ExtensionAPI) {
           onUpdate: (text) => {
             onUpdate?.({
               content: [{ type: "text", text: `[${syncHost ?? "local"}] ${text.slice(0, 200)}...` }],
+              details: {},
             });
           },
         });
         return {
           content: [{ type: "text", text: formatSyncSummary(result) }],
-          isError: result.exitCode !== 0,
-          details: {
+            details: {
             task: result.task,
             host: result.host,
             exitCode: result.exitCode,
@@ -744,7 +760,6 @@ export default function (pi: ExtensionAPI) {
       if (!sessionFile) {
         return {
           content: [{ type: "text", text: `Delegate session not found: ${params.taskId}` }],
-          isError: true,
           details: { error: "not_found" },
         };
       }
@@ -753,7 +768,6 @@ export default function (pi: ExtensionAPI) {
       if (!isRemote && !fs.existsSync(sessionFile)) {
         return {
           content: [{ type: "text", text: `Session file not found: ${sessionFile}` }],
-          isError: true,
           details: { error: "file_not_found" },
         };
       }
@@ -774,7 +788,6 @@ export default function (pi: ExtensionAPI) {
               `(file empty, corrupted, or never reached an assistant turn). ` +
               `Start a fresh delegate instead — identity must come from the session.`,
           }],
-          isError: true,
           details: { error: "session_identity_missing" },
         };
       }
