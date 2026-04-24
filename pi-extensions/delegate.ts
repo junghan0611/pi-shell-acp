@@ -471,6 +471,20 @@ export default function (pi: ExtensionAPI) {
       });
       markDelegateTargetUsed(guardSessionId, guardTargetKey);
 
+      // Fail-fast under pi 0.70: AgentToolResult lost `isError`; the contract
+      // is now "throw on failure instead of encoding errors in content". A
+      // non-zero exit is a delegate failure — surface it as an exception so
+      // the caller cannot treat this as a successful (but empty) result.
+      if (result.exitCode !== 0) {
+        const summary = formatSyncSummary(result);
+        const reason = result.error ? `: ${result.error}` : "";
+        throw new Error(
+          `delegate sync failed (exitCode=${result.exitCode}${reason}). ` +
+          `host=${result.host} model=${result.model} turns=${result.turns}. ` +
+          `Session: ${result.sessionFile}\n\n${summary}`,
+        );
+      }
+
       return {
         content: [{ type: "text", text: formatSyncSummary(result) }],
         details: {
@@ -506,10 +520,15 @@ export default function (pi: ExtensionAPI) {
       if (params.taskId) {
         const info = activeDelegates.get(params.taskId);
         if (!info) {
-          return {
-            content: [{ type: "text", text: `Unknown delegate task: ${params.taskId}` }],
-            details: { error: "not_found" },
-          };
+          // Fail-fast under pi 0.70: explicit unknown taskId is a caller
+          // mistake (or a stale reference). Throw rather than return a
+          // content-only "not found" message that the model might paper over.
+          throw new Error(
+            `Unknown delegate task: ${params.taskId}. ` +
+            `The taskId is not tracked by this session — it may belong to a different pi session, ` +
+            `have completed and been cleaned up, or never existed. ` +
+            `Call delegate_status without taskId to list active delegates.`,
+          );
         }
 
         const alive = info.pid > 0 && isProcessAlive(info.pid);
@@ -723,6 +742,20 @@ export default function (pi: ExtensionAPI) {
             });
           },
         });
+
+        // Fail-fast under pi 0.70 — non-zero exit from the resumed session is
+        // a delegate failure. Throw so callers can't treat the partial output
+        // as a successful resume.
+        if (result.exitCode !== 0) {
+          const summary = formatSyncSummary(result);
+          const reason = result.error ? `: ${result.error}` : "";
+          throw new Error(
+            `delegate_resume sync failed (exitCode=${result.exitCode}${reason}). ` +
+            `originalTaskId=${params.taskId} resumedTaskId=${result.taskId} ` +
+            `host=${result.host} model=${result.model} turns=${result.turns}.\n\n${summary}`,
+          );
+        }
+
         return {
           content: [{ type: "text", text: formatSyncSummary(result) }],
             details: {
@@ -758,18 +791,24 @@ export default function (pi: ExtensionAPI) {
       }
 
       if (!sessionFile) {
-        return {
-          content: [{ type: "text", text: `Delegate session not found: ${params.taskId}` }],
-          details: { error: "not_found" },
-        };
+        // Fail-fast: caller asked to resume a taskId that has no traceable
+        // session (not in this session's active-delegates map, no match on
+        // disk). Throw so the agent stops trying to continue this task.
+        throw new Error(
+          `Cannot resume delegate_resume async: session not found for taskId=${params.taskId}. ` +
+          `The task may belong to a different pi session, have been cleaned up, ` +
+          `or the id may be wrong. Call delegate_status to list active delegates.`,
+        );
       }
 
       const isRemote = host !== "local";
       if (!isRemote && !fs.existsSync(sessionFile)) {
-        return {
-          content: [{ type: "text", text: `Session file not found: ${sessionFile}` }],
-          details: { error: "file_not_found" },
-        };
+        throw new Error(
+          `Cannot resume delegate_resume async: session file missing at ${sessionFile} ` +
+          `(taskId=${params.taskId}, host=${host}). ` +
+          `The session record exists in memory but the JSONL on disk is gone — ` +
+          `likely cleaned up or deleted externally.`,
+        );
       }
 
       const sessionAnalysis = !isRemote && fs.existsSync(sessionFile)
@@ -780,16 +819,15 @@ export default function (pi: ExtensionAPI) {
       // never invent an identity for a resume.
       const resumeModel = info?.model ?? sessionAnalysis?.lastModel ?? null;
       if (!resumeModel) {
-        return {
-          content: [{
-            type: "text",
-            text:
-              `Cannot resume ${params.taskId}: session has no recorded model ` +
-              `(file empty, corrupted, or never reached an assistant turn). ` +
-              `Start a fresh delegate instead — identity must come from the session.`,
-          }],
-          details: { error: "session_identity_missing" },
-        };
+        // Identity Preservation Rule (throwing form). Refuse to resume when
+        // neither the in-memory record nor the on-disk session can tell us
+        // *which model* this delegate was. Inventing an identity is worse
+        // than stopping — this is the whole point of the rule.
+        throw new Error(
+          `Cannot resume ${params.taskId}: session has no recorded model ` +
+          `(file empty, corrupted, or never reached an assistant turn). ` +
+          `Start a fresh delegate instead — identity must come from the session.`,
+        );
       }
       // Pass recorded provider so ACP-routed spawns get re-injected with the
       // pi-shell-acp bridge on resume (otherwise pi cannot resolve the provider
