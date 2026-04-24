@@ -132,6 +132,7 @@ if settings_path.exists():
 else:
     data = {}
 
+# --- packages[] registration --------------------------------------------------
 packages = data.get("packages")
 if not isinstance(packages, list):
     packages = []
@@ -147,6 +148,36 @@ if repo_dir not in filtered:
     filtered.append(repo_dir)
 
 data["packages"] = filtered
+
+# --- piShellAcpProvider.mcpServers bundled entries ---------------------------
+# Ship the two in-repo MCP adapters pre-wired so `pi install` produces a
+# working setup without the consumer hand-editing settings.json. User-authored
+# overrides (different command/args) are preserved untouched.
+provider = data.setdefault("piShellAcpProvider", {})
+if not isinstance(provider, dict):
+    raise SystemExit("piShellAcpProvider is not an object")
+servers = provider.setdefault("mcpServers", {})
+if not isinstance(servers, dict):
+    raise SystemExit("piShellAcpProvider.mcpServers is not an object")
+
+BUNDLED = ("pi-tools-bridge", "session-bridge")
+for name in BUNDLED:
+    desired_cmd = f"{repo_dir}/mcp/{name}/start.sh"
+    desired = {"command": desired_cmd, "args": []}
+    existing = servers.get(name)
+    if existing is None:
+        servers[name] = desired
+        print(f"install: added piShellAcpProvider.mcpServers.{name}")
+    elif isinstance(existing, dict) and existing.get("command") == desired_cmd:
+        # Already managed by us at the current repo path — refresh args silently
+        # so a drifted args list converges back to [] without announcing it.
+        existing.setdefault("args", [])
+        if existing.get("args") != []:
+            pass  # leave user-customized args alone (e.g. added --flag)
+    else:
+        cmd_repr = existing.get("command") if isinstance(existing, dict) else existing
+        print(f"install: preserved piShellAcpProvider.mcpServers.{name} (user override: {cmd_repr})")
+
 settings_path.write_text(json.dumps(data, indent=2) + "\n")
 print(f"install: updated {settings_path}")
 print(f"install: package source -> {repo_dir}")
@@ -156,11 +187,12 @@ PY
 remove_local_package() {
   local project_dir
   project_dir=$(normalize_project_dir "$1")
-  python3 - "$project_dir/.pi/settings.json" <<'PY'
+  python3 - "$project_dir/.pi/settings.json" "$REPO_DIR" <<'PY'
 import json, sys
 from pathlib import Path
 
 settings_path = Path(sys.argv[1])
+repo_dir = str(Path(sys.argv[2]).resolve())
 if not settings_path.exists():
     print(f"remove: nothing to do ({settings_path} missing)")
     raise SystemExit(0)
@@ -168,23 +200,54 @@ if not settings_path.exists():
 data = json.loads(settings_path.read_text())
 if not isinstance(data, dict):
     raise SystemExit("settings.json is not an object")
+
+# --- packages[] cleanup -------------------------------------------------------
 packages = data.get("packages")
-if not isinstance(packages, list):
-    print("remove: nothing to do (packages missing)")
-    raise SystemExit(0)
+pkg_removed = 0
+if isinstance(packages, list):
+    filtered = []
+    for item in packages:
+        source = item.get("source") if isinstance(item, dict) else item
+        if isinstance(source, str) and ("pi-shell-acp" in source):
+            pkg_removed += 1
+            continue
+        filtered.append(item)
+    data["packages"] = filtered
 
-filtered = []
-removed = 0
-for item in packages:
-    source = item.get("source") if isinstance(item, dict) else item
-    if isinstance(source, str) and ("pi-shell-acp" in source):
-        removed += 1
-        continue
-    filtered.append(item)
+# --- piShellAcpProvider.mcpServers cleanup ------------------------------------
+# Only remove entries that look like they came from ./run.sh install: either
+# the command matches the current $REPO_DIR anchor exactly, or it ends with
+# the bundled "/pi-shell-acp/mcp/<name>/start.sh" pattern (covers a rebuilt
+# checkout under a different directory). Anything else is treated as a user
+# override and left in place.
+BUNDLED = ("pi-tools-bridge", "session-bridge")
+provider = data.get("piShellAcpProvider")
+mcp_removed = 0
+if isinstance(provider, dict):
+    servers = provider.get("mcpServers")
+    if isinstance(servers, dict):
+        for name in BUNDLED:
+            existing = servers.get(name)
+            if not isinstance(existing, dict):
+                continue
+            cmd = existing.get("command")
+            if not isinstance(cmd, str):
+                continue
+            exact = cmd == f"{repo_dir}/mcp/{name}/start.sh"
+            pattern = cmd.endswith(f"/pi-shell-acp/mcp/{name}/start.sh")
+            if exact or pattern:
+                del servers[name]
+                mcp_removed += 1
+                print(f"remove: removed piShellAcpProvider.mcpServers.{name}")
+            else:
+                print(f"remove: preserved piShellAcpProvider.mcpServers.{name} (user override: {cmd})")
+        if not servers:
+            provider.pop("mcpServers", None)
+    if not provider:
+        data.pop("piShellAcpProvider", None)
 
-data["packages"] = filtered
 settings_path.write_text(json.dumps(data, indent=2) + "\n")
-print(f"remove: removed {removed} entries from {settings_path}")
+print(f"remove: removed {pkg_removed} packages[] entries, {mcp_removed} mcpServers entries from {settings_path}")
 PY
 }
 

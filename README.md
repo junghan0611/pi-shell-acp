@@ -225,12 +225,13 @@ Notes:
 - The bridge session signature includes the selected backend and the SHA-256 hash of the canonical `mcpServers` shape — changing either invalidates the persisted session automatically, so the bridge never silently reuses a stale backend/config combination.
 - This bridge does **not** read `~/.mcp.json` or any other ambient backend config. If you want a server exposed, list it here.
 - Invalid `mcpServers` entries fail fast with a single aggregated error (`McpServerConfigError`) that names every offending server — no silent skips. Validate locally with `npm run check-mcp` before shipping a config.
-- pi-native extension tools are **not** auto-promoted into ACP sessions. The in-repo `mcp/pi-tools-bridge/` is the canonical MCP adapter that promotes the narrow pi-side surface (`send_to_session`, `list_sessions`, `delegate`, `delegate_resume`) — register it here by name. External adapters remain possible for additional surfaces, but the defaults stay narrow. See AGENTS.md `## Entwurf Orchestration`.
+- pi-native extension tools are **not** auto-promoted into ACP sessions. The in-repo `mcp/pi-tools-bridge/` is the canonical MCP adapter that promotes the narrow pi-side surface (`send_to_session`, `list_sessions`, `delegate`, `delegate_resume`). External adapters remain possible for additional surfaces, but the defaults stay narrow. See AGENTS.md `## Entwurf Orchestration`.
+- `./run.sh install <project>` pre-populates `piShellAcpProvider.mcpServers.pi-tools-bridge` and `piShellAcpProvider.mcpServers.session-bridge` pointing at the in-repo `mcp/*/start.sh` launchers, so `pi install git:…pi-shell-acp` + `./run.sh install .` produces a working setup without hand-editing settings.json. Any user-authored override at those names (different `command`/`args`) is preserved — `install` only fills entries it authored. `./run.sh remove <project>` symmetrically deletes only entries that match the repo-authored launcher path; user overrides stay.
 
-After updating `agent-config`, verify:
+After installing into a consumer project, verify:
 
 ```bash
-cd ~/repos/gh/agent-config
+cd /path/to/consumer-project
 ./run.sh setup
 ```
 
