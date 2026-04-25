@@ -490,19 +490,34 @@ function resolveClaudeAcpLaunch(): AcpLaunchSpec {
 
 const CODEX_DISABLE_AUTO_COMPACT_ARGS = ["-c", "model_auto_compact_token_limit=9223372036854775807"] as const;
 
+function isCompactionAllowedByOperator(): boolean {
+	const allow = process.env.PI_SHELL_ACP_ALLOW_COMPACTION?.trim().toLowerCase();
+	return allow === "1" || allow === "true" || allow === "yes";
+}
+
+function shellQuote(value: string): string {
+	return `'${value.replace(/'/g, `'"'"'`)}'`;
+}
+
+function codexAutoCompactArgs(): string[] {
+	return isCompactionAllowedByOperator() ? [] : [...CODEX_DISABLE_AUTO_COMPACT_ARGS];
+}
+
 function resolveCodexAcpLaunch(): AcpLaunchSpec {
 	const override = process.env.CODEX_ACP_COMMAND?.trim();
+	const autoCompactArgs = codexAutoCompactArgs();
 	if (override) {
+		const command = autoCompactArgs.length > 0 ? `${override} ${autoCompactArgs.map(shellQuote).join(" ")}` : override;
 		return {
 			command: "bash",
-			args: ["-lc", override],
+			args: ["-lc", command],
 			source: "env:CODEX_ACP_COMMAND",
 		};
 	}
 
 	return {
 		command: "codex-acp",
-		args: [...CODEX_DISABLE_AUTO_COMPACT_ARGS],
+		args: autoCompactArgs,
 		source: "PATH:codex-acp",
 	};
 }
@@ -1104,7 +1119,10 @@ async function createBridgeProcess(params: EnsureBridgeSessionParams): Promise<A
 	const adapter = resolveAcpBackendAdapter(params.backend);
 	const launch = adapter.resolveLaunch();
 	// Adapter defaults first, process.env last → operator's shell always wins.
-	const childEnv = { ...adapter.bridgeEnvDefaults, ...process.env };
+	// PI_SHELL_ACP_ALLOW_COMPACTION=1 disables both pi-side and backend-side
+	// compaction guards for this process.
+	const bridgeEnvDefaults = isCompactionAllowedByOperator() ? undefined : adapter.bridgeEnvDefaults;
+	const childEnv = { ...bridgeEnvDefaults, ...process.env };
 	const child = spawn(launch.command, launch.args, {
 		cwd: params.cwd,
 		env: childEnv,
