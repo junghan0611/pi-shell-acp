@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { McpServer } from "@agentclientprotocol/sdk";
@@ -242,6 +242,100 @@ function getContextMessageSignatures(context: Context): string[] {
 	return context.messages.map((message: any) => `${message.role}:${messageContentSignature(message.content)}`);
 }
 
+function estimateTextTokens(text: string): number {
+	return Math.ceil(text.length / 4);
+}
+
+function estimatePiMessageTokens(message: any): number {
+	let chars = 0;
+	switch (message?.role) {
+		case "user": {
+			const content = message.content;
+			if (typeof content === "string") return estimateTextTokens(content);
+			if (Array.isArray(content)) {
+				for (const block of content) {
+					if (block?.type === "text") chars += String(block.text ?? "").length;
+					if (block?.type === "image") chars += 4800;
+				}
+			}
+			return Math.ceil(chars / 4);
+		}
+		case "assistant": {
+			for (const block of message.content ?? []) {
+				if (block?.type === "text") chars += String(block.text ?? "").length;
+				else if (block?.type === "thinking") chars += String(block.thinking ?? "").length;
+				else if (block?.type === "toolCall") {
+					chars += String(block.name ?? "").length + JSON.stringify(block.arguments ?? {}).length;
+				}
+			}
+			return Math.ceil(chars / 4);
+		}
+		case "toolResult": {
+			const content = message.content;
+			if (typeof content === "string") return estimateTextTokens(content);
+			if (Array.isArray(content)) {
+				for (const block of content) {
+					if (block?.type === "text") chars += String(block.text ?? "").length;
+					if (block?.type === "image") chars += 4800;
+				}
+			}
+			return Math.ceil(chars / 4);
+		}
+		default:
+			return 0;
+	}
+}
+
+function piSessionDirForCwd(cwd: string): string {
+	const slug = cwd.replace(/^\/+/, "").replace(/\/+$/, "").replace(/\//g, "-");
+	return join(homedir(), ".pi", "agent", "sessions", `--${slug}--`);
+}
+
+function findPiSessionFile(cwd: string, sessionKey: string): string | undefined {
+	if (!sessionKey.startsWith("pi:")) return undefined;
+	const sessionId = sessionKey.slice("pi:".length);
+	if (!sessionId) return undefined;
+	const dir = piSessionDirForCwd(cwd);
+	if (!existsSync(dir)) return undefined;
+	for (const name of readdirSync(dir)) {
+		if (name.endsWith(".jsonl") && name.includes(sessionId)) return join(dir, name);
+	}
+	return undefined;
+}
+
+function estimatePiSessionFileTokens(cwd: string, sessionKey: string): number | undefined {
+	const file = findPiSessionFile(cwd, sessionKey);
+	if (!file) return undefined;
+	let tokens = 0;
+	for (const line of readFileSync(file, "utf-8").split("\n")) {
+		if (!line.trim()) continue;
+		try {
+			const entry = JSON.parse(line) as any;
+			if (entry?.type === "message") tokens += estimatePiMessageTokens(entry.message);
+		} catch {
+			// Ignore malformed/truncated lines; session persistence is append-only.
+		}
+	}
+	return tokens;
+}
+
+function estimatePiVisibleContextTokens(
+	context: Context,
+	output: AssistantMessage,
+	cwd: string,
+	sessionKey: string,
+): number {
+	const sessionFileTokens = estimatePiSessionFileTokens(cwd, sessionKey);
+	if (sessionFileTokens !== undefined) return sessionFileTokens + estimatePiMessageTokens(output);
+
+	let tokens = 0;
+	for (const message of context.messages as any[]) {
+		tokens += estimatePiMessageTokens(message);
+	}
+	tokens += estimatePiMessageTokens(output);
+	return tokens;
+}
+
 function settingsConfigError(filePath: string, message: string): Error {
 	return new Error(`${filePath}: invalid piShellAcpProvider settings: ${message}`);
 }
@@ -335,7 +429,13 @@ function inferBackendFromModel(model: Model<any>): AcpBackend {
 function loadProviderSettings(cwd: string, model: Model<any>): ResolvedProviderSettings {
 	const globalSettings = readSettingsFile(GLOBAL_SETTINGS_PATH);
 	const projectSettings = readSettingsFile(join(cwd, ".pi", "settings.json"));
-	const merged = { ...globalSettings, ...projectSettings };
+	// Project overrides global, but only for keys the project actually sets —
+	// readSettingsFile returns undefined for missing keys and JS spread treats
+	// undefined as an override, which would silently nuke global values.
+	const projectDefined = Object.fromEntries(
+		Object.entries(projectSettings).filter(([, v]) => v !== undefined),
+	) as ProviderSettings;
+	const merged = { ...globalSettings, ...projectDefined };
 	const backend = merged.backend ?? inferBackendFromModel(model);
 	const backendSource = merged.backend ? "explicit" : "inferred";
 	const appendSystemPrompt = merged.appendSystemPrompt ?? false;
@@ -418,28 +518,39 @@ function extractPromptBlocks(
 	return blocks;
 }
 
-function applyPromptUsage(model: Model<any>, output: AssistantMessage, promptResponse: any): void {
+function applyPromptUsage(
+	model: Model<any>,
+	context: Context,
+	output: AssistantMessage,
+	promptResponse: any,
+	cwd: string,
+	sessionKey: string,
+): void {
 	const usage = promptResponse?.usage;
 	if (!usage || typeof usage !== "object") return;
 
-	// Forward raw usage straight through to pi.
+	// Keep raw backend usage components for cost/stat accounting, but do not use
+	// the backend's aggregate totalTokens as pi's context meter.
 	//
-	// Earlier revisions zeroed cacheRead/cacheWrite on the metric path to
-	// neutralize pi-ai's isContextOverflow Case 2 (silent overflow recovery
-	// via `usage.input + usage.cacheRead > contextWindow`). That was a
-	// defense-in-depth layer for the case where the operator hadn't disabled
-	// pi compaction. We now block all four pi compaction paths centrally
-	// in the `session_before_compact` handler at the bottom of this file, so
-	// the metric-side sanitization is no longer load-bearing — and zeroing
-	// cacheRead made the TUI footer dishonest (showed 0.1% on a turn that
-	// actually loaded a 300K-token cached prompt). The honest reading wins.
-	output.usage.input = Number(usage.inputTokens ?? 0);
-	output.usage.output = Number(usage.outputTokens ?? 0);
-	output.usage.cacheRead = Number(usage.cachedReadTokens ?? 0);
-	output.usage.cacheWrite = Number(usage.cachedWriteTokens ?? 0);
-	if (usage.totalTokens != null) {
-		output.usage.totalTokens = Number(usage.totalTokens);
-	}
+	// ACP backends such as Claude Code may perform multiple internal LLM calls
+	// inside one pi turn (plan → tool → final answer). Their PromptResponse usage
+	// is therefore an execution aggregate, not "the size of the pi session
+	// context". pi-shell-acp is pi-session-first: resume targets, transcript, and
+	// context accounting are anchored to pi's visible session. The TUI context %
+	// reads usage.totalTokens from the last assistant message, so we write a
+	// pi-visible estimate there and expose raw backend totals only in diagnostics.
+	const rawInput = Number(usage.inputTokens ?? 0);
+	const rawOutput = Number(usage.outputTokens ?? 0);
+	const rawCacheRead = Number(usage.cachedReadTokens ?? 0);
+	const rawCacheWrite = Number(usage.cachedWriteTokens ?? 0);
+	const rawTotal = Number(usage.totalTokens ?? rawInput + rawOutput + rawCacheRead + rawCacheWrite);
+	const piContextTokens = estimatePiVisibleContextTokens(context, output, cwd, sessionKey);
+
+	output.usage.input = rawInput;
+	output.usage.output = rawOutput;
+	output.usage.cacheRead = rawCacheRead;
+	output.usage.cacheWrite = rawCacheWrite;
+	output.usage.totalTokens = piContextTokens;
 	calculateCost(model, output.usage);
 
 	// One-line diagnostic so "why is the footer at X% / why did the metric
@@ -448,7 +559,7 @@ function applyPromptUsage(model: Model<any>, output: AssistantMessage, promptRes
 	console.error(
 		`[pi-shell-acp:usage] input=${output.usage.input} output=${output.usage.output} ` +
 			`cacheRead=${output.usage.cacheRead} cacheWrite=${output.usage.cacheWrite} ` +
-			`totalTokens=${output.usage.totalTokens}`,
+			`rawTotal=${rawTotal} piContextTokens=${piContextTokens}`,
 	);
 }
 
@@ -588,7 +699,7 @@ function streamShellAcp(
 				return;
 			}
 
-			applyPromptUsage(model, output, promptResponse);
+			applyPromptUsage(model, context, output, promptResponse, cwd, sessionKey);
 			output.stopReason = mapPromptStopReason(promptResponse?.stopReason);
 			finalizeAcpStreamState(streamState);
 

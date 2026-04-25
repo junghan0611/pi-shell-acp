@@ -265,7 +265,7 @@ Fail:
 - Produces a tool strategy contradicting a previous turn
 - Unnecessarily repeats the same file exploration
 
-Note: pi-shell-acp does not implement a post-compaction handoff path. The provider registers a `session_before_compact` handler that cancels every pi-side compaction trigger (silent overflow, threshold, explicit-error overflow, and manual `/compact`). Backend-side auto-compaction is also disabled at launch — Claude Code via `DISABLE_AUTO_COMPACT=1` + `DISABLE_COMPACT=1`, codex-acp via `-c model_auto_compact_token_limit=i64::MAX`. Operators who want pi-side compaction back can set `PI_SHELL_ACP_ALLOW_COMPACTION=1`. For long sessions, observe context growth via the `[pi-shell-acp:usage]` diagnostic line and use `/clear` (or opt-in `/compact`) when needed.
+Note: pi-shell-acp does not implement a post-compaction handoff path. The provider registers a `session_before_compact` handler that cancels every pi-side compaction trigger (silent overflow, threshold, explicit-error overflow, and manual `/compact`). Backend-side auto-compaction is also disabled at launch — Claude Code via `DISABLE_AUTO_COMPACT=1` + `DISABLE_COMPACT=1`, codex-acp via `-c model_auto_compact_token_limit=i64::MAX`. Operators who want pi-side compaction back can set `PI_SHELL_ACP_ALLOW_COMPACTION=1`. For long sessions, treat pi as the session source of truth: the footer context percentage follows the pi-visible transcript, while `[pi-shell-acp:usage] rawTotal=... piContextTokens=...` exposes backend aggregate usage for audit. Use `/clear` (or opt-in `/compact`) when needed.
 
 ### 1A.5 Layer 4 — Comparison with Direct Claude Code
 

@@ -85,15 +85,18 @@ Backend is inferred from the model: Anthropic models → `claude`, OpenAI models
 
 ### Settings
 
-Minimal `<project>/.pi/settings.json` shape (produced by `./run.sh install .`):
+Recommended reference shape for a pi-shell-acp development session lives in [`pi/settings.reference.json`](./pi/settings.reference.json):
 
 ```json
 {
+  "compaction": {
+    "enabled": false
+  },
   "piShellAcpProvider": {
     "appendSystemPrompt": false,
-    "settingSources": ["user"],
+    "settingSources": [],
     "strictMcpConfig": false,
-    "showToolNotifications": false,
+    "showToolNotifications": true,
     "mcpServers": {
       "pi-tools-bridge": {
         "command": "/path/to/pi-shell-acp/mcp/pi-tools-bridge/start.sh",
@@ -112,7 +115,11 @@ Minimal `<project>/.pi/settings.json` shape (produced by `./run.sh install .`):
 
 Backend is inferred from the selected model. Set `backend` only when you intentionally want to pin one backend.
 
-Tool/permission notifications (`[tool:start]`, `[tool:done]`, `[permission:*]`) are hidden by default so normal replies do not look like verbose tracing. Set `showToolNotifications: true` when debugging ACP-side tool activity.
+`settingSources: []` intentionally isolates the ACP-spawned Claude Code process from user/project/local Claude settings. That prevents Claude-side hooks (for example notification sounds) or ambient MCP config from silently joining a pi-owned ACP session. If you deliberately need Claude Code user settings, opt in by setting `settingSources` to `["user"]`.
+
+Tool/permission notifications (`[tool:start]`, `[tool:done]`, `[permission:*]`) are enabled in the reference config because this repo is usually debugged by watching ACP-side tool activity. Set `showToolNotifications: false` for quieter day-to-day sessions.
+
+`compaction.enabled: false` disables pi's auto-compaction switch and removes the TUI `(auto)` footer indicator. The provider still independently blocks all pi-side compaction paths unless `PI_SHELL_ACP_ALLOW_COMPACTION=1` is set.
 
 Authentication is handled by Claude Code / claude-agent-acp; pi-shell-acp adds no separate auth layer.
 
@@ -189,9 +196,9 @@ Concretely:
 - **Host (pi)**: the provider registers a `session_before_compact` handler that returns `{ cancel: true }` for every compaction trigger pi exposes — silent overflow recovery (`isContextOverflow` Case 2 — `usage.input + usage.cacheRead > contextWindow`), threshold compaction (`shouldCompact`), explicit-error overflow recovery, and the manual `/compact` slash command. Manual invocations surface a "Compaction cancelled" message to the operator so the intent stays observable. The escape hatch is the `PI_SHELL_ACP_ALLOW_COMPACTION` environment variable: setting it to `1` / `true` / `yes` lets the handler fall through, restoring pi's default compaction behaviour for that process.
 - **Backend (Claude Code)**: spawned with `DISABLE_AUTO_COMPACT=1` and `DISABLE_COMPACT=1` so the backend never compacts inside an ACP session. Operators can override these from their shell (`process.env` wins over the adapter default).
 - **Backend (Codex)**: codex-rs has no env/boolean toggle for auto-compaction. It exposes the behaviour as a config threshold (`model_auto_compact_token_limit`), so the bridge raises it to `i64::MAX` via `-c model_auto_compact_token_limit=9223372036854775807` on every codex-acp launch. The `CODEX_ACP_COMMAND` override path also has these args appended (shell-quoted) so operators replacing the launch command don't accidentally re-enable backend compaction. Manual `/compact` still works at the protocol level but will be cancelled by the host-side gate above unless the operator opts out.
-- **Usage forwarding**: ACP usage (input / output / cacheRead / cacheWrite / totalTokens) is forwarded to pi as-is. Earlier revisions zeroed cacheRead on the metric path as a defense-in-depth layer for the silent-overflow case, but with the host-side gate above already blocking that path the sanitization only made the TUI footer dishonest (showed 0.1% on a turn that actually loaded a 300K-token cached prompt). The honest reading is what the operator wants. A `[pi-shell-acp:usage]` diagnostic line is emitted every turn so the raw numbers stay auditable.
+- **Usage forwarding**: ACP usage components (input / output / cacheRead / cacheWrite) are forwarded to pi for cost/stat accounting, but `usage.totalTokens` is deliberately rewritten to a pi-visible session estimate. ACP backends can perform multiple internal LLM calls in one pi turn (for example plan → tool → final answer), so their aggregate `totalTokens` is execution cost, not "current pi context size". pi-shell-acp is pi-session-first: the footer context percentage follows the pi transcript, while the raw backend aggregate remains auditable in the `[pi-shell-acp:usage] rawTotal=... piContextTokens=...` diagnostic line.
 
-The net effect: pi never compacts unless the operator explicitly opts in (`PI_SHELL_ACP_ALLOW_COMPACTION=1`), and the backends don't compact inside an ACP session either. Long sessions are observed via the `[pi-shell-acp:usage]` diagnostic; when the backend window is near its limit, the operator chooses whether to compact (after opting in), clear, or switch to a wider-context model.
+The net effect: pi never compacts unless the operator explicitly opts in (`PI_SHELL_ACP_ALLOW_COMPACTION=1`), and the backends don't compact inside an ACP session either. Long sessions are observed via the footer's pi-visible context meter plus the `[pi-shell-acp:usage]` raw backend diagnostic; when the backend window is near its limit, the operator chooses whether to compact (after opting in), clear, or switch to a wider-context model.
 
 ### Backend capability notes
 
