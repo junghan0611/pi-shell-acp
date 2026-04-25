@@ -113,8 +113,45 @@ function resolveClaudeModelContextWindow(model: { id: string; contextWindow: num
 	return Math.min(model.contextWindow, defaultCap);
 }
 
-const CURATED_ANTHROPIC_MODELS = ANTHROPIC_MODELS_ALL.filter((m) => SUPPORTED_ANTHROPIC_SET.has(m.id));
-const CURATED_CODEX_MODELS = CODEX_MODELS_ALL.filter((m) => SUPPORTED_CODEX_SET.has(m.id));
+type AnthropicRegistryModel = (typeof ANTHROPIC_MODELS_ALL)[number];
+type CodexRegistryModel = (typeof CODEX_MODELS_ALL)[number];
+
+function requireRegistryModel<T extends AnthropicRegistryModel | CodexRegistryModel>(models: T[], id: string): T {
+	const model = models.find((m) => m.id === id);
+	if (!model) throw new Error(`Required base model is missing from pi-ai registry: ${id}`);
+	return model;
+}
+
+function curatedAnthropicModels(): AnthropicRegistryModel[] {
+	const models = ANTHROPIC_MODELS_ALL.filter((m) => SUPPORTED_ANTHROPIC_SET.has(m.id));
+	if (!models.some((m) => m.id === "claude-opus-4-7")) {
+		const base = requireRegistryModel(ANTHROPIC_MODELS_ALL, "claude-opus-4-6");
+		models.push({
+			...base,
+			id: "claude-opus-4-7",
+			name: "Claude Opus 4.7",
+			contextWindow: 1_000_000,
+		});
+	}
+	return models;
+}
+
+function curatedCodexModels(): CodexRegistryModel[] {
+	const models = CODEX_MODELS_ALL.filter((m) => SUPPORTED_CODEX_SET.has(m.id));
+	if (!models.some((m) => m.id === "gpt-5.5")) {
+		const base = requireRegistryModel(CODEX_MODELS_ALL, "gpt-5.4");
+		models.push({
+			...base,
+			id: "gpt-5.5",
+			name: "GPT-5.5",
+			contextWindow: 400_000,
+		});
+	}
+	return models;
+}
+
+const CURATED_ANTHROPIC_MODELS = curatedAnthropicModels();
+const CURATED_CODEX_MODELS = curatedCodexModels();
 
 const MODELS = Array.from(
 	new Map(
