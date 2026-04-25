@@ -1073,10 +1073,31 @@ try {
   assert.deepEqual(claudeLaunch.args, ['-lc', claudeOverride]);
   assert.equal(claudeLaunch.source, 'env:CLAUDE_AGENT_ACP_COMMAND');
 
+  // Codex override path now appends auto-compaction guard args (-c
+  // model_auto_compact_token_limit=i64::MAX), shell-quoted, so silent
+  // backend compaction stays disabled even when CODEX_ACP_COMMAND
+  // overrides the launch command. Operators can opt out for the whole
+  // process via PI_SHELL_ACP_ALLOW_COMPACTION=1 (covered below).
   const codexLaunch = resolveAcpBackendLaunch('codex');
   assert.equal(codexLaunch.command, 'bash');
-  assert.deepEqual(codexLaunch.args, ['-lc', codexOverride]);
+  assert.deepEqual(codexLaunch.args, [
+    '-lc',
+    `${codexOverride} '-c' 'model_auto_compact_token_limit=9223372036854775807'`,
+  ]);
   assert.equal(codexLaunch.source, 'env:CODEX_ACP_COMMAND');
+
+  // PI_SHELL_ACP_ALLOW_COMPACTION=1 disables the codex auto-compaction
+  // guard args at the launch surface — opt-out is single-source and
+  // applies to override + default paths uniformly.
+  const prevAllow = process.env.PI_SHELL_ACP_ALLOW_COMPACTION;
+  process.env.PI_SHELL_ACP_ALLOW_COMPACTION = '1';
+  try {
+    const codexLaunchOptOut = resolveAcpBackendLaunch('codex');
+    assert.deepEqual(codexLaunchOptOut.args, ['-lc', codexOverride]);
+  } finally {
+    if (prevAllow === undefined) delete process.env.PI_SHELL_ACP_ALLOW_COMPACTION;
+    else process.env.PI_SHELL_ACP_ALLOW_COMPACTION = prevAllow;
+  }
 
   const claudeMeta = buildSessionMetaForBackend('claude', {
     modelId: 'claude-sonnet-4-6',
@@ -1099,7 +1120,7 @@ try {
   assert.throws(() => resolveAcpBackendLaunch(undefined), /ACP backend is required\./);
   assert.throws(() => resolveAcpBackendLaunch('bogus'), /Unknown ACP backend: bogus\./);
 
-  console.log('[check-backends] 12 assertions ok');
+  console.log('[check-backends] 14 assertions ok');
 } finally {
   if (prevClaude === undefined) delete process.env.CLAUDE_AGENT_ACP_COMMAND;
   else process.env.CLAUDE_AGENT_ACP_COMMAND = prevClaude;
