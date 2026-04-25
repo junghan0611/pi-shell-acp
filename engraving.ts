@@ -11,10 +11,10 @@
  *   - Claude backend: rendered text is concatenated into systemPromptAppend
  *     alongside any baseSystemPrompt / post-compaction summary, so pi's
  *     `_meta.systemPrompt.append` path delivers it to the ACP session.
- *   - Codex backend: delivery path will be a ContentBlock prepended to the
- *     first prompt turn — wired via AcpBackendAdapter.buildBootstrapPromptAugment
- *     once the codex-acp delivery spike confirms the ContentBlock reaches model
- *     context reliably. Not enabled yet.
+ *   - Codex backend: rendered text is converted by
+ *     AcpBackendAdapter.buildBootstrapPromptAugment and prepended to the first
+ *     prompt turn as a ContentBlock. This is the cross-backend baseline carrier
+ *     because Codex ACP does not expose a _meta.systemPrompt.append surface.
  *
  * Stability contract:
  *   The rendered output MUST be a pure function of (template content on disk,
@@ -68,17 +68,16 @@ function interpolate(template: string, params: EngravingParams): string {
 }
 
 /**
- * Returns the rendered engraving, or null when the template file is missing /
- * unreadable. A missing engraving is not fatal — the bridge still operates;
- * the agent simply won't see the self-recognition prompt.
+ * Returns the rendered engraving. Missing, unreadable, or empty engraving files
+ * are configuration errors: the bridge should fail before the agent starts
+ * guessing about its environment.
  */
-export function loadEngraving(params: EngravingParams): string | null {
-	try {
-		const filePath = resolveEngravingPath();
-		const source = loadSource(filePath);
-		const rendered = interpolate(source, params).trim();
-		return rendered.length > 0 ? rendered : null;
-	} catch {
-		return null;
+export function loadEngraving(params: EngravingParams): string {
+	const filePath = resolveEngravingPath();
+	const source = loadSource(filePath);
+	const rendered = interpolate(source, params).trim();
+	if (rendered.length === 0) {
+		throw new Error(`Engraving file is empty after interpolation: ${filePath}`);
 	}
+	return rendered;
 }

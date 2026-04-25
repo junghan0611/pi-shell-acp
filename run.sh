@@ -169,11 +169,13 @@ for name in BUNDLED:
         servers[name] = desired
         print(f"install: added piShellAcpProvider.mcpServers.{name}")
     elif isinstance(existing, dict) and existing.get("command") == desired_cmd:
-        # Already managed by us at the current repo path — refresh args silently
-        # so a drifted args list converges back to [] without announcing it.
-        existing.setdefault("args", [])
-        if existing.get("args") != []:
-            pass  # leave user-customized args alone (e.g. added --flag)
+        # Already managed by us at the current repo path. Add the default args
+        # field when missing, but never overwrite user-customized args.
+        if "args" not in existing:
+            existing["args"] = []
+            print(f"install: normalized piShellAcpProvider.mcpServers.{name}.args -> []")
+        elif existing.get("args") != []:
+            print(f"install: preserved piShellAcpProvider.mcpServers.{name}.args (custom args)")
     else:
         cmd_repr = existing.get("command") if isinstance(existing, dict) else existing
         print(f"install: preserved piShellAcpProvider.mcpServers.{name} (user override: {cmd_repr})")

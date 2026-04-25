@@ -3,7 +3,7 @@
 Use Claude Code and Codex subscriptions inside pi through the official Agent Client Protocol (ACP) path.
 
 > **Status: Public, active development.**
-> Core surface is stable and verified.
+> This is real working code, but it is still young. Expect issues and verify it in your own workflow before relying on it all day.
 
 ![pi-shell-acp demo](docs/assets/pi-shell-acp-demo.gif)
 
@@ -173,6 +173,18 @@ A short text surfaced to the ACP-side agent once at session bootstrap. **Additiv
 
 Only `pi:<sessionId>` mappings are persisted at `~/.pi/agent/cache/pi-shell-acp/sessions/`. The bridge persists enough to re-attach pi to the same remote ACP session — it does not ingest backend transcript files. Pi session state is the source of truth for pi UX; backend stores (`~/.claude/`, `~/.codex/`) are interoperability side effects.
 
+### Backend capability notes
+
+The two backends are intentionally not perfectly symmetric. Claude Code is the primary daily-use ACP target; Codex support is kept to evaluate and verify the bridge's ACP boundary against a second backend.
+
+| Capability | Claude Code | Codex |
+|---|---|---|
+| ACP subprocess | `claude-agent-acp` | `codex-acp` |
+| Continuity path | `resumeSession` when available | `loadSession` when available |
+| Engraving delivery | `_meta.systemPrompt.append` | first prompt `ContentBlock` prepend |
+| Post-compaction handoff | supported | not currently meaningful |
+| MCP injection | `piShellAcpProvider.mcpServers` | `piShellAcpProvider.mcpServers` |
+
 ## Repository Layout
 
 | File | Purpose |
@@ -195,7 +207,7 @@ Only `pi:<sessionId>` mappings are persisted at `~/.pi/agent/cache/pi-shell-acp/
 
 ## Status
 
-Public, active development. The maintainer uses this as his primary coding environment. Incremental improvements over broad reinvention.
+Public, active development. The maintainer uses pi as his primary coding environment; this ACP bridge is working code, but it is still being proven through daily use.
 
 ## License
 

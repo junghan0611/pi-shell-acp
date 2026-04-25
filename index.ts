@@ -241,44 +241,80 @@ function getContextMessageSignatures(context: Context): string[] {
 	return context.messages.map((message: any) => `${message.role}:${messageContentSignature(message.content)}`);
 }
 
+function settingsConfigError(filePath: string, message: string): Error {
+	return new Error(`${filePath}: invalid piShellAcpProvider settings: ${message}`);
+}
+
+function assertOptionalBoolean(settings: Record<string, unknown>, key: string, filePath: string): boolean | undefined {
+	const value = settings[key];
+	if (value === undefined) return undefined;
+	if (typeof value !== "boolean") throw settingsConfigError(filePath, `${key} must be a boolean`);
+	return value;
+}
+
 function readSettingsFile(filePath: string): ProviderSettings {
 	if (!existsSync(filePath)) return {};
+
+	const raw = readFileSync(filePath, "utf-8");
+	let parsed: unknown;
 	try {
-		const raw = readFileSync(filePath, "utf-8");
-		const parsed = JSON.parse(raw) as Record<string, unknown>;
-		const settingsBlock = parsed["piShellAcpProvider"] as Record<string, unknown> | undefined;
-		if (!settingsBlock || typeof settingsBlock !== "object") return {};
-		const backend = settingsBlock["backend"];
-		const resolvedBackend = backend === "claude" || backend === "codex" ? backend : undefined;
-		const appendSystemPrompt =
-			typeof settingsBlock["appendSystemPrompt"] === "boolean"
-				? (settingsBlock["appendSystemPrompt"] as boolean)
-				: undefined;
-		const settingSourcesRaw = settingsBlock["settingSources"];
-		const settingSources =
-			Array.isArray(settingSourcesRaw) &&
-			settingSourcesRaw.every(
+		parsed = JSON.parse(raw);
+	} catch (error) {
+		throw settingsConfigError(filePath, `malformed JSON (${error instanceof Error ? error.message : String(error)})`);
+	}
+
+	if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+		throw settingsConfigError(filePath, "settings file root must be an object");
+	}
+
+	const root = parsed as Record<string, unknown>;
+	const settingsBlock = root["piShellAcpProvider"];
+	if (settingsBlock === undefined) return {};
+	if (!settingsBlock || typeof settingsBlock !== "object" || Array.isArray(settingsBlock)) {
+		throw settingsConfigError(filePath, "piShellAcpProvider must be an object");
+	}
+
+	const settings = settingsBlock as Record<string, unknown>;
+	const backend = settings["backend"];
+	if (backend !== undefined && backend !== "claude" && backend !== "codex") {
+		throw settingsConfigError(filePath, "backend must be one of: claude, codex");
+	}
+
+	const appendSystemPrompt = assertOptionalBoolean(settings, "appendSystemPrompt", filePath);
+	const strictMcpConfig = assertOptionalBoolean(settings, "strictMcpConfig", filePath);
+
+	const settingSourcesRaw = settings["settingSources"];
+	let settingSources: ClaudeSettingSource[] | undefined;
+	if (settingSourcesRaw !== undefined) {
+		if (!Array.isArray(settingSourcesRaw)) {
+			throw settingsConfigError(filePath, "settingSources must be an array");
+		}
+		if (
+			!settingSourcesRaw.every(
 				(value) => typeof value === "string" && (value === "user" || value === "project" || value === "local"),
 			)
-				? (settingSourcesRaw as ClaudeSettingSource[])
-				: undefined;
-		const strictMcpConfig =
-			typeof settingsBlock["strictMcpConfig"] === "boolean" ? (settingsBlock["strictMcpConfig"] as boolean) : undefined;
-		const mcpServersRaw = settingsBlock["mcpServers"];
-		const mcpServers =
-			mcpServersRaw && typeof mcpServersRaw === "object" && !Array.isArray(mcpServersRaw)
-				? (mcpServersRaw as McpServerInputMap)
-				: undefined;
-		return {
-			backend: resolvedBackend,
-			appendSystemPrompt,
-			settingSources,
-			strictMcpConfig,
-			mcpServers,
-		};
-	} catch {
-		return {};
+		) {
+			throw settingsConfigError(filePath, "settingSources entries must be one of: user, project, local");
+		}
+		settingSources = settingSourcesRaw as ClaudeSettingSource[];
 	}
+
+	const mcpServersRaw = settings["mcpServers"];
+	let mcpServers: McpServerInputMap | undefined;
+	if (mcpServersRaw !== undefined) {
+		if (!mcpServersRaw || typeof mcpServersRaw !== "object" || Array.isArray(mcpServersRaw)) {
+			throw settingsConfigError(filePath, "mcpServers must be an object");
+		}
+		mcpServers = mcpServersRaw as McpServerInputMap;
+	}
+
+	return {
+		backend: backend as AcpBackend | undefined,
+		appendSystemPrompt,
+		settingSources,
+		strictMcpConfig,
+		mcpServers,
+	};
 }
 
 function inferBackendFromModel(model: Model<any>): AcpBackend {
