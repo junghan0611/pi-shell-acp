@@ -492,26 +492,11 @@ function streamShellAcp(
 		const sessionKey = resolveSessionKey(options, cwd);
 		const providerSettings = loadProviderSettings(cwd, model);
 		let bridgeSession: Awaited<ReturnType<typeof ensureBridgeSession>> | undefined;
-		let aborted = false;
 
 		const streamState: AcpPiStreamState = {
 			stream,
 			output,
 		};
-
-		const onAbort = () => {
-			aborted = true;
-			if (bridgeSession) {
-				void cancelActivePrompt(bridgeSession).catch(() => {
-					// ignore
-				});
-			}
-		};
-
-		if (options?.signal) {
-			if (options.signal.aborted) onAbort();
-			else options.signal.addEventListener("abort", onAbort, { once: true });
-		}
 
 		try {
 			const baseSystemPrompt = providerSettings.appendSystemPrompt ? context.systemPrompt : undefined;
@@ -568,12 +553,58 @@ function streamShellAcp(
 			stream.push({ type: "start", partial: output });
 
 			const promptBlocks = extractPromptBlocks(context);
-			const promptResponse = await sendPrompt(bridgeSession, promptBlocks);
+
+			// ESC / abort handling.
+			//
+			// We race the actual prompt against the abort signal. The abort
+			// branch resolves to null after dispatching cancel to the backend,
+			// so the stream closes immediately on ESC instead of blocking on a
+			// backend that may take seconds (or never) to acknowledge cancel.
+			//
+			// The sendPrompt promise can still resolve or reject after we've
+			// already taken the abort branch — we attach a no-op `.catch` so
+			// late rejections don't surface as unhandledRejection, and the
+			// finally block clears setActivePromptHandler so any late
+			// session_notification updates are dropped on the floor.
+			const sendPromise = sendPrompt(bridgeSession, promptBlocks);
+			sendPromise.catch(() => {
+				// late rejection after abort; intentionally swallowed
+			});
+
+			const abortPromise = new Promise<null>((resolve) => {
+				const signal = options?.signal;
+				if (!signal) return; // never resolves — race falls back to sendPromise
+				const dispatchCancel = () => {
+					if (bridgeSession) {
+						void cancelActivePrompt(bridgeSession).catch(() => {
+							// cancel best-effort; backend may not implement it
+						});
+					}
+					resolve(null);
+				};
+				if (signal.aborted) {
+					dispatchCancel();
+					return;
+				}
+				signal.addEventListener("abort", dispatchCancel, { once: true });
+			});
+
+			const promptResponse = await Promise.race([sendPromise, abortPromise]);
+
+			if (promptResponse === null) {
+				output.stopReason = "aborted";
+				output.errorMessage = "Operation aborted";
+				finalizeAcpStreamState(streamState);
+				stream.push({ type: "error", reason: "aborted", error: output });
+				stream.end();
+				return;
+			}
+
 			applyPromptUsage(model, output, promptResponse);
 			output.stopReason = mapPromptStopReason(promptResponse?.stopReason);
 			finalizeAcpStreamState(streamState);
 
-			if (aborted || options?.signal?.aborted || output.stopReason === "aborted") {
+			if (options?.signal?.aborted || output.stopReason === "aborted") {
 				output.errorMessage = "Operation aborted";
 				stream.push({ type: "error", reason: "aborted", error: output });
 				stream.end();
@@ -587,7 +618,7 @@ function streamShellAcp(
 			});
 			stream.end();
 		} catch (error) {
-			output.stopReason = aborted || options?.signal?.aborted ? "aborted" : "error";
+			output.stopReason = options?.signal?.aborted ? "aborted" : "error";
 			output.errorMessage = getBridgeErrorDetails(error, bridgeSession);
 			finalizeAcpStreamState(streamState);
 			stream.push({
@@ -607,9 +638,11 @@ function streamShellAcp(
 				}
 			}
 		} finally {
-			if (options?.signal) {
-				options.signal.removeEventListener("abort", onAbort);
-			}
+			// abort listener uses { once: true } and self-removes after firing,
+			// so no manual removeEventListener is needed here. setActivePromptHandler
+			// is cleared below so any session_notification arriving after we
+			// returned via the abort path is dropped instead of pushed into a
+			// closed stream.
 			if (bridgeSession) {
 				setActivePromptHandler(bridgeSession, undefined);
 			}
