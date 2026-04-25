@@ -9,8 +9,8 @@
  *
  * Consumption:
  *   - Claude backend: rendered text is concatenated into systemPromptAppend
- *     alongside any baseSystemPrompt / post-compaction summary, so pi's
- *     `_meta.systemPrompt.append` path delivers it to the ACP session.
+ *     alongside any baseSystemPrompt, so pi's `_meta.systemPrompt.append` path
+ *     delivers it to the ACP session.
  *   - Codex backend: rendered text is converted by
  *     AcpBackendAdapter.buildBootstrapPromptAugment and prepended to the first
  *     prompt turn as a ContentBlock. This is the cross-backend baseline carrier

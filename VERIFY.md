@@ -265,13 +265,13 @@ Fail:
 - Produces a tool strategy contradicting a previous turn
 - Unnecessarily repeats the same file exploration
 
-Note: compaction handoff itself is verified separately via `./run.sh check-compaction-handoff`, `./run.sh smoke-compaction "$PROJECT_DIR"`.
+Note: pi-shell-acp does not implement a post-compaction handoff path. pi remains the sole context-management authority and the Claude Code backend is launched with `DISABLE_AUTOCOMPACT=1`; if the operator relies on long sessions, observe context growth via the `[pi-shell-acp:usage]` diagnostic line and use pi's manual `/compact` or `/clear` when needed.
 
 ### 1A.5 Layer 4 — Comparison with Direct Claude Code
 
 Throw the same questions to both direct Claude Code and the `pi-shell-acp` path (= entwurf target `pi-shell-acp/claude-sonnet-4-6`) and compare. Not string matching, but **semantic-level parity of work quality and tool selection**.
 
-Example comparison questions: summarize the core invariants of this repo / explain the smoke verification system in `run.sh` / why compaction handoff is needed / next 3 improvement points (maintaining thin bridge principle).
+Example comparison questions: summarize the core invariants of this repo / explain the smoke verification system in `run.sh` / why backend auto-compaction is disabled / next 3 improvement points (maintaining thin bridge principle).
 
 Comparison items: latency to first response / native tool selection accuracy / number of unnecessary detours / MCP boundary confusion / quality maintenance around turns 10–15.
 
@@ -283,7 +283,7 @@ Judgment:
 
 - Layers 0–2 healthy → basic qualifications as a main coding agent are confirmed
 - Layer 2 weak → review tool description / MCP visibility explanation / operating contract candidates
-- Layer 3 weak → strengthen compaction, prompt shape, long-session observation
+- Layer 3 weak → strengthen prompt shape and long-session observation (no in-bridge compaction; rely on pi's manual flow + `[pi-shell-acp:usage]` diagnostic)
 - Layer 4 significantly weaker than direct → revisit bridge handoff or capability framing
 
 This questionnaire does not replace smoke.

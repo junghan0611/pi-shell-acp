@@ -236,6 +236,15 @@ type AcpBackendAdapter = {
 	 * accept the spec-baseline ContentBlock carrier. Return undefined to skip.
 	 */
 	buildBootstrapPromptAugment?(augmentText: string): PromptContentBlock[] | undefined;
+	/**
+	 * Optional: backend-specific environment variable defaults injected into
+	 * the spawned child process. process.env values win on conflict so the
+	 * operator can always override from their shell. Used to enforce
+	 * bridge-level safety defaults the backend wouldn't pick up on its own
+	 * (e.g. disabling Claude Code's built-in auto-compaction so pi remains
+	 * the single context-management authority).
+	 */
+	bridgeEnvDefaults?: Record<string, string>;
 };
 
 type PersistedBridgeSessionRecord = {
@@ -630,8 +639,16 @@ const ACP_BACKEND_ADAPTERS: Record<AcpBackend, AcpBackendAdapter> = {
 		stderrLabel: "claude-agent-acp stderr",
 		resolveLaunch: resolveClaudeAcpLaunch,
 		buildSessionMeta: buildClaudeSessionMeta,
-		// Claude receives the engraving via _meta.systemPrompt.append; no
-		// first-prompt ContentBlock augmentation needed.
+		// Engraving rides on _meta.systemPrompt.append; no first-prompt
+		// ContentBlock augmentation needed for Claude.
+		bridgeEnvDefaults: {
+			// Disable Claude Code's built-in auto-compaction. pi-shell-acp keeps pi
+			// as the single context-management authority; if the backend silently
+			// compacts inside the same ACP session, pi has no way to react and
+			// session continuity drifts. Operators can override this from their
+			// shell (export DISABLE_AUTOCOMPACT=0) — process.env wins below.
+			DISABLE_AUTOCOMPACT: "1",
+		},
 	},
 	codex: {
 		id: "codex",
@@ -639,6 +656,12 @@ const ACP_BACKEND_ADAPTERS: Record<AcpBackend, AcpBackendAdapter> = {
 		resolveLaunch: resolveCodexAcpLaunch,
 		buildSessionMeta: () => undefined,
 		buildBootstrapPromptAugment: buildCodexBootstrapPromptAugment,
+		// codex-cli (verified up to 0.124) does not expose an auto-compaction
+		// toggle: the only compaction surface is the manual /compact slash
+		// command, which the operator can still invoke via ACP if desired. No
+		// bridgeEnvDefaults are needed today. If a future codex release adds
+		// silent automatic compaction, disable it here so pi remains the
+		// single context-management authority across both backends.
 	},
 };
 
@@ -786,25 +809,26 @@ function detectSessionCapabilities(initializeResult: InitializeResponse): Bridge
 	};
 }
 
+// bootstrapPromptAugment is intentionally NOT part of compatibility checks.
+// It is a one-shot prepend consumed exactly once at session bootstrap
+// (see armBootstrapPromptAugment + bootstrapPromptAugmentPending). Once the
+// first prompt of a new session has been sent, the augment value no longer
+// affects anything the backend sees on later turns, so comparing it across
+// turns would force a fresh session for any caller that chose to vary the
+// augment over time. Excluding it keeps the bridge prompt cache alive across
+// reuse turns while preserving the fire-and-forget delivery contract.
 function isSessionCompatible(
 	session: Pick<
 		AcpBridgeSession,
-		| "cwd"
-		| "backend"
-		| "systemPromptAppend"
-		| "bootstrapPromptAugment"
-		| "bridgeConfigSignature"
-		| "contextMessageSignatures"
+		"cwd" | "backend" | "systemPromptAppend" | "bridgeConfigSignature" | "contextMessageSignatures"
 	>,
 	params: EnsureBridgeSessionParams,
 	normalizedSystemPrompt: string | undefined,
-	normalizedBootstrapAugment: string | undefined,
 ): boolean {
 	return (
 		session.cwd === params.cwd &&
 		session.backend === params.backend &&
 		session.systemPromptAppend === normalizedSystemPrompt &&
-		session.bootstrapPromptAugment === normalizedBootstrapAugment &&
 		session.bridgeConfigSignature === params.bridgeConfigSignature &&
 		hasPrefix(session.contextMessageSignatures, params.contextMessageSignatures)
 	);
@@ -814,12 +838,10 @@ function isPersistedSessionCompatible(
 	record: PersistedBridgeSessionRecord,
 	params: EnsureBridgeSessionParams,
 	normalizedSystemPrompt: string | undefined,
-	normalizedBootstrapAugment: string | undefined,
 ): boolean {
 	return (
 		record.cwd === params.cwd &&
 		normalizeText(record.systemPromptAppend) === normalizedSystemPrompt &&
-		normalizeText(record.bootstrapPromptAugment) === normalizedBootstrapAugment &&
 		record.bridgeConfigSignature === params.bridgeConfigSignature &&
 		hasPrefix(record.contextMessageSignatures, params.contextMessageSignatures)
 	);
@@ -1079,9 +1101,11 @@ function isStrictBootstrapEnabled(): boolean {
 async function createBridgeProcess(params: EnsureBridgeSessionParams): Promise<AcpBridgeSession> {
 	const adapter = resolveAcpBackendAdapter(params.backend);
 	const launch = adapter.resolveLaunch();
+	// Adapter defaults first, process.env last → operator's shell always wins.
+	const childEnv = { ...adapter.bridgeEnvDefaults, ...process.env };
 	const child = spawn(launch.command, launch.args, {
 		cwd: params.cwd,
-		env: process.env,
+		env: childEnv,
 		stdio: ["pipe", "pipe", "pipe"],
 		detached: process.platform !== "win32",
 	});
@@ -1330,7 +1354,7 @@ export async function ensureBridgeSession(params: EnsureBridgeSessionParams): Pr
 	};
 	const existing = bridgeSessions.get(params.sessionKey);
 	const existingCompatible = existing
-		? isSessionCompatible(existing, normalizedParams, normalizedSystemPrompt, normalizedBootstrapAugment)
+		? isSessionCompatible(existing, normalizedParams, normalizedSystemPrompt)
 		: false;
 	if (existing && existingCompatible && !existing.closed && isChildAlive(existing.child)) {
 		if (params.modelId && existing.modelId !== params.modelId) {
@@ -1392,9 +1416,7 @@ export async function ensureBridgeSession(params: EnsureBridgeSessionParams): Pr
 
 	const persisted = readPersistedSessionRecord(params.sessionKey);
 	if (persisted) {
-		if (
-			!isPersistedSessionCompatible(persisted, normalizedParams, normalizedSystemPrompt, normalizedBootstrapAugment)
-		) {
+		if (!isPersistedSessionCompatible(persisted, normalizedParams, normalizedSystemPrompt)) {
 			logBridgeBootstrapInvalidate(params.sessionKey, "incompatible_config", persisted.acpSessionId);
 			deletePersistedSessionRecord(params.sessionKey);
 			return await startNewBridgeSession(normalizedParams, {

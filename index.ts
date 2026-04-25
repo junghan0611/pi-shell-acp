@@ -27,7 +27,6 @@ import {
 	sendPrompt,
 	setActivePromptHandler,
 } from "./acp-bridge.js";
-import { detectCompactionContext, renderCompactionSystemPromptAppend } from "./compaction-context.js";
 import { loadEngraving } from "./engraving.js";
 import { type AcpPiStreamState, applyBridgePromptEvent, finalizeAcpStreamState } from "./event-mapper.js";
 
@@ -416,32 +415,57 @@ function extractPromptBlocks(
 function applyPromptUsage(model: Model<any>, output: AssistantMessage, promptResponse: any): void {
 	const usage = promptResponse?.usage;
 	if (!usage || typeof usage !== "object") return;
-	output.usage.input = Number(usage.inputTokens ?? 0);
-	output.usage.output = Number(usage.outputTokens ?? 0);
-	output.usage.cacheRead = Number(usage.cachedReadTokens ?? 0);
-	output.usage.cacheWrite = Number(usage.cachedWriteTokens ?? 0);
-	// Context-metric alignment with pi native behaviour.
+	const rawInput = Number(usage.inputTokens ?? 0);
+	const rawOutput = Number(usage.outputTokens ?? 0);
+	const rawCacheRead = Number(usage.cachedReadTokens ?? 0);
+	const rawCacheWrite = Number(usage.cachedWriteTokens ?? 0);
+	const reportedTotal = usage.totalTokens != null ? Number(usage.totalTokens) : null;
+
+	output.usage.input = rawInput;
+	output.usage.output = rawOutput;
+	// Cost calculation needs the real cached-read/write counts because Claude
+	// Code (and Codex) bill those at separate rates. We populate them, run
+	// calculateCost, then zero them on the output usage object so they never
+	// leak into pi's context metric.
+	output.usage.cacheRead = rawCacheRead;
+	output.usage.cacheWrite = rawCacheWrite;
+	calculateCost(model, output.usage);
+
+	// pi context-metric sanitization.
 	//
 	// pi-coding-agent's calculateContextTokens(usage) reads usage.totalTokens
-	// first and falls back to input+output+cacheRead+cacheWrite only when
-	// totalTokens is 0. That metric drives BOTH the TUI footer context-%
-	// display AND compaction timing decisions.
+	// first and falls back to input+output+cacheRead+cacheWrite when totalTokens
+	// is 0. That metric drives the TUI footer context-% display AND any
+	// compaction timing logic that may run inside pi.
 	//
-	// The ACP backends we route (Claude Code, Codex) use prompt caching very
-	// aggressively on their side, so cacheRead often dominates totals (e.g.
-	// 769K cacheRead inside a 789K turn). On pi native the same metric shape
-	// exists but cacheRead is usually ~0 because pi-ai doesn't inject
-	// cache_control the way Claude Code does. The observable mismatch on ACP
-	// routes: the footer looks near-full even when the live conversation is
-	// small, and compaction fires early.
+	// pi-ai's isContextOverflow Case 2 (silent overflow) also looks at
+	// usage.input + usage.cacheRead and triggers an automatic compaction when
+	// that sum exceeds the model's context window — regardless of whether the
+	// operator turned auto-compaction on. The check exists for leaky backends
+	// (z.ai etc.) that silently truncate, but it does not match the ACP
+	// reality: cacheRead from Claude Code / Codex is the prompt-cache hit
+	// portion of an already-handled prompt, NOT a signal that the live
+	// conversation is anywhere near the window. Letting it through caused
+	// reports like input=11 + cacheRead=325874 → silent compaction on a
+	// nearly-empty turn.
 	//
-	// We keep cacheRead / cacheWrite populated (billing cost in calculateCost
-	// below reads them), but set totalTokens to input+output only — the same
-	// shape a pi native provider produces when prompt caching is not active.
-	// Result: pi's context metric reflects live-conversation growth, compaction
-	// timing stays honest, and cost accounting stays accurate.
+	// Fix: zero cacheRead / cacheWrite on the metric path entirely. Billing
+	// already ran above with the raw numbers, so cost accounting is
+	// untouched. Backend auto-compaction is independently disabled via
+	// adapter.bridgeEnvDefaults (DISABLE_AUTOCOMPACT=1) so the backend itself
+	// no longer initiates compaction either — keeping pi as the single
+	// context-management authority.
+	output.usage.cacheRead = 0;
+	output.usage.cacheWrite = 0;
 	output.usage.totalTokens = output.usage.input + output.usage.output;
-	calculateCost(model, output.usage);
+
+	// One-line diagnostic so "why is the footer at X% / why did compaction fire"
+	// is traceable at the pi-shell-acp boundary without spelunking pi internals.
+	console.error(
+		`[pi-shell-acp:usage] input=${rawInput} output=${rawOutput} ` +
+			`rawCacheRead=${rawCacheRead} rawCacheWrite=${rawCacheWrite} ` +
+			`reportedTotal=${reportedTotal ?? "n/a"} sanitizedTotal=${output.usage.totalTokens}`,
+	);
 }
 
 function mapPromptStopReason(stopReason: string | undefined): AssistantMessage["stopReason"] {
@@ -490,32 +514,19 @@ function streamShellAcp(
 		}
 
 		try {
-			// Post-compaction handoff — only meaningful for Claude backend (the
-			// Codex adapter doesn't forward systemPromptAppend today). When pi
-			// compacts, its next call to us carries a synthetic user message that
-			// holds the summary; without this handoff the new Claude session
-			// bootstraps cold because extractPromptBlocks only sends the latest
-			// user turn. pi session stays canonical — we just project pi's
-			// compacted view into the new Claude session once via system prompt,
-			// and rely on identical systemPromptAppend across subsequent turns to
-			// keep the reuse branch alive.
-			const compaction = providerSettings.backend === "claude" ? detectCompactionContext(context) : null;
 			const baseSystemPrompt = providerSettings.appendSystemPrompt ? context.systemPrompt : undefined;
-			const compactionAppend = compaction ? renderCompactionSystemPromptAppend(compaction) : undefined;
 
 			// Engraving — self-recognition prompt from prompts/engraving.md,
 			// rendered once here and delivered per-backend:
 			// - Claude: concatenated into systemPromptAppend alongside
-			//   baseSystemPrompt + compactionAppend, routed through pi's
-			//   _meta.systemPrompt.append path.
+			//   baseSystemPrompt, routed through pi's _meta.systemPrompt.append path.
 			// - Codex: passed as bootstrapPromptAugment; the Codex backend
 			//   adapter turns it into a ContentBlock::Text prepended to the
 			//   first prompt of a new session, since codex-acp has no
 			//   equivalent _meta extension we can rely on.
-			// The rendered output is stable across turns (pure function of
-			// template × backend × mcpServerNames), so bridgeConfigSignature
-			// + systemPromptAppend + bootstrapPromptAugment hashes all match
-			// on reuse and session continuity is preserved.
+			// The rendered engraving is stable across turns (pure function of
+			// template × backend × mcpServerNames), so it never drives session
+			// invalidation by itself.
 			const engraving = loadEngraving({
 				backend: providerSettings.backend,
 				mcpServerNames: providerSettings.mcpServers.map((s) => s.name),
@@ -523,7 +534,7 @@ function streamShellAcp(
 			const claudeEngraving = providerSettings.backend === "claude" ? engraving : null;
 			const codexEngraving = providerSettings.backend === "codex" ? engraving : null;
 
-			const systemPromptParts = [baseSystemPrompt, claudeEngraving ?? undefined, compactionAppend].filter(
+			const systemPromptParts = [baseSystemPrompt, claudeEngraving ?? undefined].filter(
 				(part): part is string => typeof part === "string" && part.length > 0,
 			);
 			const mergedSystemPromptAppend = systemPromptParts.length > 0 ? systemPromptParts.join("\n\n") : undefined;
