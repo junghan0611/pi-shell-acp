@@ -1,13 +1,35 @@
-import { calculateCost, createAssistantMessageEventStream, getModels, type AssistantMessage, type AssistantMessageEventStream, type Context, type Model, type SimpleStreamOptions } from "@mariozechner/pi-ai";
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { applyBridgePromptEvent, finalizeAcpStreamState, type AcpPiStreamState } from "./event-mapper.js";
-import { cancelActivePrompt, cleanupBridgeSessionProcess, closeBridgeSession, describeBridgeSession, ensureBridgeSession, getBridgeErrorDetails, normalizeMcpServers, sendPrompt, setActivePromptHandler, type AcpBackend, type ClaudeSettingSource, type McpServerInputMap } from "./acp-bridge.js";
+import type { McpServer } from "@agentclientprotocol/sdk";
+import {
+	type AssistantMessage,
+	type AssistantMessageEventStream,
+	type Context,
+	calculateCost,
+	createAssistantMessageEventStream,
+	getModels,
+	type Model,
+	type SimpleStreamOptions,
+} from "@mariozechner/pi-ai";
+import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import {
+	type AcpBackend,
+	type ClaudeSettingSource,
+	cancelActivePrompt,
+	cleanupBridgeSessionProcess,
+	closeBridgeSession,
+	describeBridgeSession,
+	ensureBridgeSession,
+	getBridgeErrorDetails,
+	type McpServerInputMap,
+	normalizeMcpServers,
+	sendPrompt,
+	setActivePromptHandler,
+} from "./acp-bridge.js";
 import { detectCompactionContext, renderCompactionSystemPromptAppend } from "./compaction-context.js";
 import { loadEngraving } from "./engraving.js";
-import type { McpServer } from "@agentclientprotocol/sdk";
+import { type AcpPiStreamState, applyBridgePromptEvent, finalizeAcpStreamState } from "./event-mapper.js";
 
 const PROVIDER_ID = "pi-shell-acp";
 const REGISTERED_SYMBOL = Symbol.for("pi-shell-acp:registered");
@@ -66,16 +88,8 @@ type ResolvedProviderSettings = {
 //
 // Adding a model here means we commit to checking it across both Axis 1
 // (protocol smoke) and Axis 2 (agent interview). Do not extend casually.
-const SUPPORTED_ANTHROPIC_MODEL_IDS: readonly string[] = [
-	"claude-sonnet-4-6",
-	"claude-opus-4-7",
-] as const;
-const SUPPORTED_CODEX_MODEL_IDS: readonly string[] = [
-	"gpt-5.2",
-	"gpt-5.4",
-	"gpt-5.4-mini",
-	"gpt-5.5",
-] as const;
+const SUPPORTED_ANTHROPIC_MODEL_IDS: readonly string[] = ["claude-sonnet-4-6", "claude-opus-4-7"] as const;
+const SUPPORTED_CODEX_MODEL_IDS: readonly string[] = ["gpt-5.2", "gpt-5.4", "gpt-5.4-mini", "gpt-5.5"] as const;
 
 const SUPPORTED_ANTHROPIC_SET = new Set(SUPPORTED_ANTHROPIC_MODEL_IDS);
 const SUPPORTED_CODEX_SET = new Set(SUPPORTED_CODEX_MODEL_IDS);
@@ -232,8 +246,7 @@ function readSettingsFile(filePath: string): ProviderSettings {
 	try {
 		const raw = readFileSync(filePath, "utf-8");
 		const parsed = JSON.parse(raw) as Record<string, unknown>;
-		const settingsBlock =
-			(parsed["piShellAcpProvider"] as Record<string, unknown> | undefined);
+		const settingsBlock = parsed["piShellAcpProvider"] as Record<string, unknown> | undefined;
 		if (!settingsBlock || typeof settingsBlock !== "object") return {};
 		const backend = settingsBlock["backend"];
 		const resolvedBackend = backend === "claude" || backend === "codex" ? backend : undefined;
@@ -250,9 +263,7 @@ function readSettingsFile(filePath: string): ProviderSettings {
 				? (settingSourcesRaw as ClaudeSettingSource[])
 				: undefined;
 		const strictMcpConfig =
-			typeof settingsBlock["strictMcpConfig"] === "boolean"
-				? (settingsBlock["strictMcpConfig"] as boolean)
-				: undefined;
+			typeof settingsBlock["strictMcpConfig"] === "boolean" ? (settingsBlock["strictMcpConfig"] as boolean) : undefined;
 		const mcpServersRaw = settingsBlock["mcpServers"];
 		const mcpServers =
 			mcpServersRaw && typeof mcpServersRaw === "object" && !Array.isArray(mcpServersRaw)
@@ -279,9 +290,7 @@ function inferBackendFromModel(model: Model<any>): AcpBackend {
 	// pi-ai registry. This is a safety net, not the primary path.
 	if (CODEX_MODEL_IDS.has(model.id)) return "codex";
 	if (ANTHROPIC_MODEL_IDS.has(model.id)) return "claude";
-	return model.id.startsWith("gpt-") || model.id.startsWith("o") || model.id.startsWith("codex")
-		? "codex"
-		: "claude";
+	return model.id.startsWith("gpt-") || model.id.startsWith("o") || model.id.startsWith("codex") ? "codex" : "claude";
 }
 
 function loadProviderSettings(cwd: string, model: Model<any>): ResolvedProviderSettings {
@@ -315,7 +324,9 @@ function loadProviderSettings(cwd: string, model: Model<any>): ResolvedProviderS
 	};
 }
 
-function extractPromptBlocks(context: Context): Array<{ type: "text"; text: string } | { type: "image"; data?: string; mimeType?: string; uri?: string }> {
+function extractPromptBlocks(
+	context: Context,
+): Array<{ type: "text"; text: string } | { type: "image"; data?: string; mimeType?: string; uri?: string }> {
 	// Find the first user message after the last assistant message.
 	// pi injects hook messages (e.g., SessionStart "device=..., time_kst=...") as additional
 	// user messages AFTER the real prompt. Using reverse().find() would pick the hook message
@@ -328,12 +339,16 @@ function extractPromptBlocks(context: Context): Array<{ type: "text"; text: stri
 			break;
 		}
 	}
-	const latestUserMessage = context.messages.slice(lastAssistantIdx + 1).find((message) => message.role === "user") as any;
+	const latestUserMessage = context.messages
+		.slice(lastAssistantIdx + 1)
+		.find((message) => message.role === "user") as any;
 	if (!latestUserMessage) {
 		return [{ type: "text", text: "" }];
 	}
 
-	const blocks: Array<{ type: "text"; text: string } | { type: "image"; data?: string; mimeType?: string; uri?: string }> = [];
+	const blocks: Array<
+		{ type: "text"; text: string } | { type: "image"; data?: string; mimeType?: string; uri?: string }
+	> = [];
 	for (const block of latestUserMessage.content ?? []) {
 		if (block?.type === "text") {
 			blocks.push({ type: "text", text: String(block.text ?? "") });
@@ -404,7 +419,11 @@ function mapPromptStopReason(stopReason: string | undefined): AssistantMessage["
 	}
 }
 
-function streamShellAcp(model: Model<any>, context: Context, options?: SimpleStreamOptions): AssistantMessageEventStream {
+function streamShellAcp(
+	model: Model<any>,
+	context: Context,
+	options?: SimpleStreamOptions,
+): AssistantMessageEventStream {
 	const stream = createAssistantMessageEventStream();
 
 	(async () => {
@@ -471,8 +490,7 @@ function streamShellAcp(model: Model<any>, context: Context, options?: SimpleStr
 			const systemPromptParts = [baseSystemPrompt, claudeEngraving ?? undefined, compactionAppend].filter(
 				(part): part is string => typeof part === "string" && part.length > 0,
 			);
-			const mergedSystemPromptAppend =
-				systemPromptParts.length > 0 ? systemPromptParts.join("\n\n") : undefined;
+			const mergedSystemPromptAppend = systemPromptParts.length > 0 ? systemPromptParts.join("\n\n") : undefined;
 			const bootstrapPromptAugment = codexEngraving && codexEngraving.length > 0 ? codexEngraving : undefined;
 
 			bridgeSession = await ensureBridgeSession({

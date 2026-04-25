@@ -1,66 +1,70 @@
 {
-  "name": "pi-shell-acp",
-  "version": "0.2.0",
-  "description": "ACP bridge providing Claude Code and Codex backends to pi-coding-agent, with the entwurf orchestration surface for cross-session delegation.",
-  "license": "MIT",
-  "author": "Junghan Kim",
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/junghan0611/pi-shell-acp.git"
-  },
-  "homepage": "https://github.com/junghan0611/pi-shell-acp#readme",
-  "bugs": {
-    "url": "https://github.com/junghan0611/pi-shell-acp/issues"
-  },
-  "keywords": [
-    "pi-package",
-    "acp",
-    "claude-code",
-    "codex",
-    "agent-client-protocol",
-    "mcp"
-  ],
-  "type": "module",
-  "engines": {
-    "node": ">=22.6.0"
-  },
-  "packageManager": "pnpm@10.33.0",
-  "dependencies": {
-    "@agentclientprotocol/claude-agent-acp": "0.30.0",
-    "@agentclientprotocol/sdk": "0.19.1",
-    "@modelcontextprotocol/sdk": "^1.12.1",
-    "@sinclair/typebox": "^0.34.0",
-    "@zed-industries/codex-acp": "0.11.1",
-    "zod": "^3.25.0 || ^4.0.0"
-  },
-  "peerDependencies": {
-    "@mariozechner/pi-ai": "*",
-    "@mariozechner/pi-coding-agent": "*",
-    "@mariozechner/pi-tui": "*"
-  },
-  "devDependencies": {
-    "@mariozechner/pi-ai": "0.70.0",
-    "@mariozechner/pi-coding-agent": "0.70.0",
-    "@mariozechner/pi-tui": "0.70.0",
-    "@types/node": "^24.3.0",
-    "typescript": "^6.0.2"
-  },
-  "scripts": {
-    "setup": "./run.sh setup",
-    "smoke": "./run.sh smoke",
-    "smoke-claude": "./run.sh smoke-claude",
-    "smoke-codex": "./run.sh smoke-codex",
-    "smoke-all": "./run.sh smoke-all",
-    "check-mcp": "./run.sh check-mcp",
-    "check-models": "./run.sh check-models",
-    "check-backends": "./run.sh check-backends",
-    "check-registration": "./run.sh check-registration",
-    "check-claude-sessions": "./run.sh check-claude-sessions",
-    "typecheck": "tsc --noEmit"
-  },
-  "pi": {
-    "extensions": [
-      "./index.ts"
-    ]
-  }
+	"name": "pi-shell-acp",
+	"version": "0.2.0",
+	"description": "ACP bridge providing Claude Code and Codex backends to pi-coding-agent, with the entwurf orchestration surface for cross-session delegation.",
+	"license": "MIT",
+	"author": "Junghan Kim",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/junghan0611/pi-shell-acp.git"
+	},
+	"homepage": "https://github.com/junghan0611/pi-shell-acp#readme",
+	"bugs": {
+		"url": "https://github.com/junghan0611/pi-shell-acp/issues"
+	},
+	"keywords": [
+		"pi-package",
+		"acp",
+		"claude-code",
+		"codex",
+		"agent-client-protocol",
+		"mcp"
+	],
+	"type": "module",
+	"engines": {
+		"node": ">=22.6.0"
+	},
+	"packageManager": "pnpm@10.33.0",
+	"dependencies": {
+		"@agentclientprotocol/claude-agent-acp": "0.30.0",
+		"@agentclientprotocol/sdk": "0.19.1",
+		"@modelcontextprotocol/sdk": "^1.12.1",
+		"@sinclair/typebox": "^0.34.0",
+		"@zed-industries/codex-acp": "0.11.1",
+		"zod": "^3.25.0 || ^4.0.0"
+	},
+	"peerDependencies": {
+		"@mariozechner/pi-ai": "*",
+		"@mariozechner/pi-coding-agent": "*",
+		"@mariozechner/pi-tui": "*"
+	},
+	"devDependencies": {
+		"@biomejs/biome": "^2.4.13",
+		"@mariozechner/pi-ai": "0.70.0",
+		"@mariozechner/pi-coding-agent": "0.70.0",
+		"@mariozechner/pi-tui": "0.70.0",
+		"@types/node": "^24.3.0",
+		"typescript": "^6.0.2"
+	},
+	"scripts": {
+		"setup": "./run.sh setup",
+		"smoke": "./run.sh smoke",
+		"smoke-claude": "./run.sh smoke-claude",
+		"smoke-codex": "./run.sh smoke-codex",
+		"smoke-all": "./run.sh smoke-all",
+		"check-mcp": "./run.sh check-mcp",
+		"check-models": "./run.sh check-models",
+		"check-backends": "./run.sh check-backends",
+		"check-registration": "./run.sh check-registration",
+		"check-claude-sessions": "./run.sh check-claude-sessions",
+		"typecheck": "tsc --noEmit",
+		"lint": "biome check .",
+		"format": "biome check --write .",
+		"check": "pnpm lint && pnpm typecheck && ./run.sh check-mcp && ./run.sh check-models && ./run.sh check-backends && ./run.sh check-registration && ./run.sh check-compaction-handoff"
+	},
+	"pi": {
+		"extensions": [
+			"./index.ts"
+		]
+	}
 }

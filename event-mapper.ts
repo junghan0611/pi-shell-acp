@@ -131,7 +131,10 @@ function renderToolUpdate(state: AcpPiStreamState, update: any): void {
 	}
 }
 
-function renderPermissionEvent(state: AcpPiStreamState, event: Extract<BridgePromptEvent, { type: "permission_request" }>): void {
+function renderPermissionEvent(
+	state: AcpPiStreamState,
+	event: Extract<BridgePromptEvent, { type: "permission_request" }>,
+): void {
 	const title = String((event.request as any)?.toolCall?.title ?? "Tool");
 	const outcome = (event.response as any)?.outcome;
 	let decision = "cancelled";

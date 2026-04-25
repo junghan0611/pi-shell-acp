@@ -55,24 +55,24 @@
  *   - no user-specific paths baked in; env-configurable with safe defaults
  */
 
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { z } from "zod";
 import { existsSync } from "node:fs";
 import * as fs from "node:fs/promises";
 import * as net from "node:net";
 import * as os from "node:os";
 import * as path from "node:path";
 import * as process from "node:process";
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { z } from "zod";
 
 import {
-  runEntwurfSync,
-  runEntwurfResumeSync,
-  formatSyncSummary,
-  ensureEntwurfOncePerTarget,
-  markEntwurfTargetUsed,
-  resolveGuardTargetKey,
-  DEFAULT_ENTWURF_MODEL,
+	DEFAULT_ENTWURF_MODEL,
+	ensureEntwurfOncePerTarget,
+	formatSyncSummary,
+	markEntwurfTargetUsed,
+	resolveGuardTargetKey,
+	runEntwurfResumeSync,
+	runEntwurfSync,
 } from "../../../pi-extensions/lib/entwurf-core.ts";
 
 const HOME = os.homedir();
@@ -87,65 +87,65 @@ const RPC_TIMEOUT_MS = Number(process.env.PI_TOOLS_BRIDGE_RPC_TIMEOUT_MS ?? 5_00
 // ============================================================================
 
 interface RpcResponse {
-  type: "response";
-  command: string;
-  success: boolean;
-  error?: string;
-  data?: unknown;
+	type: "response";
+	command: string;
+	success: boolean;
+	error?: string;
+	data?: unknown;
 }
 
 async function resolveControlSocket(target: string): Promise<string> {
-  try {
-    await fs.access(ENTWURF_DIR);
-  } catch {
-    throw new Error(`pi control dir not found at ${ENTWURF_DIR}. Target pi needs --entwurf-control.`);
-  }
+	try {
+		await fs.access(ENTWURF_DIR);
+	} catch {
+		throw new Error(`pi control dir not found at ${ENTWURF_DIR}. Target pi needs --entwurf-control.`);
+	}
 
-  const direct = target.endsWith(SOCKET_SUFFIX)
-    ? path.join(ENTWURF_DIR, target)
-    : path.join(ENTWURF_DIR, `${target}${SOCKET_SUFFIX}`);
-  if (existsSync(direct)) return direct;
+	const direct = target.endsWith(SOCKET_SUFFIX)
+		? path.join(ENTWURF_DIR, target)
+		: path.join(ENTWURF_DIR, `${target}${SOCKET_SUFFIX}`);
+	if (existsSync(direct)) return direct;
 
-  const entries = await fs.readdir(ENTWURF_DIR).catch(() => [] as string[]);
-  for (const name of entries) {
-    if (name === target || name === `${target}${SOCKET_SUFFIX}`) {
-      return path.join(ENTWURF_DIR, name);
-    }
-  }
-  throw new Error(`No pi control socket for "${target}" under ${ENTWURF_DIR}`);
+	const entries = await fs.readdir(ENTWURF_DIR).catch(() => [] as string[]);
+	for (const name of entries) {
+		if (name === target || name === `${target}${SOCKET_SUFFIX}`) {
+			return path.join(ENTWURF_DIR, name);
+		}
+	}
+	throw new Error(`No pi control socket for "${target}" under ${ENTWURF_DIR}`);
 }
 
 function rpcCall(socketPath: string, payload: Record<string, unknown>): Promise<RpcResponse> {
-  return new Promise((resolve, reject) => {
-    const conn = net.createConnection(socketPath);
-    let buffer = "";
-    const timer = setTimeout(() => {
-      conn.destroy();
-      reject(new Error(`RPC timeout (${RPC_TIMEOUT_MS}ms) to ${socketPath}`));
-    }, RPC_TIMEOUT_MS);
-    conn.setEncoding("utf8");
-    conn.on("connect", () => {
-      conn.write(`${JSON.stringify(payload)}\n`);
-    });
-    conn.on("data", (chunk) => {
-      buffer += chunk;
-      const nl = buffer.indexOf("\n");
-      if (nl !== -1) {
-        clearTimeout(timer);
-        const line = buffer.slice(0, nl).trim();
-        conn.end();
-        try {
-          resolve(JSON.parse(line) as RpcResponse);
-        } catch {
-          reject(new Error(`Invalid RPC response: ${line.slice(0, 200)}`));
-        }
-      }
-    });
-    conn.on("error", (err) => {
-      clearTimeout(timer);
-      reject(err);
-    });
-  });
+	return new Promise((resolve, reject) => {
+		const conn = net.createConnection(socketPath);
+		let buffer = "";
+		const timer = setTimeout(() => {
+			conn.destroy();
+			reject(new Error(`RPC timeout (${RPC_TIMEOUT_MS}ms) to ${socketPath}`));
+		}, RPC_TIMEOUT_MS);
+		conn.setEncoding("utf8");
+		conn.on("connect", () => {
+			conn.write(`${JSON.stringify(payload)}\n`);
+		});
+		conn.on("data", (chunk) => {
+			buffer += chunk;
+			const nl = buffer.indexOf("\n");
+			if (nl !== -1) {
+				clearTimeout(timer);
+				const line = buffer.slice(0, nl).trim();
+				conn.end();
+				try {
+					resolve(JSON.parse(line) as RpcResponse);
+				} catch {
+					reject(new Error(`Invalid RPC response: ${line.slice(0, 200)}`));
+				}
+			}
+		});
+		conn.on("error", (err) => {
+			clearTimeout(timer);
+			reject(err);
+		});
+	});
 }
 
 // ============================================================================
@@ -158,78 +158,78 @@ function rpcCall(socketPath: string, payload: Record<string, unknown>): Promise<
 // ============================================================================
 
 interface LiveSessionInfo {
-  sessionId: string;
-  name?: string;
-  aliases: string[];
-  socketPath: string;
+	sessionId: string;
+	name?: string;
+	aliases: string[];
+	socketPath: string;
 }
 
 const SOCKET_PROBE_TIMEOUT_MS = 300;
 
 async function isSocketAlive(socketPath: string): Promise<boolean> {
-  return new Promise((resolve) => {
-    const conn = net.createConnection(socketPath);
-    const timer = setTimeout(() => {
-      conn.destroy();
-      resolve(false);
-    }, SOCKET_PROBE_TIMEOUT_MS);
-    conn.once("connect", () => {
-      clearTimeout(timer);
-      conn.end();
-      resolve(true);
-    });
-    conn.once("error", () => {
-      clearTimeout(timer);
-      resolve(false);
-    });
-  });
+	return new Promise((resolve) => {
+		const conn = net.createConnection(socketPath);
+		const timer = setTimeout(() => {
+			conn.destroy();
+			resolve(false);
+		}, SOCKET_PROBE_TIMEOUT_MS);
+		conn.once("connect", () => {
+			clearTimeout(timer);
+			conn.end();
+			resolve(true);
+		});
+		conn.once("error", () => {
+			clearTimeout(timer);
+			resolve(false);
+		});
+	});
 }
 
 async function readAliasMap(): Promise<Map<string, string[]>> {
-  const aliasMap = new Map<string, string[]>();
-  const entries = await fs.readdir(ENTWURF_DIR, { withFileTypes: true }).catch(() => []);
-  for (const entry of entries) {
-    if (!entry.isSymbolicLink()) continue;
-    if (!entry.name.endsWith(".alias")) continue;
-    const aliasPath = path.join(ENTWURF_DIR, entry.name);
-    let target: string;
-    try {
-      target = await fs.readlink(aliasPath);
-    } catch {
-      continue;
-    }
-    const resolvedTarget = path.resolve(ENTWURF_DIR, target);
-    const aliasName = entry.name.slice(0, -".alias".length);
-    const list = aliasMap.get(resolvedTarget);
-    if (list) list.push(aliasName);
-    else aliasMap.set(resolvedTarget, [aliasName]);
-  }
-  return aliasMap;
+	const aliasMap = new Map<string, string[]>();
+	const entries = await fs.readdir(ENTWURF_DIR, { withFileTypes: true }).catch(() => []);
+	for (const entry of entries) {
+		if (!entry.isSymbolicLink()) continue;
+		if (!entry.name.endsWith(".alias")) continue;
+		const aliasPath = path.join(ENTWURF_DIR, entry.name);
+		let target: string;
+		try {
+			target = await fs.readlink(aliasPath);
+		} catch {
+			continue;
+		}
+		const resolvedTarget = path.resolve(ENTWURF_DIR, target);
+		const aliasName = entry.name.slice(0, -".alias".length);
+		const list = aliasMap.get(resolvedTarget);
+		if (list) list.push(aliasName);
+		else aliasMap.set(resolvedTarget, [aliasName]);
+	}
+	return aliasMap;
 }
 
 async function getLiveSessions(): Promise<LiveSessionInfo[]> {
-  try {
-    await fs.access(ENTWURF_DIR);
-  } catch {
-    return [];
-  }
-  const entries = await fs.readdir(ENTWURF_DIR, { withFileTypes: true }).catch(() => []);
-  const aliasMap = await readAliasMap();
-  const sessions: LiveSessionInfo[] = [];
+	try {
+		await fs.access(ENTWURF_DIR);
+	} catch {
+		return [];
+	}
+	const entries = await fs.readdir(ENTWURF_DIR, { withFileTypes: true }).catch(() => []);
+	const aliasMap = await readAliasMap();
+	const sessions: LiveSessionInfo[] = [];
 
-  for (const entry of entries) {
-    if (!entry.name.endsWith(SOCKET_SUFFIX)) continue;
-    if (entry.isSymbolicLink()) continue;
-    const socketPath = path.join(ENTWURF_DIR, entry.name);
-    if (!(await isSocketAlive(socketPath))) continue;
-    const sessionId = entry.name.slice(0, -SOCKET_SUFFIX.length);
-    if (!sessionId || sessionId.includes("/")) continue;
-    const aliases = aliasMap.get(socketPath) ?? [];
-    sessions.push({ sessionId, name: aliases[0], aliases, socketPath });
-  }
+	for (const entry of entries) {
+		if (!entry.name.endsWith(SOCKET_SUFFIX)) continue;
+		if (entry.isSymbolicLink()) continue;
+		const socketPath = path.join(ENTWURF_DIR, entry.name);
+		if (!(await isSocketAlive(socketPath))) continue;
+		const sessionId = entry.name.slice(0, -SOCKET_SUFFIX.length);
+		if (!sessionId || sessionId.includes("/")) continue;
+		const aliases = aliasMap.get(socketPath) ?? [];
+		sessions.push({ sessionId, name: aliases[0], aliases, socketPath });
+	}
 
-  sessions.sort((a, b) => (a.name ?? a.sessionId).localeCompare(b.name ?? b.sessionId));
-  return sessions;
+	sessions.sort((a, b) => (a.name ?? a.sessionId).localeCompare(b.name ?? b.sessionId));
+	return sessions;
 }
 
 // ============================================================================
@@ -237,11 +237,11 @@ async function getLiveSessions(): Promise<LiveSessionInfo[]> {
 // ============================================================================
 
 function textOk(text: string) {
-  return { content: [{ type: "text" as const, text }] };
+	return { content: [{ type: "text" as const, text }] };
 }
 
 function textErr(msg: string) {
-  return { content: [{ type: "text" as const, text: msg }], isError: true };
+	return { content: [{ type: "text" as const, text: msg }], isError: true };
 }
 
 // ============================================================================
@@ -251,169 +251,162 @@ function textErr(msg: string) {
 const server = new McpServer({ name: "pi-tools-bridge", version: "0.1.0" });
 
 server.tool(
-  "entwurf_send",
-  "Send a message to another running pi session via its control socket. " +
-    "Target by sessionId or alias name. The target must be running with --entwurf-control. " +
-    "This MCP surface is fire-and-forget: delivery is confirmed, a turn result is not. " +
-    "If you need a reply, let the target answer with its own entwurf_send. " +
-    "If the caller needs a result it owns, use entwurf(mode=async) + entwurf_resume instead.",
-  {
-    target: z.string().min(1).describe("Session id or alias registered under pi control dir"),
-    message: z.string().min(1).describe("Message text to deliver"),
-    mode: z.enum(["steer", "follow_up"]).optional().describe("Default follow_up"),
-  },
-  async ({ target, message, mode }) => {
-    try {
-      const sock = await resolveControlSocket(target);
-      const resp = await rpcCall(sock, { type: "send", message, mode: mode ?? "follow_up" });
-      if (!resp.success) {
-        return textErr(`entwurf_send failed: ${resp.error ?? "unknown"}`);
-      }
-      return textOk(`delivered to ${target}`);
-    } catch (err) {
-      return textErr(`entwurf_send error: ${err instanceof Error ? err.message : String(err)}`);
-    }
-  },
+	"entwurf_send",
+	"Send a message to another running pi session via its control socket. " +
+		"Target by sessionId or alias name. The target must be running with --entwurf-control. " +
+		"This MCP surface is fire-and-forget: delivery is confirmed, a turn result is not. " +
+		"If you need a reply, let the target answer with its own entwurf_send. " +
+		"If the caller needs a result it owns, use entwurf(mode=async) + entwurf_resume instead.",
+	{
+		target: z.string().min(1).describe("Session id or alias registered under pi control dir"),
+		message: z.string().min(1).describe("Message text to deliver"),
+		mode: z.enum(["steer", "follow_up"]).optional().describe("Default follow_up"),
+	},
+	async ({ target, message, mode }) => {
+		try {
+			const sock = await resolveControlSocket(target);
+			const resp = await rpcCall(sock, { type: "send", message, mode: mode ?? "follow_up" });
+			if (!resp.success) {
+				return textErr(`entwurf_send failed: ${resp.error ?? "unknown"}`);
+			}
+			return textOk(`delivered to ${target}`);
+		} catch (err) {
+			return textErr(`entwurf_send error: ${err instanceof Error ? err.message : String(err)}`);
+		}
+	},
 );
 
 server.tool(
-  "entwurf_peers",
-  "List active pi sessions that currently expose a control socket (i.e. were launched with " +
-    "--entwurf-control). Returns sessionId + optional alias name + socket path for each live " +
-    "session. Pair with entwurf_send to address a specific peer. " +
-    "Note: this is the *active* session world. It is NOT the way to discover saved entwurf " +
-    "sessions — those live as JSONL files under ~/.pi/agent/sessions and are addressed by " +
-    "taskId via entwurf_resume; their original processes may already have exited.",
-  {},
-  async () => {
-    try {
-      const sessions = await getLiveSessions();
-      const lines = sessions.length
-        ? sessions.map((s) => {
-            const name = s.name ? ` (${s.name})` : "";
-            return `- ${s.sessionId}${name}`;
-          })
-        : ["(no live pi sessions with --entwurf-control found)"];
-      const payload = {
-        controlDir: ENTWURF_DIR,
-        count: sessions.length,
-        sessions: sessions.map((s) => ({
-          sessionId: s.sessionId,
-          name: s.name,
-          aliases: s.aliases,
-          socketPath: s.socketPath,
-        })),
-      };
-      return textOk(`${lines.join("\n")}\n\n${JSON.stringify(payload)}`);
-    } catch (err) {
-      return textErr(`entwurf_peers error: ${err instanceof Error ? err.message : String(err)}`);
-    }
-  },
+	"entwurf_peers",
+	"List active pi sessions that currently expose a control socket (i.e. were launched with " +
+		"--entwurf-control). Returns sessionId + optional alias name + socket path for each live " +
+		"session. Pair with entwurf_send to address a specific peer. " +
+		"Note: this is the *active* session world. It is NOT the way to discover saved entwurf " +
+		"sessions — those live as JSONL files under ~/.pi/agent/sessions and are addressed by " +
+		"taskId via entwurf_resume; their original processes may already have exited.",
+	{},
+	async () => {
+		try {
+			const sessions = await getLiveSessions();
+			const lines = sessions.length
+				? sessions.map((s) => {
+						const name = s.name ? ` (${s.name})` : "";
+						return `- ${s.sessionId}${name}`;
+					})
+				: ["(no live pi sessions with --entwurf-control found)"];
+			const payload = {
+				controlDir: ENTWURF_DIR,
+				count: sessions.length,
+				sessions: sessions.map((s) => ({
+					sessionId: s.sessionId,
+					name: s.name,
+					aliases: s.aliases,
+					socketPath: s.socketPath,
+				})),
+			};
+			return textOk(`${lines.join("\n")}\n\n${JSON.stringify(payload)}`);
+		} catch (err) {
+			return textErr(`entwurf_peers error: ${err instanceof Error ? err.message : String(err)}`);
+		}
+	},
 );
 
 server.tool(
-  "entwurf",
-  "Entwurf a task to an independent pi agent process (sync mode). " +
-    "Spawns a fresh pi -p run, waits for completion, returns stdout + turns + cost. Use for " +
-    "isolated work (different cwd, different machine via SSH, or resource-intensive jobs) " +
-    "where you want the result inline. " +
-    "The result includes a Task ID — pass it to entwurf_resume to continue this entwurf's " +
-    "saved session with a follow-up prompt. " +
-    "Entwurf Target Registry (narrow door, see pi-shell-acp/AGENTS.md §Entwurf Orchestration): every spawn must " +
-    "resolve to an exact (provider, model) pair listed in ~/.pi/agent/entwurf-targets.json. " +
-    "Caller may pass either a qualified `model` (provider/name) or both `provider` and `model` " +
-    "fields. Bare model is accepted only when unambiguous — e.g. `claude-sonnet-4-6` resolves " +
-    "to pi-shell-acp; bare `gpt-5.4` resolves to native openai-codex (the pi-shell-acp/gpt-5.4 " +
-    "entry is marked explicitOnly and skipped from auto-resolution). " +
-    "Async spawn + entwurf_status are not exposed here yet (deferred to a separate design round). " +
-    `Default model when omitted: ${DEFAULT_ENTWURF_MODEL}.`,
-  {
-    task: z.string().min(1).describe("The task to entwurf (plain text prompt)"),
-    host: z.string().min(1).optional().describe("SSH host name (omit or 'local' for local)"),
-    cwd: z.string().min(1).optional().describe("Working directory for the entwurf"),
-    provider: z
-      .string()
-      .min(1)
-      .optional()
-      .describe(
-        "Provider id (e.g. 'pi-shell-acp', 'openai-codex'). Pair with `model` to disambiguate. " +
-          "Optional if `model` is qualified ('provider/name') or unambiguous in the registry.",
-      ),
-    model: z
-      .string()
-      .min(1)
-      .optional()
-      .describe(
-        "Model id. Either qualified ('pi-shell-acp/claude-sonnet-4-6') or bare ('claude-sonnet-4-6'). " +
-          "Bare names must resolve unambiguously in the registry; otherwise pass `provider`.",
-      ),
-  },
-  async ({ task, host, cwd, provider, model }) => {
-    try {
-      const guardSessionId = process.pid.toString();
-      const guardTargetKey = resolveGuardTargetKey(provider, model);
-      ensureEntwurfOncePerTarget(guardSessionId, guardTargetKey);
+	"entwurf",
+	"Entwurf a task to an independent pi agent process (sync mode). " +
+		"Spawns a fresh pi -p run, waits for completion, returns stdout + turns + cost. Use for " +
+		"isolated work (different cwd, different machine via SSH, or resource-intensive jobs) " +
+		"where you want the result inline. " +
+		"The result includes a Task ID — pass it to entwurf_resume to continue this entwurf's " +
+		"saved session with a follow-up prompt. " +
+		"Entwurf Target Registry (narrow door, see pi-shell-acp/AGENTS.md §Entwurf Orchestration): every spawn must " +
+		"resolve to an exact (provider, model) pair listed in ~/.pi/agent/entwurf-targets.json. " +
+		"Caller may pass either a qualified `model` (provider/name) or both `provider` and `model` " +
+		"fields. Bare model is accepted only when unambiguous — e.g. `claude-sonnet-4-6` resolves " +
+		"to pi-shell-acp; bare `gpt-5.4` resolves to native openai-codex (the pi-shell-acp/gpt-5.4 " +
+		"entry is marked explicitOnly and skipped from auto-resolution). " +
+		"Async spawn + entwurf_status are not exposed here yet (deferred to a separate design round). " +
+		`Default model when omitted: ${DEFAULT_ENTWURF_MODEL}.`,
+	{
+		task: z.string().min(1).describe("The task to entwurf (plain text prompt)"),
+		host: z.string().min(1).optional().describe("SSH host name (omit or 'local' for local)"),
+		cwd: z.string().min(1).optional().describe("Working directory for the entwurf"),
+		provider: z
+			.string()
+			.min(1)
+			.optional()
+			.describe(
+				"Provider id (e.g. 'pi-shell-acp', 'openai-codex'). Pair with `model` to disambiguate. " +
+					"Optional if `model` is qualified ('provider/name') or unambiguous in the registry.",
+			),
+		model: z
+			.string()
+			.min(1)
+			.optional()
+			.describe(
+				"Model id. Either qualified ('pi-shell-acp/claude-sonnet-4-6') or bare ('claude-sonnet-4-6'). " +
+					"Bare names must resolve unambiguously in the registry; otherwise pass `provider`.",
+			),
+	},
+	async ({ task, host, cwd, provider, model }) => {
+		try {
+			const guardSessionId = process.pid.toString();
+			const guardTargetKey = resolveGuardTargetKey(provider, model);
+			ensureEntwurfOncePerTarget(guardSessionId, guardTargetKey);
 
-      const result = await runEntwurfSync(task, { host, cwd, provider, model });
-      markEntwurfTargetUsed(guardSessionId, guardTargetKey);
-      const text = formatSyncSummary(result);
-      return result.exitCode === 0 ? textOk(text) : textErr(text);
-    } catch (err) {
-      return textErr(`entwurf error: ${err instanceof Error ? err.message : String(err)}`);
-    }
-  },
+			const result = await runEntwurfSync(task, { host, cwd, provider, model });
+			markEntwurfTargetUsed(guardSessionId, guardTargetKey);
+			const text = formatSyncSummary(result);
+			return result.exitCode === 0 ? textOk(text) : textErr(text);
+		} catch (err) {
+			return textErr(`entwurf error: ${err instanceof Error ? err.message : String(err)}`);
+		}
+	},
 );
 
 server.tool(
-  "entwurf_resume",
-  "Resume a saved entwurf session by taskId, with a follow-up prompt (sync mode only). " +
-    "The taskId comes from a prior entwurf call's output (look for 'Task ID: <id>' in the " +
-    "summary). The bridge looks up the saved session JSONL under ~/.pi/agent/sessions and " +
-    "spawns `pi --session <file>` with the new prompt; pi appends to the same file. " +
-    "Important: this works on the saved session file. The original entwurf process may have " +
-    "exited and is NOT required to be alive — entwurf_resume does NOT consult control sockets " +
-    "or entwurf_peers. The two surfaces are separate by design (active sessions vs saved " +
-    "entwurf sessions). " +
-    "Routing on resume comes entirely from the saved session JSONL (provider + model " +
-    "as recorded). The Entwurf Target Registry that gates spawn is NOT consulted here. " +
-    "Identity Preservation Rule: this tool intentionally does NOT accept a `model` " +
-    "parameter. The model is locked to whatever the saved session recorded at first " +
-    "spawn — resuming under a different model is treated as splicing a new identity " +
-    "onto someone else's transcript and is refused at the API layer. host and cwd may " +
-    "change (execution environment is not identity); model may not. " +
-    "Async resume is intentionally not exposed on this MCP surface; " +
-    "the pi-native entwurf_resume exposes mode=\"async\" for long-running resumes " +
-    "with followUp delivery into the parent session (see Phase 0.5 in AGENTS.md).",
-  {
-    taskId: z
-      .string()
-      .min(1)
-      .describe("Task ID from a prior entwurf result (e.g. '3f9a8c1b')"),
-    prompt: z.string().min(1).describe("Follow-up prompt to send into the resumed session"),
-    host: z
-      .string()
-      .min(1)
-      .optional()
-      .describe(
-        "SSH host name if the original entwurf ran remote (default: 'local'). " +
-          "NOTE: remote SSH path is implemented but not yet end-to-end verified — " +
-          "use with care until the remote rollout phase.",
-      ),
-    cwd: z
-      .string()
-      .min(1)
-      .optional()
-      .describe("Working directory override for the resume spawn"),
-  },
-  async ({ taskId, prompt, host, cwd }) => {
-    try {
-      const result = await runEntwurfResumeSync(taskId, prompt, { host, cwd });
-      const text = formatSyncSummary(result);
-      return result.exitCode === 0 ? textOk(text) : textErr(text);
-    } catch (err) {
-      return textErr(`entwurf_resume error: ${err instanceof Error ? err.message : String(err)}`);
-    }
-  },
+	"entwurf_resume",
+	"Resume a saved entwurf session by taskId, with a follow-up prompt (sync mode only). " +
+		"The taskId comes from a prior entwurf call's output (look for 'Task ID: <id>' in the " +
+		"summary). The bridge looks up the saved session JSONL under ~/.pi/agent/sessions and " +
+		"spawns `pi --session <file>` with the new prompt; pi appends to the same file. " +
+		"Important: this works on the saved session file. The original entwurf process may have " +
+		"exited and is NOT required to be alive — entwurf_resume does NOT consult control sockets " +
+		"or entwurf_peers. The two surfaces are separate by design (active sessions vs saved " +
+		"entwurf sessions). " +
+		"Routing on resume comes entirely from the saved session JSONL (provider + model " +
+		"as recorded). The Entwurf Target Registry that gates spawn is NOT consulted here. " +
+		"Identity Preservation Rule: this tool intentionally does NOT accept a `model` " +
+		"parameter. The model is locked to whatever the saved session recorded at first " +
+		"spawn — resuming under a different model is treated as splicing a new identity " +
+		"onto someone else's transcript and is refused at the API layer. host and cwd may " +
+		"change (execution environment is not identity); model may not. " +
+		"Async resume is intentionally not exposed on this MCP surface; " +
+		'the pi-native entwurf_resume exposes mode="async" for long-running resumes ' +
+		"with followUp delivery into the parent session (see Phase 0.5 in AGENTS.md).",
+	{
+		taskId: z.string().min(1).describe("Task ID from a prior entwurf result (e.g. '3f9a8c1b')"),
+		prompt: z.string().min(1).describe("Follow-up prompt to send into the resumed session"),
+		host: z
+			.string()
+			.min(1)
+			.optional()
+			.describe(
+				"SSH host name if the original entwurf ran remote (default: 'local'). " +
+					"NOTE: remote SSH path is implemented but not yet end-to-end verified — " +
+					"use with care until the remote rollout phase.",
+			),
+		cwd: z.string().min(1).optional().describe("Working directory override for the resume spawn"),
+	},
+	async ({ taskId, prompt, host, cwd }) => {
+		try {
+			const result = await runEntwurfResumeSync(taskId, prompt, { host, cwd });
+			const text = formatSyncSummary(result);
+			return result.exitCode === 0 ? textOk(text) : textErr(text);
+		} catch (err) {
+			return textErr(`entwurf_resume error: ${err instanceof Error ? err.message : String(err)}`);
+		}
+	},
 );
 
 // ============================================================================
@@ -421,11 +414,11 @@ server.tool(
 // ============================================================================
 
 async function main(): Promise<void> {
-  const transport = new StdioServerTransport();
-  await server.connect(transport);
+	const transport = new StdioServerTransport();
+	await server.connect(transport);
 }
 
 main().catch((err) => {
-  console.error(`[pi-tools-bridge] fatal: ${err instanceof Error ? err.stack : err}`);
-  process.exit(1);
+	console.error(`[pi-tools-bridge] fatal: ${err instanceof Error ? err.stack : err}`);
+	process.exit(1);
 });

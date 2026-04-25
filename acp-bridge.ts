@@ -1,16 +1,16 @@
+import { type ChildProcessByStdio, execFileSync, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { execFileSync, spawn, type ChildProcessByStdio } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { Readable, Writable } from "node:stream";
 import {
-	ClientSideConnection,
-	PROTOCOL_VERSION,
 	type AnyMessage,
+	ClientSideConnection,
 	type InitializeResponse,
 	type McpServer,
+	PROTOCOL_VERSION,
 	type PromptResponse,
 	type RequestPermissionRequest,
 	type RequestPermissionResponse,
@@ -24,9 +24,9 @@ type PromptContentBlock =
 export type BridgePromptEvent =
 	| { type: "session_notification"; notification: SessionNotification }
 	| {
-		type: "permission_request";
-		request: RequestPermissionRequest;
-		response: RequestPermissionResponse;
+			type: "permission_request";
+			request: RequestPermissionRequest;
+			response: RequestPermissionResponse;
 	  };
 
 type PendingPromptHandler = (event: BridgePromptEvent) => Promise<void> | void;
@@ -117,11 +117,7 @@ function validateKvEntries(
 	return entries;
 }
 
-function normalizeMcpServerEntry(
-	name: string,
-	raw: unknown,
-	issues: McpServerConfigIssue[],
-): McpServer | undefined {
+function normalizeMcpServerEntry(name: string, raw: unknown, issues: McpServerConfigIssue[]): McpServer | undefined {
 	if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
 		issues.push({ server: name, reason: "server entry must be an object" });
 		return undefined;
@@ -227,7 +223,10 @@ type AcpBackendAdapter = {
 	id: AcpBackend;
 	stderrLabel: string;
 	resolveLaunch(): AcpLaunchSpec;
-	buildSessionMeta(params: BackendSessionMetaParams, normalizedSystemPrompt: string | undefined): Record<string, any> | undefined;
+	buildSessionMeta(
+		params: BackendSessionMetaParams,
+		normalizedSystemPrompt: string | undefined,
+	): Record<string, any> | undefined;
 	/**
 	 * Optional: turn a bootstrap-time augmentation string (e.g. the rendered
 	 * engraving) into ContentBlocks that should be prepended to the FIRST
@@ -415,7 +414,9 @@ function inferPermissionKind(params: RequestPermissionRequest): string | undefin
 
 function resolvePermissionResponse(params: RequestPermissionRequest): RequestPermissionResponse {
 	const mode = (process.env.CLAUDE_ACP_PERMISSION_MODE ?? "approve-all").trim().toLowerCase();
-	const options = Array.isArray((params as any)?.options) ? ((params as any).options as Array<{ optionId: string; kind?: string }>) : [];
+	const options = Array.isArray((params as any)?.options)
+		? ((params as any).options as Array<{ optionId: string; kind?: string }>)
+		: [];
 	if (options.length === 0) {
 		return { outcome: { outcome: "cancelled" } };
 	}
@@ -459,10 +460,7 @@ function resolveClaudeAcpLaunch(): AcpLaunchSpec {
 		const packageJson = JSON.parse(readFileSync(packageJsonPath, "utf8")) as {
 			bin?: string | Record<string, string>;
 		};
-		const binPath =
-			typeof packageJson.bin === "string"
-				? packageJson.bin
-				: packageJson.bin?.["claude-agent-acp"];
+		const binPath = typeof packageJson.bin === "string" ? packageJson.bin : packageJson.bin?.["claude-agent-acp"];
 		if (binPath) {
 			return {
 				command: process.execPath,
@@ -549,9 +547,8 @@ function resolveClaudeCodeExecutable(): string | undefined {
 	let nativeCandidates: string[];
 	if (process.platform === "linux") {
 		const libc = detectLinuxLibc();
-		nativeCandidates = libc === "musl"
-			? [`linux-${arch}-musl`, `linux-${arch}`]
-			: [`linux-${arch}`, `linux-${arch}-musl`];
+		nativeCandidates =
+			libc === "musl" ? [`linux-${arch}-musl`, `linux-${arch}`] : [`linux-${arch}`, `linux-${arch}-musl`];
 	} else {
 		nativeCandidates = [`${process.platform}-${arch}`];
 	}
@@ -559,9 +556,7 @@ function resolveClaudeCodeExecutable(): string | undefined {
 	const binaryName = process.platform === "win32" ? "claude.exe" : "claude";
 	for (const variant of nativeCandidates) {
 		try {
-			const pkgJsonPath = require.resolve(
-				`@anthropic-ai/claude-agent-sdk-${variant}/package.json`,
-			);
+			const pkgJsonPath = require.resolve(`@anthropic-ai/claude-agent-sdk-${variant}/package.json`);
 			const candidate = join(dirname(pkgJsonPath), binaryName);
 			if (existsSync(candidate)) {
 				cachedClaudeCodeExecutable = candidate;
@@ -573,9 +568,7 @@ function resolveClaudeCodeExecutable(): string | undefined {
 	}
 
 	try {
-		const sdkPkgPath = require.resolve(
-			"@anthropic-ai/claude-agent-sdk/package.json",
-		);
+		const sdkPkgPath = require.resolve("@anthropic-ai/claude-agent-sdk/package.json");
 		const cliJs = join(dirname(sdkPkgPath), "cli.js");
 		if (existsSync(cliJs)) {
 			cachedClaudeCodeExecutable = cliJs;
@@ -794,7 +787,15 @@ function detectSessionCapabilities(initializeResult: InitializeResponse): Bridge
 }
 
 function isSessionCompatible(
-	session: Pick<AcpBridgeSession, "cwd" | "backend" | "systemPromptAppend" | "bootstrapPromptAugment" | "bridgeConfigSignature" | "contextMessageSignatures">,
+	session: Pick<
+		AcpBridgeSession,
+		| "cwd"
+		| "backend"
+		| "systemPromptAppend"
+		| "bootstrapPromptAugment"
+		| "bridgeConfigSignature"
+		| "contextMessageSignatures"
+	>,
 	params: EnsureBridgeSessionParams,
 	normalizedSystemPrompt: string | undefined,
 	normalizedBootstrapAugment: string | undefined,
@@ -824,7 +825,10 @@ function isPersistedSessionCompatible(
 	);
 }
 
-function buildSessionMeta(params: EnsureBridgeSessionParams, normalizedSystemPrompt: string | undefined): Record<string, any> | undefined {
+function buildSessionMeta(
+	params: EnsureBridgeSessionParams,
+	normalizedSystemPrompt: string | undefined,
+): Record<string, any> | undefined {
 	return buildSessionMetaForBackend(params.backend, params, normalizedSystemPrompt);
 }
 
@@ -877,10 +881,7 @@ function isChildExited(child: ChildProcessByStdio<any, any, any>): boolean {
 	return child.exitCode !== null || child.signalCode !== null;
 }
 
-function awaitChildExit(
-	child: ChildProcessByStdio<any, any, any>,
-	timeoutMs: number,
-): Promise<"exited" | "timeout"> {
+function awaitChildExit(child: ChildProcessByStdio<any, any, any>, timeoutMs: number): Promise<"exited" | "timeout"> {
 	if (isChildExited(child)) return Promise.resolve("exited");
 	return new Promise((resolve) => {
 		const timer = setTimeout(() => resolve("timeout"), timeoutMs);
@@ -892,11 +893,7 @@ function awaitChildExit(
 	});
 }
 
-function killProcessTree(
-	child: ChildProcessByStdio<any, any, any>,
-	sessionKey: string,
-	backend: AcpBackend,
-): void {
+function killProcessTree(child: ChildProcessByStdio<any, any, any>, sessionKey: string, backend: AcpBackend): void {
 	const pid = child.pid;
 	if (!pid) return;
 	if (process.platform !== "win32") {
@@ -1034,11 +1031,7 @@ function logBridgeModelSwitch(
 	console.error(`[pi-shell-acp:model-switch] ${line}`);
 }
 
-function logBridgeCancel(
-	session: AcpBridgeSession,
-	outcome: CancelOutcome,
-	reason?: string,
-): void {
+function logBridgeCancel(session: AcpBridgeSession, outcome: CancelOutcome, reason?: string): void {
 	const line = formatBootstrapPayload({
 		sessionKey: session.key,
 		backend: session.backend,
@@ -1315,9 +1308,7 @@ async function bootstrapPersistedBridgeSession(
 		persistBridgeSessionRecord(session);
 		logBridgeBootstrap(
 			session,
-			shouldInvalidatePersisted
-				? { invalidated: true, invalidationReason: "bootstrap_exhausted" }
-				: undefined,
+			shouldInvalidatePersisted ? { invalidated: true, invalidationReason: "bootstrap_exhausted" } : undefined,
 		);
 		return session;
 	} catch (error) {
@@ -1401,7 +1392,9 @@ export async function ensureBridgeSession(params: EnsureBridgeSessionParams): Pr
 
 	const persisted = readPersistedSessionRecord(params.sessionKey);
 	if (persisted) {
-		if (!isPersistedSessionCompatible(persisted, normalizedParams, normalizedSystemPrompt, normalizedBootstrapAugment)) {
+		if (
+			!isPersistedSessionCompatible(persisted, normalizedParams, normalizedSystemPrompt, normalizedBootstrapAugment)
+		) {
 			logBridgeBootstrapInvalidate(params.sessionKey, "incompatible_config", persisted.acpSessionId);
 			deletePersistedSessionRecord(params.sessionKey);
 			return await startNewBridgeSession(normalizedParams, {
@@ -1415,17 +1408,11 @@ export async function ensureBridgeSession(params: EnsureBridgeSessionParams): Pr
 	return await startNewBridgeSession(normalizedParams);
 }
 
-export function setActivePromptHandler(
-	session: AcpBridgeSession,
-	handler: PendingPromptHandler | undefined,
-): void {
+export function setActivePromptHandler(session: AcpBridgeSession, handler: PendingPromptHandler | undefined): void {
 	session.activePromptHandler = handler;
 }
 
-export async function sendPrompt(
-	session: AcpBridgeSession,
-	prompt: PromptContentBlock[],
-): Promise<PromptResponse> {
+export async function sendPrompt(session: AcpBridgeSession, prompt: PromptContentBlock[]): Promise<PromptResponse> {
 	// First prompt after a bootstrapPath="new" session may carry an adapter-
 	// supplied ContentBlock prepend (the rendered engraving on Codex, etc.).
 	// Consume the pending slot exactly once so subsequent turns stay clean.
@@ -1455,10 +1442,7 @@ export async function cancelActivePrompt(session: AcpBridgeSession): Promise<Can
 	}
 }
 
-export async function closeBridgeSession(
-	sessionKey: string,
-	options: CloseBridgeSessionOptions = {},
-): Promise<void> {
+export async function closeBridgeSession(sessionKey: string, options: CloseBridgeSessionOptions = {}): Promise<void> {
 	const session = bridgeSessions.get(sessionKey);
 	if (!session) {
 		if (options.invalidatePersisted !== false) {
@@ -1499,7 +1483,9 @@ export function describeBridgeSession(session: AcpBridgeSession): Record<string,
 
 export function getBridgeErrorDetails(error: unknown, session?: AcpBridgeSession): string {
 	const message = error instanceof Error ? error.message : String(error);
-	const diagnostic = session ? `\n\n[pi-shell-acp session]\n${JSON.stringify(describeBridgeSession(session), null, 2)}` : "";
+	const diagnostic = session
+		? `\n\n[pi-shell-acp session]\n${JSON.stringify(describeBridgeSession(session), null, 2)}`
+		: "";
 	const stderrTail = session?.stderrTail?.slice(-20)?.join("\n");
 	const stderrBlock = stderrTail ? `\n\n[${session?.stderrLabel ?? "acp stderr"}]\n${stderrTail}` : "";
 	return `${message}${diagnostic}${stderrBlock}`;

@@ -63,12 +63,8 @@ function loadSource(filePath: string): string {
 }
 
 function interpolate(template: string, params: EngravingParams): string {
-	const mcpList = params.mcpServerNames.length > 0
-		? params.mcpServerNames.join(", ")
-		: "(none registered)";
-	return template
-		.replace(/\{\{backend\}\}/g, params.backend)
-		.replace(/\{\{mcp_servers\}\}/g, mcpList);
+	const mcpList = params.mcpServerNames.length > 0 ? params.mcpServerNames.join(", ") : "(none registered)";
+	return template.replace(/\{\{backend\}\}/g, params.backend).replace(/\{\{mcp_servers\}\}/g, mcpList);
 }
 
 /**
