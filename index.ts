@@ -415,57 +415,34 @@ function extractPromptBlocks(
 function applyPromptUsage(model: Model<any>, output: AssistantMessage, promptResponse: any): void {
 	const usage = promptResponse?.usage;
 	if (!usage || typeof usage !== "object") return;
-	const rawInput = Number(usage.inputTokens ?? 0);
-	const rawOutput = Number(usage.outputTokens ?? 0);
-	const rawCacheRead = Number(usage.cachedReadTokens ?? 0);
-	const rawCacheWrite = Number(usage.cachedWriteTokens ?? 0);
-	const reportedTotal = usage.totalTokens != null ? Number(usage.totalTokens) : null;
 
-	output.usage.input = rawInput;
-	output.usage.output = rawOutput;
-	// Cost calculation needs the real cached-read/write counts because Claude
-	// Code (and Codex) bill those at separate rates. We populate them, run
-	// calculateCost, then zero them on the output usage object so they never
-	// leak into pi's context metric.
-	output.usage.cacheRead = rawCacheRead;
-	output.usage.cacheWrite = rawCacheWrite;
+	// Forward raw usage straight through to pi.
+	//
+	// Earlier revisions zeroed cacheRead/cacheWrite on the metric path to
+	// neutralize pi-ai's isContextOverflow Case 2 (silent overflow recovery
+	// via `usage.input + usage.cacheRead > contextWindow`). That was a
+	// defense-in-depth layer for the case where the operator hadn't disabled
+	// pi compaction. We now block all four pi compaction paths centrally
+	// in the `session_before_compact` handler at the bottom of this file, so
+	// the metric-side sanitization is no longer load-bearing — and zeroing
+	// cacheRead made the TUI footer dishonest (showed 0.1% on a turn that
+	// actually loaded a 300K-token cached prompt). The honest reading wins.
+	output.usage.input = Number(usage.inputTokens ?? 0);
+	output.usage.output = Number(usage.outputTokens ?? 0);
+	output.usage.cacheRead = Number(usage.cachedReadTokens ?? 0);
+	output.usage.cacheWrite = Number(usage.cachedWriteTokens ?? 0);
+	if (usage.totalTokens != null) {
+		output.usage.totalTokens = Number(usage.totalTokens);
+	}
 	calculateCost(model, output.usage);
 
-	// pi context-metric sanitization.
-	//
-	// pi-coding-agent's calculateContextTokens(usage) reads usage.totalTokens
-	// first and falls back to input+output+cacheRead+cacheWrite when totalTokens
-	// is 0. That metric drives the TUI footer context-% display AND any
-	// compaction timing logic that may run inside pi.
-	//
-	// pi-ai's isContextOverflow Case 2 (silent overflow) also looks at
-	// usage.input + usage.cacheRead and triggers an automatic compaction when
-	// that sum exceeds the model's context window — regardless of whether the
-	// operator turned auto-compaction on. The check exists for leaky backends
-	// (z.ai etc.) that silently truncate, but it does not match the ACP
-	// reality: cacheRead from Claude Code / Codex is the prompt-cache hit
-	// portion of an already-handled prompt, NOT a signal that the live
-	// conversation is anywhere near the window. Letting it through caused
-	// reports like input=11 + cacheRead=325874 → silent compaction on a
-	// nearly-empty turn.
-	//
-	// Fix: zero cacheRead / cacheWrite on the metric path entirely. Billing
-	// already ran above with the raw numbers, so cost accounting is
-	// untouched. Backend auto-compaction is independently disabled via
-	// adapter.bridgeEnvDefaults (DISABLE_AUTO_COMPACT=1 + DISABLE_COMPACT=1 for
-	// Claude; -c model_auto_compact_token_limit=i64::MAX for codex) so the backend itself
-	// no longer initiates compaction either — keeping pi as the single
-	// context-management authority.
-	output.usage.cacheRead = 0;
-	output.usage.cacheWrite = 0;
-	output.usage.totalTokens = output.usage.input + output.usage.output;
-
-	// One-line diagnostic so "why is the footer at X% / why did compaction fire"
-	// is traceable at the pi-shell-acp boundary without spelunking pi internals.
+	// One-line diagnostic so "why is the footer at X% / why did the metric
+	// jump" is traceable at the pi-shell-acp boundary without spelunking pi
+	// internals or backend logs.
 	console.error(
-		`[pi-shell-acp:usage] input=${rawInput} output=${rawOutput} ` +
-			`rawCacheRead=${rawCacheRead} rawCacheWrite=${rawCacheWrite} ` +
-			`reportedTotal=${reportedTotal ?? "n/a"} sanitizedTotal=${output.usage.totalTokens}`,
+		`[pi-shell-acp:usage] input=${output.usage.input} output=${output.usage.output} ` +
+			`cacheRead=${output.usage.cacheRead} cacheWrite=${output.usage.cacheWrite} ` +
+			`totalTokens=${output.usage.totalTokens}`,
 	);
 }
 
@@ -668,6 +645,35 @@ export default function (pi: ExtensionAPI) {
 		const sessionId = ctx?.sessionManager?.getSessionId?.();
 		if (!sessionId) return;
 		await cleanupBridgeSessionProcess(`pi:${sessionId}`);
+	});
+
+	// Block all compaction at the host (pi) level.
+	//
+	// pi runs four compaction paths today, and three of them are silent:
+	//   1. silent overflow recovery (`isContextOverflow` Case 2 — input + cacheRead > window)
+	//   2. threshold compaction (`shouldCompact(contextTokens, contextWindow, settings)`)
+	//   3. explicit error overflow recovery
+	//   4. manual `/compact` invoked by the operator
+	//
+	// All four go through `session_before_compact`, so returning `{ cancel: true }`
+	// here covers them as a group. That removes the need for the operator to
+	// remember to set `compaction.enabled=false` in their pi settings — this
+	// repo is the one with the policy ("non-compaction is the autonomous-
+	// operation invariant"), so the gate belongs here, not in agent-config.
+	//
+	// Manual `/compact` users get a clear "Compaction cancelled" surface from
+	// agent-session.js, so the intent stays observable. If an operator really
+	// wants pi-side compaction back (e.g. a long-running maintenance session),
+	// `PI_SHELL_ACP_ALLOW_COMPACTION=1` opts out of this guard at process level.
+	on("session_before_compact", () => {
+		const allow = process.env.PI_SHELL_ACP_ALLOW_COMPACTION?.trim().toLowerCase();
+		if (allow === "1" || allow === "true" || allow === "yes") {
+			return;
+		}
+		console.error(
+			"[pi-shell-acp:compaction] blocked at session_before_compact — pi-shell-acp keeps pi as the single context-management authority. Set PI_SHELL_ACP_ALLOW_COMPACTION=1 to opt out.",
+		);
+		return { cancel: true };
 	});
 
 	pi.registerProvider(PROVIDER_ID, {

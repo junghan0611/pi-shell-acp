@@ -1335,14 +1335,20 @@ assert.deepEqual(providerCalls.map((call) => call.label), ['runtime-a', 'runtime
 assert.deepEqual(providerCalls.map((call) => call.providerId), ['pi-shell-acp', 'pi-shell-acp']);
 assert.ok(providerCalls.every((call) => Array.isArray(call.provider.models) && call.provider.models.length > 0), 'models must be registered');
 
-assert.equal(eventCalls.length, 2, 'session shutdown handler should be attached once per runtime');
+// Two handlers per runtime: session_shutdown (bridge cleanup) and
+// session_before_compact (compaction policy gate). Both attach exactly
+// once per runtime — the second registerProviderExtension(runtimeA)
+// call is guarded by isRegisteredOnRuntime/markRegisteredOnRuntime.
+assert.equal(eventCalls.length, 4, 'lifecycle handlers should be attached once per runtime');
 assert.deepEqual(eventCalls.map((call) => `${call.label}:${call.event}`), [
   'runtime-a:session_shutdown',
+  'runtime-a:session_before_compact',
   'runtime-b:session_shutdown',
+  'runtime-b:session_before_compact',
 ]);
-assert.ok(eventCalls.every((call) => call.handlerType === 'function'), 'session shutdown handlers must be functions');
+assert.ok(eventCalls.every((call) => call.handlerType === 'function'), 'lifecycle handlers must be functions');
 
-console.log('[check-registration] 7 assertions ok');
+console.log('[check-registration] 8 assertions ok');
 EOF
   )
 }

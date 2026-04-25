@@ -113,17 +113,9 @@ Backend is inferred from the selected model. Set `backend` only when you intenti
 
 Authentication is handled by Claude Code / claude-agent-acp; pi-shell-acp adds no separate auth layer.
 
-> **⚠️ Required for autonomous operation — disable compaction on both ends.**
+> **No party silently rewrites the conversation.**
 >
-> This bridge is built around the assumption that **no party silently rewrites the conversation behind the operator's back**. Add the following to your pi settings (e.g. `~/.pi/agent/settings.json` or the project-level pi config) so pi never auto-compacts mid-session:
->
-> ```json
-> {
->   "compaction": { "enabled": false }
-> }
-> ```
->
-> The Claude Code backend's own auto-compaction is already disabled by the bridge (`DISABLE_AUTO_COMPACT=1` and `DISABLE_COMPACT=1` injected into the spawned `claude-agent-acp` process — operators can override from their shell). Codex's equivalent threshold is raised to `i64::MAX` via `-c model_auto_compact_token_limit=9223372036854775807` on the default `codex-acp` launch, so silent backend compaction is effectively disabled there too while the manual `/compact` slash command stays available. With both ends quiet, the only compaction that ever runs is the explicit `/compact` slash command, which the operator triggers on purpose. See the **Compaction policy** section below for why this is treated as a correctness invariant rather than a tuning preference.
+> Compaction is gated centrally by this provider — operators do **not** need to add `compaction.enabled=false` to their pi settings. The provider registers a `session_before_compact` handler that returns `{ cancel: true }` for every compaction path pi exposes (silent overflow recovery, threshold compaction, explicit-error overflow recovery, manual `/compact`). Backend-side auto-compaction is also disabled at launch (`DISABLE_AUTO_COMPACT=1` + `DISABLE_COMPACT=1` for Claude Code; `-c model_auto_compact_token_limit=i64::MAX` for codex-acp). An operator who really wants pi-side compaction back — for example for a long-running maintenance session — can opt out via `PI_SHELL_ACP_ALLOW_COMPACTION=1` at the process level. See the **Compaction policy** section below for the full rationale.
 
 ### Smoke commands
 
@@ -187,16 +179,16 @@ Only `pi:<sessionId>` mappings are persisted at `~/.pi/agent/cache/pi-shell-acp/
 
 ### Compaction policy
 
-Autonomous operation requires that **no party silently rewrites the conversation behind the operator's back**. pi-shell-acp therefore takes the position that compaction is always an explicit operator action, not an automatic safety net.
+Autonomous operation requires that **no party silently rewrites the conversation behind the operator's back**. pi-shell-acp therefore takes the position that compaction is something an operator opts into, not an automatic safety net the system applies on their behalf. The gate lives in this provider so operator environments (agent-config, project-level settings, fresh clones) don't have to be configured for the policy to hold.
 
 Concretely:
 
+- **Host (pi)**: the provider registers a `session_before_compact` handler that returns `{ cancel: true }` for every compaction trigger pi exposes — silent overflow recovery (`isContextOverflow` Case 2 — `usage.input + usage.cacheRead > contextWindow`), threshold compaction (`shouldCompact`), explicit-error overflow recovery, and the manual `/compact` slash command. Manual invocations surface a "Compaction cancelled" message to the operator so the intent stays observable. The escape hatch is the `PI_SHELL_ACP_ALLOW_COMPACTION` environment variable: setting it to `1` / `true` / `yes` lets the handler fall through, restoring pi's default compaction behaviour for that process.
 - **Backend (Claude Code)**: spawned with `DISABLE_AUTO_COMPACT=1` and `DISABLE_COMPACT=1` so the backend never compacts inside an ACP session. Operators can override these from their shell (`process.env` wins over the adapter default).
-- **Backend (Codex)**: codex-rs has no env/boolean toggle for auto-compaction. It exposes the behaviour as a config threshold (`model_auto_compact_token_limit`), so the bridge raises it to `i64::MAX` via `-c model_auto_compact_token_limit=9223372036854775807` on the default `codex-acp` launch. Manual `/compact` still works. **One sharp edge**: if you set `CODEX_ACP_COMMAND` to override the launch, the bridge no longer prepends this argument — you must include it yourself in the override string.
-- **pi (the host)**: the operator is expected to add `"compaction": { "enabled": false }` to their pi settings. With that flag, pi-coding-agent's `_checkCompaction` exits at its first guard, which simultaneously disables (a) threshold-based compaction, (b) the silent-overflow recovery path (`isContextOverflow` Case 2 — `usage.input + usage.cacheRead > contextWindow`), and (c) explicit-error overflow recovery. All three live behind the same `settings.enabled` flag in pi-coding-agent, so a single setting closes them as a group.
-- **`applyPromptUsage` sanitization**: even with the operator's pi settings correct, the bridge zeroes `cacheRead` / `cacheWrite` on the metric path before forwarding usage to pi. Billing still uses the raw values (`calculateCost` runs against the unsanitized numbers), but pi's context metric and the silent-overflow check never see them. This is a defense-in-depth layer — the bridge stays safe even if the operator forgets the pi-side setting on a fresh checkout. A `[pi-shell-acp:usage]` diagnostic line is emitted on every turn so the operator can audit the raw numbers when needed.
+- **Backend (Codex)**: codex-rs has no env/boolean toggle for auto-compaction. It exposes the behaviour as a config threshold (`model_auto_compact_token_limit`), so the bridge raises it to `i64::MAX` via `-c model_auto_compact_token_limit=9223372036854775807` on the default `codex-acp` launch. Manual `/compact` still works (and will still be cancelled by the host-side gate above unless the operator opts out). **One sharp edge**: if you set `CODEX_ACP_COMMAND` to override the launch, the bridge no longer prepends this argument — you must include it yourself in the override string.
+- **Usage forwarding**: ACP usage (input / output / cacheRead / cacheWrite / totalTokens) is forwarded to pi as-is. Earlier revisions zeroed cacheRead on the metric path as a defense-in-depth layer for the silent-overflow case, but with the host-side gate above already blocking that path the sanitization only made the TUI footer dishonest (showed 0.1% on a turn that actually loaded a 300K-token cached prompt). The honest reading is what the operator wants. A `[pi-shell-acp:usage]` diagnostic line is emitted every turn so the raw numbers stay auditable.
 
-The net effect: compaction only runs when the operator types `/compact` themselves. Long sessions are observed via the `[pi-shell-acp:usage]` diagnostic; when the backend window is near its limit, the operator chooses whether to compact, clear, or switch to a wider-context model.
+The net effect: pi never compacts unless the operator explicitly opts in (`PI_SHELL_ACP_ALLOW_COMPACTION=1`), and the backends don't compact inside an ACP session either. Long sessions are observed via the `[pi-shell-acp:usage]` diagnostic; when the backend window is near its limit, the operator chooses whether to compact (after opting in), clear, or switch to a wider-context model.
 
 ### Backend capability notes
 
