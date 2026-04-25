@@ -483,6 +483,11 @@ function streamShellAcp(
 			showToolNotifications: providerSettings.showToolNotifications,
 		};
 
+		// Start the pi stream before ACP bootstrap. Resume/load can take noticeable
+		// time, and delaying `start` until after ensureBridgeSession() makes the UI
+		// look stuck even though work is already in progress.
+		stream.push({ type: "start", partial: output });
+
 		try {
 			const baseSystemPrompt = providerSettings.appendSystemPrompt ? context.systemPrompt : undefined;
 
@@ -534,8 +539,6 @@ function streamShellAcp(
 				}
 				applyBridgePromptEvent(streamState, event as any);
 			});
-
-			stream.push({ type: "start", partial: output });
 
 			const promptBlocks = extractPromptBlocks(context);
 
