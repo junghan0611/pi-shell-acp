@@ -1373,9 +1373,7 @@ export async function ensureBridgeSession(params: EnsureBridgeSessionParams): Pr
 		bootstrapPromptAugment: normalizedBootstrapAugment,
 	};
 	const existing = bridgeSessions.get(params.sessionKey);
-	const existingCompatible = existing
-		? isSessionCompatible(existing, normalizedParams, normalizedSystemPrompt)
-		: false;
+	const existingCompatible = existing ? isSessionCompatible(existing, normalizedParams, normalizedSystemPrompt) : false;
 	if (existing && existingCompatible && !existing.closed && isChildAlive(existing.child)) {
 		if (params.modelId && existing.modelId !== params.modelId) {
 			const fromModel = existing.modelId;
