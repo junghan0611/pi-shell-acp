@@ -488,6 +488,8 @@ function resolveClaudeAcpLaunch(): AcpLaunchSpec {
 	};
 }
 
+const CODEX_DISABLE_AUTO_COMPACT_ARGS = ["-c", "model_auto_compact_token_limit=9223372036854775807"] as const;
+
 function resolveCodexAcpLaunch(): AcpLaunchSpec {
 	const override = process.env.CODEX_ACP_COMMAND?.trim();
 	if (override) {
@@ -500,7 +502,7 @@ function resolveCodexAcpLaunch(): AcpLaunchSpec {
 
 	return {
 		command: "codex-acp",
-		args: [],
+		args: [...CODEX_DISABLE_AUTO_COMPACT_ARGS],
 		source: "PATH:codex-acp",
 	};
 }
@@ -645,9 +647,10 @@ const ACP_BACKEND_ADAPTERS: Record<AcpBackend, AcpBackendAdapter> = {
 			// Disable Claude Code's built-in auto-compaction. pi-shell-acp keeps pi
 			// as the single context-management authority; if the backend silently
 			// compacts inside the same ACP session, pi has no way to react and
-			// session continuity drifts. Operators can override this from their
-			// shell (export DISABLE_AUTOCOMPACT=0) — process.env wins below.
-			DISABLE_AUTOCOMPACT: "1",
+			// session continuity drifts. Operators can override these from their
+			// shell — process.env wins below.
+			DISABLE_AUTO_COMPACT: "1",
+			DISABLE_COMPACT: "1",
 		},
 	},
 	codex: {
@@ -656,12 +659,11 @@ const ACP_BACKEND_ADAPTERS: Record<AcpBackend, AcpBackendAdapter> = {
 		resolveLaunch: resolveCodexAcpLaunch,
 		buildSessionMeta: () => undefined,
 		buildBootstrapPromptAugment: buildCodexBootstrapPromptAugment,
-		// codex-cli (verified up to 0.124) does not expose an auto-compaction
-		// toggle: the only compaction surface is the manual /compact slash
-		// command, which the operator can still invoke via ACP if desired. No
-		// bridgeEnvDefaults are needed today. If a future codex release adds
-		// silent automatic compaction, disable it here so pi remains the
-		// single context-management authority across both backends.
+		// codex-rs does not expose a boolean/env auto-compaction toggle like
+		// Claude Code. It does expose the same behavior as a config threshold:
+		// model_auto_compact_token_limit. resolveCodexAcpLaunch() raises that
+		// threshold to i64::MAX via `-c`, keeping manual `/compact` available
+		// while preventing silent backend compaction in daily ACP sessions.
 	},
 };
 

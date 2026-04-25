@@ -452,7 +452,8 @@ function applyPromptUsage(model: Model<any>, output: AssistantMessage, promptRes
 	// Fix: zero cacheRead / cacheWrite on the metric path entirely. Billing
 	// already ran above with the raw numbers, so cost accounting is
 	// untouched. Backend auto-compaction is independently disabled via
-	// adapter.bridgeEnvDefaults (DISABLE_AUTOCOMPACT=1) so the backend itself
+	// adapter.bridgeEnvDefaults (DISABLE_AUTO_COMPACT=1 + DISABLE_COMPACT=1 for
+	// Claude; -c model_auto_compact_token_limit=i64::MAX for codex) so the backend itself
 	// no longer initiates compaction either — keeping pi as the single
 	// context-management authority.
 	output.usage.cacheRead = 0;

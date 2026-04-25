@@ -265,7 +265,7 @@ Fail:
 - Produces a tool strategy contradicting a previous turn
 - Unnecessarily repeats the same file exploration
 
-Note: pi-shell-acp does not implement a post-compaction handoff path. pi remains the sole context-management authority and the Claude Code backend is launched with `DISABLE_AUTOCOMPACT=1`; if the operator relies on long sessions, observe context growth via the `[pi-shell-acp:usage]` diagnostic line and use pi's manual `/compact` or `/clear` when needed.
+Note: pi-shell-acp does not implement a post-compaction handoff path. pi remains the sole context-management authority. The Claude Code backend is launched with `DISABLE_AUTO_COMPACT=1` + `DISABLE_COMPACT=1`, and codex-acp is launched with `-c model_auto_compact_token_limit=i64::MAX` (the codex-rs equivalent) so silent backend compaction does not run on either side. If the operator relies on long sessions, observe context growth via the `[pi-shell-acp:usage]` diagnostic line and use pi's manual `/compact` or `/clear` when needed.
 
 ### 1A.5 Layer 4 — Comparison with Direct Claude Code
 

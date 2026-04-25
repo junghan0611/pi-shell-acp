@@ -123,7 +123,7 @@ Authentication is handled by Claude Code / claude-agent-acp; pi-shell-acp adds n
 > }
 > ```
 >
-> The Claude Code backend's own auto-compaction is already disabled by the bridge (`DISABLE_AUTOCOMPACT=1` injected into the spawned `claude-agent-acp` process — operators can override from their shell if they really want to opt back in). Codex has no automatic compaction surface to disable. With both ends quiet, the only compaction that ever runs is the explicit `/compact` slash command, which the operator triggers on purpose. See the **Compaction policy** section below for why this is treated as a correctness invariant rather than a tuning preference.
+> The Claude Code backend's own auto-compaction is already disabled by the bridge (`DISABLE_AUTO_COMPACT=1` and `DISABLE_COMPACT=1` injected into the spawned `claude-agent-acp` process — operators can override from their shell). Codex's equivalent threshold is raised to `i64::MAX` via `-c model_auto_compact_token_limit=9223372036854775807` on the default `codex-acp` launch, so silent backend compaction is effectively disabled there too while the manual `/compact` slash command stays available. With both ends quiet, the only compaction that ever runs is the explicit `/compact` slash command, which the operator triggers on purpose. See the **Compaction policy** section below for why this is treated as a correctness invariant rather than a tuning preference.
 
 ### Smoke commands
 
@@ -191,8 +191,8 @@ Autonomous operation requires that **no party silently rewrites the conversation
 
 Concretely:
 
-- **Backend (Claude Code)**: spawned with `DISABLE_AUTOCOMPACT=1` so the backend never compacts inside an ACP session. Operators can override this from their shell if they really want to re-enable backend-side auto-compaction (`process.env` wins over the adapter default).
-- **Backend (Codex)**: codex-acp / codex-cli (verified up to 0.124) exposes no automatic compaction path; only the manual `/compact` slash command. No bridge-side gating is needed today, and the codex adapter carries a comment marking the spot to add one if a future codex release introduces silent auto-compaction.
+- **Backend (Claude Code)**: spawned with `DISABLE_AUTO_COMPACT=1` and `DISABLE_COMPACT=1` so the backend never compacts inside an ACP session. Operators can override these from their shell (`process.env` wins over the adapter default).
+- **Backend (Codex)**: codex-rs has no env/boolean toggle for auto-compaction. It exposes the behaviour as a config threshold (`model_auto_compact_token_limit`), so the bridge raises it to `i64::MAX` via `-c model_auto_compact_token_limit=9223372036854775807` on the default `codex-acp` launch. Manual `/compact` still works. **One sharp edge**: if you set `CODEX_ACP_COMMAND` to override the launch, the bridge no longer prepends this argument — you must include it yourself in the override string.
 - **pi (the host)**: the operator is expected to add `"compaction": { "enabled": false }` to their pi settings. With that flag, pi-coding-agent's `_checkCompaction` exits at its first guard, which simultaneously disables (a) threshold-based compaction, (b) the silent-overflow recovery path (`isContextOverflow` Case 2 — `usage.input + usage.cacheRead > contextWindow`), and (c) explicit-error overflow recovery. All three live behind the same `settings.enabled` flag in pi-coding-agent, so a single setting closes them as a group.
 - **`applyPromptUsage` sanitization**: even with the operator's pi settings correct, the bridge zeroes `cacheRead` / `cacheWrite` on the metric path before forwarding usage to pi. Billing still uses the raw values (`calculateCost` runs against the unsanitized numbers), but pi's context metric and the silent-overflow check never see them. This is a defense-in-depth layer — the bridge stays safe even if the operator forgets the pi-side setting on a fresh checkout. A `[pi-shell-acp:usage]` diagnostic line is emitted on every turn so the operator can audit the raw numbers when needed.
 
@@ -207,7 +207,7 @@ The two backends are intentionally not perfectly symmetric. Claude Code is the p
 | ACP subprocess | `claude-agent-acp` | `codex-acp` |
 | Continuity path | `resumeSession` when available | `loadSession` when available |
 | Engraving delivery | `_meta.systemPrompt.append` | first prompt `ContentBlock` prepend |
-| Backend auto-compaction | disabled by default (`DISABLE_AUTOCOMPACT=1`) | n/a |
+| Backend auto-compaction | disabled by default (`DISABLE_AUTO_COMPACT=1` + `DISABLE_COMPACT=1`) | disabled by default (`-c model_auto_compact_token_limit=i64::MAX`; not applied when `CODEX_ACP_COMMAND` overrides launch) |
 | MCP injection | `piShellAcpProvider.mcpServers` | `piShellAcpProvider.mcpServers` |
 
 ## Repository Layout
