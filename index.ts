@@ -62,6 +62,7 @@ type ProviderSettings = {
 	appendSystemPrompt?: boolean;
 	settingSources?: ClaudeSettingSource[];
 	strictMcpConfig?: boolean;
+	showToolNotifications?: boolean;
 	mcpServers?: McpServerInputMap;
 };
 
@@ -71,6 +72,7 @@ type ResolvedProviderSettings = {
 	appendSystemPrompt: boolean;
 	settingSources: ClaudeSettingSource[];
 	strictMcpConfig: boolean;
+	showToolNotifications: boolean;
 	mcpServers: McpServer[];
 	bridgeConfigSignature: string;
 };
@@ -281,6 +283,7 @@ function readSettingsFile(filePath: string): ProviderSettings {
 
 	const appendSystemPrompt = assertOptionalBoolean(settings, "appendSystemPrompt", filePath);
 	const strictMcpConfig = assertOptionalBoolean(settings, "strictMcpConfig", filePath);
+	const showToolNotifications = assertOptionalBoolean(settings, "showToolNotifications", filePath);
 
 	const settingSourcesRaw = settings["settingSources"];
 	let settingSources: ClaudeSettingSource[] | undefined;
@@ -312,6 +315,7 @@ function readSettingsFile(filePath: string): ProviderSettings {
 		appendSystemPrompt,
 		settingSources,
 		strictMcpConfig,
+		showToolNotifications,
 		mcpServers,
 	};
 }
@@ -337,6 +341,7 @@ function loadProviderSettings(cwd: string, model: Model<any>): ResolvedProviderS
 	const appendSystemPrompt = merged.appendSystemPrompt ?? false;
 	const settingSources = merged.settingSources ?? (appendSystemPrompt ? [] : ["user"]);
 	const strictMcpConfig = merged.strictMcpConfig ?? false;
+	const showToolNotifications = merged.showToolNotifications ?? false;
 	const mergedMcpServersRaw: McpServerInputMap = {
 		...(globalSettings.mcpServers ?? {}),
 		...(projectSettings.mcpServers ?? {}),
@@ -348,6 +353,7 @@ function loadProviderSettings(cwd: string, model: Model<any>): ResolvedProviderS
 		appendSystemPrompt,
 		settingSources,
 		strictMcpConfig,
+		showToolNotifications,
 		mcpServers,
 		bridgeConfigSignature: JSON.stringify({
 			backend,
@@ -474,6 +480,7 @@ function streamShellAcp(
 		const streamState: AcpPiStreamState = {
 			stream,
 			output,
+			showToolNotifications: providerSettings.showToolNotifications,
 		};
 
 		try {

@@ -12,6 +12,7 @@ export type AcpPiStreamState = {
 	output: AssistantMessage;
 	openTextIndex?: number;
 	openThinkingIndex?: number;
+	showToolNotifications?: boolean;
 	observedTools?: Map<string, ObservedToolState>;
 };
 
@@ -69,7 +70,7 @@ function ensureThinkingBlock(state: AcpPiStreamState): number {
 }
 
 function pushNotice(state: AcpPiStreamState, text: string): void {
-	if (!text.trim()) return;
+	if (!state.showToolNotifications || !text.trim()) return;
 	closeThinkingBlock(state);
 	closeTextBlock(state);
 	const index = state.output.content.length;

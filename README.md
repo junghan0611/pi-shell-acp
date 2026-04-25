@@ -93,6 +93,7 @@ Minimal `<project>/.pi/settings.json` shape (produced by `./run.sh install .`):
     "appendSystemPrompt": false,
     "settingSources": ["user"],
     "strictMcpConfig": false,
+    "showToolNotifications": false,
     "mcpServers": {
       "pi-tools-bridge": {
         "command": "/path/to/pi-shell-acp/mcp/pi-tools-bridge/start.sh",
@@ -110,6 +111,8 @@ Minimal `<project>/.pi/settings.json` shape (produced by `./run.sh install .`):
 `mcpServers` is the **only** way to inject MCP servers into ACP sessions — explicit allowlist, no ambient config scanning. `./run.sh install` pre-populates the bundled `pi-tools-bridge` and `session-bridge` entries with the correct local paths. Invalid entries fail fast with `McpServerConfigError`.
 
 Backend is inferred from the selected model. Set `backend` only when you intentionally want to pin one backend.
+
+Tool/permission notifications (`[tool:start]`, `[tool:done]`, `[permission:*]`) are hidden by default so normal replies do not look like verbose tracing. Set `showToolNotifications: true` when debugging ACP-side tool activity.
 
 Authentication is handled by Claude Code / claude-agent-acp; pi-shell-acp adds no separate auth layer.
 
