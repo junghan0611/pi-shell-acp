@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { McpServer } from "@agentclientprotocol/sdk";
@@ -319,7 +319,13 @@ function estimatePiSessionFileTokens(cwd: string, sessionKey: string): number | 
 	return tokens;
 }
 
-function estimatePiVisibleContextTokens(
+// VisibleTranscript: chars/4 estimate over the pi session JSONL plus the
+// current assistant output. This is one *component* of the eventual
+// PiOccupancy meter, not the SSOT itself — it omits backend system prompt,
+// tool definitions, project context, and skill payloads, which on real
+// resume sessions can be the majority of the LLM context. PR-B will add a
+// calibrated prefixOverhead and switch the footer to PiOccupancy.
+function estimateVisibleTranscriptTokens(
 	context: Context,
 	output: AssistantMessage,
 	cwd: string,
@@ -529,37 +535,43 @@ function applyPromptUsage(
 	const usage = promptResponse?.usage;
 	if (!usage || typeof usage !== "object") return;
 
-	// Keep raw backend usage components for cost/stat accounting, but do not use
-	// the backend's aggregate totalTokens as pi's context meter.
+	// Keep raw backend usage components for cost/stat accounting (BackendUsage),
+	// but do not use the backend's aggregate totalTokens as pi's context meter.
 	//
 	// ACP backends such as Claude Code may perform multiple internal LLM calls
 	// inside one pi turn (plan → tool → final answer). Their PromptResponse usage
-	// is therefore an execution aggregate, not "the size of the pi session
-	// context". pi-shell-acp is pi-session-first: resume targets, transcript, and
-	// context accounting are anchored to pi's visible session. The TUI context %
-	// reads usage.totalTokens from the last assistant message, so we write a
-	// pi-visible estimate there and expose raw backend totals only in diagnostics.
+	// is an *execution aggregate* across those internal calls, not "the size of
+	// the pi session context", so it overstates occupancy on tool turns.
+	//
+	// Current state: footer % is driven by VisibleTranscript only (mode below).
+	// This is honest but incomplete — it omits backend system prompt, tool
+	// definitions, and project context, so resume sessions can read very low
+	// (e.g. 0.4% on a session with 2.3M cacheRead). PR-B replaces this with
+	// PiOccupancy = prefixOverhead + visibleTranscript + outputCorrection,
+	// where prefixOverhead is calibrated once per session signature.
+	// See llmlog 20260426T082246, level-1 heading "합의된 해결안".
 	const rawInput = Number(usage.inputTokens ?? 0);
 	const rawOutput = Number(usage.outputTokens ?? 0);
 	const rawCacheRead = Number(usage.cachedReadTokens ?? 0);
 	const rawCacheWrite = Number(usage.cachedWriteTokens ?? 0);
 	const rawTotal = Number(usage.totalTokens ?? rawInput + rawOutput + rawCacheRead + rawCacheWrite);
-	const piContextTokens = estimatePiVisibleContextTokens(context, output, cwd, sessionKey);
+	const visibleTranscriptTokens = estimateVisibleTranscriptTokens(context, output, cwd, sessionKey);
 
 	output.usage.input = rawInput;
 	output.usage.output = rawOutput;
 	output.usage.cacheRead = rawCacheRead;
 	output.usage.cacheWrite = rawCacheWrite;
-	output.usage.totalTokens = piContextTokens;
+	output.usage.totalTokens = visibleTranscriptTokens;
 	calculateCost(model, output.usage);
 
-	// One-line diagnostic so "why is the footer at X% / why did the metric
-	// jump" is traceable at the pi-shell-acp boundary without spelunking pi
-	// internals or backend logs.
+	// Diagnostic with explicit mode so "why is the footer at X%" is traceable
+	// without spelunking pi internals or backend logs. mode flips to
+	// "piOccupancy" in PR-B once calibrated prefixOverhead is in place.
 	console.error(
-		`[pi-shell-acp:usage] input=${output.usage.input} output=${output.usage.output} ` +
-			`cacheRead=${output.usage.cacheRead} cacheWrite=${output.usage.cacheWrite} ` +
-			`rawTotal=${rawTotal} piContextTokens=${piContextTokens}`,
+		`[pi-shell-acp:usage] mode=visibleTranscriptOnly ` +
+			`tokens=${visibleTranscriptTokens} ` +
+			`backendRaw: input=${rawInput} output=${rawOutput} ` +
+			`cacheRead=${rawCacheRead} cacheWrite=${rawCacheWrite} rawTotal=${rawTotal}`,
 	);
 }
 
