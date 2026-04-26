@@ -1,4 +1,5 @@
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { existsSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { McpServer } from "@agentclientprotocol/sdk";
@@ -320,11 +321,10 @@ function estimatePiSessionFileTokens(cwd: string, sessionKey: string): number | 
 }
 
 // VisibleTranscript: chars/4 estimate over the pi session JSONL plus the
-// current assistant output. This is one *component* of the eventual
-// PiOccupancy meter, not the SSOT itself — it omits backend system prompt,
-// tool definitions, project context, and skill payloads, which on real
-// resume sessions can be the majority of the LLM context. PR-B will add a
-// calibrated prefixOverhead and switch the footer to PiOccupancy.
+// current assistant output. One *component* of the PiOccupancy meter — it
+// omits backend system prompt, tool definitions, project context, and skill
+// payloads, which on real resume sessions can be the majority of the LLM
+// context. The footer adds a calibrated prefixOverhead on top (claude only).
 function estimateVisibleTranscriptTokens(
 	context: Context,
 	output: AssistantMessage,
@@ -340,6 +340,131 @@ function estimateVisibleTranscriptTokens(
 	}
 	tokens += estimatePiMessageTokens(output);
 	return tokens;
+}
+
+// Same as estimateVisibleTranscriptTokens but excludes the current assistant
+// output. Used for calibration: at applyPromptUsage time the JSONL hasn't yet
+// been written with the new assistant message, so the file-based count is
+// already "before assistant" — and the in-memory fallback must mirror that.
+function estimateVisibleTranscriptBeforeAssistantTokens(context: Context, cwd: string, sessionKey: string): number {
+	const sessionFileTokens = estimatePiSessionFileTokens(cwd, sessionKey);
+	if (sessionFileTokens !== undefined) return sessionFileTokens;
+
+	let tokens = 0;
+	for (const message of context.messages as any[]) {
+		tokens += estimatePiMessageTokens(message);
+	}
+	return tokens;
+}
+
+// ============================================================================
+// PiOccupancy calibration
+// ============================================================================
+// PiOccupancy = prefixOverhead + visibleTranscript (claude backend only).
+// prefixOverhead = (input + cacheRead + cacheWrite) − visibleTranscriptBeforeAssistant.
+// Measured from the first valid non-tool turn, persisted next to the pi JSONL,
+// invalidated when (backend, modelId, cwd, bridgeConfigSignature,
+// systemPromptAppendHash) changes, and silently re-measured when drift is
+// detected on a later non-tool turn. See llmlog 20260426T082246, level-1
+// heading "PR-B 진입 SSOT".
+
+const PREFIX_OVERHEAD_MIN = 1;
+const PREFIX_OVERHEAD_MAX = 100_000;
+const BACKEND_PROMPT_MIN = 1000;
+const DRIFT_ABS_THRESHOLD = 5000;
+const DRIFT_REL_THRESHOLD = 0.15;
+
+type CalibrationSignature = {
+	backend: "claude";
+	modelId: string;
+	cwd: string;
+	bridgeConfigSignature: string;
+	systemPromptAppendHash?: string;
+};
+
+type PiOccupancyCalibration = {
+	signature: CalibrationSignature;
+	calibratedAt: string;
+	prefixOverheadTokens: number;
+	sample: {
+		backendPromptTokens: number;
+		visibleTranscriptTokens: number;
+		rawInput: number;
+		rawCacheRead: number;
+		rawCacheWrite: number;
+	};
+};
+
+function sha256Short(text: string): string {
+	return createHash("sha256").update(text).digest("hex").slice(0, 16);
+}
+
+function computeSystemPromptAppendHash(append: string | undefined): string | undefined {
+	if (!append) return undefined;
+	// Normalize line endings + trailing whitespace per line + final blank
+	// lines so cosmetic differences don't churn the calibration signature.
+	const normalized = append
+		.replace(/\r\n?/g, "\n")
+		.replace(/[ \t]+$/gm, "")
+		.replace(/\n+$/, "");
+	return sha256Short(normalized);
+}
+
+function shortSig(sig: CalibrationSignature): string {
+	return sha256Short(
+		[sig.backend, sig.modelId, sig.cwd, sig.bridgeConfigSignature, sig.systemPromptAppendHash ?? ""].join("|"),
+	);
+}
+
+function signaturesEqual(a: CalibrationSignature, b: CalibrationSignature): boolean {
+	return (
+		a.backend === b.backend &&
+		a.modelId === b.modelId &&
+		a.cwd === b.cwd &&
+		a.bridgeConfigSignature === b.bridgeConfigSignature &&
+		(a.systemPromptAppendHash ?? "") === (b.systemPromptAppendHash ?? "")
+	);
+}
+
+function signatureMismatchReasons(a: CalibrationSignature, b: CalibrationSignature): string[] {
+	const reasons: string[] = [];
+	if (a.modelId !== b.modelId) reasons.push("modelId");
+	if (a.cwd !== b.cwd) reasons.push("cwd");
+	if (a.bridgeConfigSignature !== b.bridgeConfigSignature) reasons.push("bridgeConfigSignature");
+	if ((a.systemPromptAppendHash ?? "") !== (b.systemPromptAppendHash ?? "")) reasons.push("systemPromptAppendHash");
+	return reasons;
+}
+
+function calibrationSidecarPath(cwd: string, sessionKey: string): string | undefined {
+	const file = findPiSessionFile(cwd, sessionKey);
+	if (!file) return undefined;
+	return `${file}.acp-calibration.json`;
+}
+
+function loadCalibration(cwd: string, sessionKey: string): PiOccupancyCalibration | undefined {
+	const path = calibrationSidecarPath(cwd, sessionKey);
+	if (!path || !existsSync(path)) return undefined;
+	try {
+		const parsed = JSON.parse(readFileSync(path, "utf-8")) as PiOccupancyCalibration;
+		if (!parsed?.signature || typeof parsed.prefixOverheadTokens !== "number") return undefined;
+		return parsed;
+	} catch {
+		return undefined;
+	}
+}
+
+function saveCalibration(cwd: string, sessionKey: string, calibration: PiOccupancyCalibration): void {
+	const path = calibrationSidecarPath(cwd, sessionKey);
+	if (!path) return;
+	try {
+		const tmp = `${path}.tmp`;
+		writeFileSync(tmp, JSON.stringify(calibration, null, 2), "utf-8");
+		renameSync(tmp, path);
+	} catch (error) {
+		console.error(
+			`[pi-shell-acp:calibration] failed to persist sidecar: ${error instanceof Error ? error.message : String(error)}`,
+		);
+	}
 }
 
 function settingsConfigError(filePath: string, message: string): Error {
@@ -531,48 +656,159 @@ function applyPromptUsage(
 	promptResponse: any,
 	cwd: string,
 	sessionKey: string,
+	backend: AcpBackend,
+	bridgeConfigSignature: string,
+	systemPromptAppendHash: string | undefined,
+	hasToolCallInTurn: boolean,
 ): void {
 	const usage = promptResponse?.usage;
 	if (!usage || typeof usage !== "object") return;
 
-	// Keep raw backend usage components for cost/stat accounting (BackendUsage),
-	// but do not use the backend's aggregate totalTokens as pi's context meter.
-	//
-	// ACP backends such as Claude Code may perform multiple internal LLM calls
-	// inside one pi turn (plan → tool → final answer). Their PromptResponse usage
-	// is an *execution aggregate* across those internal calls, not "the size of
-	// the pi session context", so it overstates occupancy on tool turns.
-	//
-	// Current state: footer % is driven by VisibleTranscript only (mode below).
-	// This is honest but incomplete — it omits backend system prompt, tool
-	// definitions, and project context, so resume sessions can read very low
-	// (e.g. 0.4% on a session with 2.3M cacheRead). PR-B replaces this with
-	// PiOccupancy = prefixOverhead + visibleTranscript + outputCorrection,
-	// where prefixOverhead is calibrated once per session signature.
-	// See llmlog 20260426T082246, level-1 heading "합의된 해결안".
+	// BackendUsage — preserved for cost / audit. Never reaches the footer
+	// directly; ACP backends like Claude Code aggregate multiple internal LLM
+	// calls in one prompt (plan → tool → final answer), so the raw totalTokens
+	// would overstate occupancy on tool turns.
 	const rawInput = Number(usage.inputTokens ?? 0);
 	const rawOutput = Number(usage.outputTokens ?? 0);
 	const rawCacheRead = Number(usage.cachedReadTokens ?? 0);
 	const rawCacheWrite = Number(usage.cachedWriteTokens ?? 0);
 	const rawTotal = Number(usage.totalTokens ?? rawInput + rawOutput + rawCacheRead + rawCacheWrite);
-	const visibleTranscriptTokens = estimateVisibleTranscriptTokens(context, output, cwd, sessionKey);
 
-	output.usage.input = rawInput;
-	output.usage.output = rawOutput;
-	output.usage.cacheRead = rawCacheRead;
-	output.usage.cacheWrite = rawCacheWrite;
-	output.usage.totalTokens = visibleTranscriptTokens;
-	calculateCost(model, output.usage);
+	const visibleTranscript = estimateVisibleTranscriptTokens(context, output, cwd, sessionKey);
 
-	// Diagnostic with explicit mode so "why is the footer at X%" is traceable
-	// without spelunking pi internals or backend logs. mode flips to
-	// "piOccupancy" in PR-B once calibrated prefixOverhead is in place.
-	console.error(
-		`[pi-shell-acp:usage] mode=visibleTranscriptOnly ` +
-			`tokens=${visibleTranscriptTokens} ` +
-			`backendRaw: input=${rawInput} output=${rawOutput} ` +
-			`cacheRead=${rawCacheRead} cacheWrite=${rawCacheWrite} rawTotal=${rawTotal}`,
-	);
+	const writeFooter = (mode: string, tokens: number, calibrationStatus: string, components: string): void => {
+		output.usage.input = rawInput;
+		output.usage.output = rawOutput;
+		output.usage.cacheRead = rawCacheRead;
+		output.usage.cacheWrite = rawCacheWrite;
+		output.usage.totalTokens = tokens;
+		calculateCost(model, output.usage);
+		console.error(
+			`[pi-shell-acp:usage] mode=${mode} backend=${backend} tokens=${tokens} ` +
+				`${components} calibration=${calibrationStatus} ` +
+				`backendRaw: input=${rawInput} output=${rawOutput} ` +
+				`cacheRead=${rawCacheRead} cacheWrite=${rawCacheWrite} rawTotal=${rawTotal}`,
+		);
+	};
+
+	// Codex (and any non-claude backend) stays on visibleTranscriptOnly until
+	// its usage / cache semantics are independently verified. PR-B is
+	// claude-only by design.
+	if (backend !== "claude") {
+		writeFooter(
+			"visibleTranscriptOnly",
+			visibleTranscript,
+			"skipped(reason=non_claude_backend)",
+			`components: transcript=${visibleTranscript}`,
+		);
+		return;
+	}
+
+	const currentSig: CalibrationSignature = {
+		backend: "claude",
+		modelId: model.id,
+		cwd,
+		bridgeConfigSignature,
+		systemPromptAppendHash,
+	};
+
+	let cached = loadCalibration(cwd, sessionKey);
+	let staleReason: string | undefined;
+	if (cached && !signaturesEqual(cached.signature, currentSig)) {
+		staleReason = signatureMismatchReasons(cached.signature, currentSig).join(",");
+		cached = undefined;
+	}
+
+	// Try to compute a fresh sample from this turn (claude + non-tool only).
+	const backendPromptTokens = rawInput + rawCacheRead + rawCacheWrite;
+	let freshPrefix: number | undefined;
+	let rejectReason: string | undefined;
+
+	if (hasToolCallInTurn) {
+		// Tool turn — execution aggregate, not a single LLM call. Skip silently.
+	} else if (backendPromptTokens <= BACKEND_PROMPT_MIN) {
+		rejectReason = `backend_prompt_too_small,backendPromptTokens=${backendPromptTokens}`;
+	} else {
+		const visibleBeforeAssistant = estimateVisibleTranscriptBeforeAssistantTokens(context, cwd, sessionKey);
+		const candidate = backendPromptTokens - visibleBeforeAssistant;
+		if (candidate < PREFIX_OVERHEAD_MIN || candidate > PREFIX_OVERHEAD_MAX) {
+			rejectReason = `prefix_out_of_bounds,prefix=${candidate}`;
+		} else {
+			freshPrefix = candidate;
+		}
+	}
+
+	let calibrationStatus: string;
+
+	if (freshPrefix !== undefined) {
+		const visibleBeforeAssistant = estimateVisibleTranscriptBeforeAssistantTokens(context, cwd, sessionKey);
+		const sample = {
+			backendPromptTokens,
+			visibleTranscriptTokens: visibleBeforeAssistant,
+			rawInput,
+			rawCacheRead,
+			rawCacheWrite,
+		};
+		if (!cached) {
+			const calib: PiOccupancyCalibration = {
+				signature: currentSig,
+				calibratedAt: new Date().toISOString(),
+				prefixOverheadTokens: freshPrefix,
+				sample,
+			};
+			saveCalibration(cwd, sessionKey, calib);
+			cached = calib;
+			calibrationStatus = staleReason
+				? `fresh(prefix=${freshPrefix},after=stale:${staleReason})`
+				: `fresh(prefix=${freshPrefix})`;
+		} else {
+			const prev = cached.prefixOverheadTokens;
+			const absDelta = Math.abs(freshPrefix - prev);
+			const relDelta = absDelta / Math.max(prev, 1);
+			if (absDelta > DRIFT_ABS_THRESHOLD || relDelta > DRIFT_REL_THRESHOLD) {
+				const calib: PiOccupancyCalibration = {
+					signature: currentSig,
+					calibratedAt: new Date().toISOString(),
+					prefixOverheadTokens: freshPrefix,
+					sample,
+				};
+				saveCalibration(cwd, sessionKey, calib);
+				cached = calib;
+				const delta = freshPrefix - prev;
+				const sign = delta >= 0 ? "+" : "";
+				calibrationStatus = `drift(delta=${sign}${delta},prev=${prev},new=${freshPrefix})`;
+			} else {
+				calibrationStatus = `cached(${cached.calibratedAt},sig=${shortSig(currentSig)})`;
+			}
+		}
+	} else if (cached) {
+		calibrationStatus = `cached(${cached.calibratedAt},sig=${shortSig(currentSig)})`;
+	} else if (staleReason) {
+		calibrationStatus = `stale(reason=${staleReason})`;
+	} else if (hasToolCallInTurn) {
+		calibrationStatus = "missing(reason=tool_turn)";
+	} else if (rejectReason) {
+		calibrationStatus = `rejected(reason=${rejectReason})`;
+	} else {
+		calibrationStatus = "missing(reason=no_valid_sample_yet)";
+	}
+
+	if (cached) {
+		const tokens = cached.prefixOverheadTokens + visibleTranscript;
+		writeFooter(
+			"piOccupancy",
+			tokens,
+			calibrationStatus,
+			`components: overhead=${cached.prefixOverheadTokens} transcript=${visibleTranscript}`,
+		);
+	} else {
+		writeFooter(
+			"visibleTranscriptOnly",
+			visibleTranscript,
+			calibrationStatus,
+			`components: transcript=${visibleTranscript}`,
+		);
+	}
 }
 
 function mapPromptStopReason(stopReason: string | undefined): AssistantMessage["stopReason"] {
@@ -711,7 +947,18 @@ function streamShellAcp(
 				return;
 			}
 
-			applyPromptUsage(model, context, output, promptResponse, cwd, sessionKey);
+			applyPromptUsage(
+				model,
+				context,
+				output,
+				promptResponse,
+				cwd,
+				sessionKey,
+				providerSettings.backend,
+				providerSettings.bridgeConfigSignature,
+				computeSystemPromptAppendHash(mergedSystemPromptAppend),
+				streamState.hasToolCallInTurn === true,
+			);
 			output.stopReason = mapPromptStopReason(promptResponse?.stopReason);
 			finalizeAcpStreamState(streamState);
 

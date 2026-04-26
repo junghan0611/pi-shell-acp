@@ -265,7 +265,19 @@ Fail:
 - Produces a tool strategy contradicting a previous turn
 - Unnecessarily repeats the same file exploration
 
-Note: pi-shell-acp does not implement a post-compaction handoff path. The provider registers a `session_before_compact` handler that cancels every pi-side compaction trigger (silent overflow, threshold, explicit-error overflow, and manual `/compact`). Backend-side auto-compaction is also disabled at launch — Claude Code via `DISABLE_AUTO_COMPACT=1` + `DISABLE_COMPACT=1`, codex-acp via `-c model_auto_compact_token_limit=i64::MAX`. Operators who want pi-side compaction back can set `PI_SHELL_ACP_ALLOW_COMPACTION=1`. For long sessions, treat pi as the session source of truth: the footer context percentage currently runs in `mode=visibleTranscriptOnly` (chars/4 over the pi-visible transcript) and `[pi-shell-acp:usage] mode=… tokens=… backendRaw: …` exposes backend aggregate usage for audit. The footer is being upgraded to `mode=piOccupancy` (calibrated `prefixOverhead + visibleTranscript + outputCorrection`) so resume sessions get a stable native-pi-equivalent compact-timing predictor. Use `/clear` (or opt-in `/compact`) when needed.
+Note: pi-shell-acp does not implement a post-compaction handoff path. The provider registers a `session_before_compact` handler that cancels every pi-side compaction trigger (silent overflow, threshold, explicit-error overflow, and manual `/compact`). Backend-side auto-compaction is also disabled at launch — Claude Code via `DISABLE_AUTO_COMPACT=1` + `DISABLE_COMPACT=1`, codex-acp via `-c model_auto_compact_token_limit=i64::MAX`. Operators who want pi-side compaction back can set `PI_SHELL_ACP_ALLOW_COMPACTION=1`. For long sessions, treat pi as the session source of truth: the footer context percentage runs in `mode=piOccupancy` for the Claude backend (calibrated `prefixOverhead + visibleTranscript`, persisted as a JSONL-sibling sidecar so resume is stable from turn 1) and `mode=visibleTranscriptOnly` for the Codex backend (chars/4 over the pi-visible transcript only — codex usage semantics not yet verified). The `[pi-shell-acp:usage] mode=… tokens=… components: … calibration=… backendRaw: …` diagnostic line carries the full state for audit. Use `/clear` (or opt-in `/compact`) when needed.
+
+### Long-session reproduction (PiOccupancy)
+
+The motivating regression case: a resumed Claude+ACP session with heavy `cacheRead` (e.g. `R2.3M`) used to read `0.4%/1.0M` on the footer because the `visibleTranscriptOnly` path doesn't see the backend's prefix payload. With PiOccupancy enabled (claude backend, calibrated sidecar present) the same session should read in the same percentage band native pi would show for the equivalent conversation (target: within ~10%).
+
+To verify on a real long session:
+
+1. Start a Claude-backed session in a project with non-trivial context (CLAUDE.md, skills, MCP servers). After the first non-tool turn, check the diagnostic — expect `calibration=fresh(prefix=…)` and a sidecar at `<sessionFile>.acp-calibration.json`.
+2. Resume the same session. The first turn should already show `mode=piOccupancy backend=claude calibration=cached(…)` and the footer should match the pre-resume reading instead of dropping to a tiny percentage.
+3. Edit the project's CLAUDE.md to add ~2,000 tokens of content and continue with a non-tool turn. Diagnostic should show `calibration=drift(delta=+…,prev=…,new=…)` and the sidecar `prefixOverheadTokens` should update.
+4. Switch to a different project (different `cwd`) with the same backend / model. Diagnostic should show `calibration=stale(reason=cwd)` followed by `calibration=fresh(prefix=…,after=stale:cwd)` on the next non-tool turn.
+5. Run a tool-only first turn after resume. Diagnostic should show `calibration=cached(…)` (cached overhead applied) or `calibration=missing(reason=tool_turn)` (if no cache yet) — calibration should never adopt a tool-turn sample.
 
 ### 1A.5 Layer 4 — Comparison with Direct Claude Code
 

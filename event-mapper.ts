@@ -14,6 +14,14 @@ export type AcpPiStreamState = {
 	openThinkingIndex?: number;
 	showToolNotifications?: boolean;
 	observedTools?: Map<string, ObservedToolState>;
+	// PiOccupancy calibration uses this to skip tool turns as samples: a tool
+	// turn is plan → tool → final answer in one ACP prompt, so the backend
+	// usage is an execution aggregate that would inflate prefixOverhead.
+	// Set true on the first tool_call / tool_call_update event of the turn.
+	// streamShellAcp() creates a fresh AcpPiStreamState per turn so this
+	// resets implicitly. permission_request alone does not flip this flag —
+	// only actual tool execution counts.
+	hasToolCallInTurn?: boolean;
 };
 
 function getObservedTools(state: AcpPiStreamState): Map<string, ObservedToolState> {
@@ -182,6 +190,7 @@ function applyAcpSessionUpdate(state: AcpPiStreamState, update: any): void {
 		}
 		case "tool_call":
 		case "tool_call_update": {
+			state.hasToolCallInTurn = true;
 			renderToolUpdate(state, update);
 			break;
 		}
