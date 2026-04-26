@@ -235,6 +235,12 @@ The two backends are intentionally not perfectly symmetric. Claude Code is the p
 - [agentclientprotocol](https://github.com/agentclientprotocol) — ACP protocol organization
 - [junghan0611/agent-config](https://github.com/junghan0611/agent-config) — real consumer repo
 
+## Real-world usage
+
+The maintainer also publishes the project repositories where pi-shell-acp is exercised on actual work, so the bridge can be evaluated against day-to-day sessions instead of synthetic smoke tests. Session transcripts and design notes from these repos are progressively being made public as the harness stabilizes.
+
+- [junghan0611/legoagent-config](https://github.com/junghan0611/legoagent-config) — primary daily-driver repo where Claude Code is run through pi-shell-acp via ACP. Long-running resume sessions, tool-heavy turns, and the context-meter cases that drive [issue #2](https://github.com/junghan0611/pi-shell-acp/issues/2) all originate here. Useful as a reference for what a "real" multi-session, multi-day pi+ACP workflow looks like in practice.
+
 ## Status
 
 Public, active development. The maintainer uses pi as his primary coding environment; this ACP bridge is working code, but it is still being proven through daily use.
