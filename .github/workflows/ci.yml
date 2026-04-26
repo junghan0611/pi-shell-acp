@@ -4,6 +4,12 @@ on:
   push:
   pull_request:
 
+env:
+  # Run all JS-based actions on Node 24 ahead of GitHub's 2026-06-02 default
+  # switch (silences the "Node.js 20 actions are deprecated" annotation while
+  # actions/checkout, setup-node, pnpm/action-setup are still on @v4).
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   check:
     runs-on: ubuntu-latest
