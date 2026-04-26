@@ -8,3 +8,6 @@ node_modules/
 CHECKLIST.md
 *.html
 *.cast
+
+# Local agent incident reports / handoff notes (not for GitHub)
+.agent-reports/
