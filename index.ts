@@ -1,5 +1,4 @@
-import { createHash } from "node:crypto";
-import { existsSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { McpServer } from "@agentclientprotocol/sdk";
@@ -243,230 +242,6 @@ function getContextMessageSignatures(context: Context): string[] {
 	return context.messages.map((message: any) => `${message.role}:${messageContentSignature(message.content)}`);
 }
 
-function estimateTextTokens(text: string): number {
-	return Math.ceil(text.length / 4);
-}
-
-function estimatePiMessageTokens(message: any): number {
-	let chars = 0;
-	switch (message?.role) {
-		case "user": {
-			const content = message.content;
-			if (typeof content === "string") return estimateTextTokens(content);
-			if (Array.isArray(content)) {
-				for (const block of content) {
-					if (block?.type === "text") chars += String(block.text ?? "").length;
-					if (block?.type === "image") chars += 4800;
-				}
-			}
-			return Math.ceil(chars / 4);
-		}
-		case "assistant": {
-			for (const block of message.content ?? []) {
-				if (block?.type === "text") chars += String(block.text ?? "").length;
-				else if (block?.type === "thinking") chars += String(block.thinking ?? "").length;
-				else if (block?.type === "toolCall") {
-					chars += String(block.name ?? "").length + JSON.stringify(block.arguments ?? {}).length;
-				}
-			}
-			return Math.ceil(chars / 4);
-		}
-		case "toolResult": {
-			const content = message.content;
-			if (typeof content === "string") return estimateTextTokens(content);
-			if (Array.isArray(content)) {
-				for (const block of content) {
-					if (block?.type === "text") chars += String(block.text ?? "").length;
-					if (block?.type === "image") chars += 4800;
-				}
-			}
-			return Math.ceil(chars / 4);
-		}
-		default:
-			return 0;
-	}
-}
-
-function piSessionDirForCwd(cwd: string): string {
-	const slug = cwd.replace(/^\/+/, "").replace(/\/+$/, "").replace(/\//g, "-");
-	return join(homedir(), ".pi", "agent", "sessions", `--${slug}--`);
-}
-
-function findPiSessionFile(cwd: string, sessionKey: string): string | undefined {
-	if (!sessionKey.startsWith("pi:")) return undefined;
-	const sessionId = sessionKey.slice("pi:".length);
-	if (!sessionId) return undefined;
-	const dir = piSessionDirForCwd(cwd);
-	if (!existsSync(dir)) return undefined;
-	for (const name of readdirSync(dir)) {
-		if (name.endsWith(".jsonl") && name.includes(sessionId)) return join(dir, name);
-	}
-	return undefined;
-}
-
-function estimatePiSessionFileTokens(cwd: string, sessionKey: string): number | undefined {
-	const file = findPiSessionFile(cwd, sessionKey);
-	if (!file) return undefined;
-	let tokens = 0;
-	for (const line of readFileSync(file, "utf-8").split("\n")) {
-		if (!line.trim()) continue;
-		try {
-			const entry = JSON.parse(line) as any;
-			if (entry?.type === "message") tokens += estimatePiMessageTokens(entry.message);
-		} catch {
-			// Ignore malformed/truncated lines; session persistence is append-only.
-		}
-	}
-	return tokens;
-}
-
-// VisibleTranscript: chars/4 estimate over the pi session JSONL plus the
-// current assistant output. One *component* of the PiOccupancy meter — it
-// omits backend system prompt, tool definitions, project context, and skill
-// payloads, which on real resume sessions can be the majority of the LLM
-// context. The footer adds a calibrated prefixOverhead on top (claude only).
-function estimateVisibleTranscriptTokens(
-	context: Context,
-	output: AssistantMessage,
-	cwd: string,
-	sessionKey: string,
-): number {
-	const sessionFileTokens = estimatePiSessionFileTokens(cwd, sessionKey);
-	if (sessionFileTokens !== undefined) return sessionFileTokens + estimatePiMessageTokens(output);
-
-	let tokens = 0;
-	for (const message of context.messages as any[]) {
-		tokens += estimatePiMessageTokens(message);
-	}
-	tokens += estimatePiMessageTokens(output);
-	return tokens;
-}
-
-// Same as estimateVisibleTranscriptTokens but excludes the current assistant
-// output. Used for calibration: at applyPromptUsage time the JSONL hasn't yet
-// been written with the new assistant message, so the file-based count is
-// already "before assistant" — and the in-memory fallback must mirror that.
-function estimateVisibleTranscriptBeforeAssistantTokens(context: Context, cwd: string, sessionKey: string): number {
-	const sessionFileTokens = estimatePiSessionFileTokens(cwd, sessionKey);
-	if (sessionFileTokens !== undefined) return sessionFileTokens;
-
-	let tokens = 0;
-	for (const message of context.messages as any[]) {
-		tokens += estimatePiMessageTokens(message);
-	}
-	return tokens;
-}
-
-// ============================================================================
-// PiOccupancy calibration
-// ============================================================================
-// PiOccupancy = prefixOverhead + visibleTranscript (claude backend only).
-// prefixOverhead = (input + cacheRead + cacheWrite) − visibleTranscriptBeforeAssistant.
-// Measured from the first valid non-tool turn, persisted next to the pi JSONL,
-// invalidated when (backend, modelId, cwd, bridgeConfigSignature,
-// systemPromptAppendHash) changes, and silently re-measured when drift is
-// detected on a later non-tool turn. See llmlog 20260426T082246, level-1
-// heading "PR-B 진입 SSOT".
-
-const PREFIX_OVERHEAD_MIN = 1;
-const PREFIX_OVERHEAD_MAX = 100_000;
-const BACKEND_PROMPT_MIN = 1000;
-const DRIFT_ABS_THRESHOLD = 5000;
-const DRIFT_REL_THRESHOLD = 0.15;
-
-type CalibrationSignature = {
-	backend: "claude";
-	modelId: string;
-	cwd: string;
-	bridgeConfigSignature: string;
-	systemPromptAppendHash?: string;
-};
-
-type PiOccupancyCalibration = {
-	signature: CalibrationSignature;
-	calibratedAt: string;
-	prefixOverheadTokens: number;
-	sample: {
-		backendPromptTokens: number;
-		visibleTranscriptTokens: number;
-		rawInput: number;
-		rawCacheRead: number;
-		rawCacheWrite: number;
-	};
-};
-
-function sha256Short(text: string): string {
-	return createHash("sha256").update(text).digest("hex").slice(0, 16);
-}
-
-function computeSystemPromptAppendHash(append: string | undefined): string | undefined {
-	if (!append) return undefined;
-	// Normalize line endings + trailing whitespace per line + final blank
-	// lines so cosmetic differences don't churn the calibration signature.
-	const normalized = append
-		.replace(/\r\n?/g, "\n")
-		.replace(/[ \t]+$/gm, "")
-		.replace(/\n+$/, "");
-	return sha256Short(normalized);
-}
-
-function shortSig(sig: CalibrationSignature): string {
-	return sha256Short(
-		[sig.backend, sig.modelId, sig.cwd, sig.bridgeConfigSignature, sig.systemPromptAppendHash ?? ""].join("|"),
-	);
-}
-
-function signaturesEqual(a: CalibrationSignature, b: CalibrationSignature): boolean {
-	return (
-		a.backend === b.backend &&
-		a.modelId === b.modelId &&
-		a.cwd === b.cwd &&
-		a.bridgeConfigSignature === b.bridgeConfigSignature &&
-		(a.systemPromptAppendHash ?? "") === (b.systemPromptAppendHash ?? "")
-	);
-}
-
-function signatureMismatchReasons(a: CalibrationSignature, b: CalibrationSignature): string[] {
-	const reasons: string[] = [];
-	if (a.modelId !== b.modelId) reasons.push("modelId");
-	if (a.cwd !== b.cwd) reasons.push("cwd");
-	if (a.bridgeConfigSignature !== b.bridgeConfigSignature) reasons.push("bridgeConfigSignature");
-	if ((a.systemPromptAppendHash ?? "") !== (b.systemPromptAppendHash ?? "")) reasons.push("systemPromptAppendHash");
-	return reasons;
-}
-
-function calibrationSidecarPath(cwd: string, sessionKey: string): string | undefined {
-	const file = findPiSessionFile(cwd, sessionKey);
-	if (!file) return undefined;
-	return `${file}.acp-calibration.json`;
-}
-
-function loadCalibration(cwd: string, sessionKey: string): PiOccupancyCalibration | undefined {
-	const path = calibrationSidecarPath(cwd, sessionKey);
-	if (!path || !existsSync(path)) return undefined;
-	try {
-		const parsed = JSON.parse(readFileSync(path, "utf-8")) as PiOccupancyCalibration;
-		if (!parsed?.signature || typeof parsed.prefixOverheadTokens !== "number") return undefined;
-		return parsed;
-	} catch {
-		return undefined;
-	}
-}
-
-function saveCalibration(cwd: string, sessionKey: string, calibration: PiOccupancyCalibration): void {
-	const path = calibrationSidecarPath(cwd, sessionKey);
-	if (!path) return;
-	try {
-		const tmp = `${path}.tmp`;
-		writeFileSync(tmp, JSON.stringify(calibration, null, 2), "utf-8");
-		renameSync(tmp, path);
-	} catch (error) {
-		console.error(
-			`[pi-shell-acp:calibration] failed to persist sidecar: ${error instanceof Error ? error.message : String(error)}`,
-		);
-	}
-}
-
 function settingsConfigError(filePath: string, message: string): Error {
 	return new Error(`${filePath}: invalid piShellAcpProvider settings: ${message}`);
 }
@@ -649,26 +424,38 @@ function extractPromptBlocks(
 	return blocks;
 }
 
+// pi-shell-acp follows the same context-meter convention as peer ACP clients
+// (zed, obsidian-agent-client, openclaw-acpx): display the backend's
+// `usage_update.used / size` directly. Both supported backends emit per-turn
+// occupancy — claude-agent-acp via `input + output + cache_read +
+// cache_creation` of the last assistant result, codex-acp via
+// `tokens_in_context_window()`. event-mapper.ts records that value into
+// `output.usage.totalTokens` while streaming; this function only fills the
+// per-component fields from `PromptResponse.usage` so cost accounting and
+// pi's BackendUsage stats line up.
+//
+// Two meter modes are surfaced in the diagnostic so audits can tell which
+// number the footer is showing:
+//   - `meter=acpUsageUpdate source=backend` — `usage_update` arrived during
+//     streaming and the backend's per-turn occupancy was used.
+//   - `meter=componentSum source=promptResponse` — no `usage_update` arrived
+//     (some backends skip emitting on tool-only turns); the footer falls
+//     back to summing PromptResponse components so it still has a value.
+//
+// IMPORTANT — semantic difference vs native pi:
+// In pi-shell-acp the footer percentage follows the ACP backend's reported
+// occupancy, not pi's visible-transcript estimate. The two values can differ
+// because the backend counts its own prompt/cache/tool/session state on top
+// of the visible transcript. A small pi conversation can map to a large ACP
+// footer; that is a backend-overflow risk signal, not a meter bug.
 function applyPromptUsage(
 	model: Model<any>,
-	context: Context,
 	output: AssistantMessage,
 	promptResponse: any,
-	cwd: string,
-	sessionKey: string,
 	backend: AcpBackend,
-	bridgeConfigSignature: string,
-	systemPromptAppendHash: string | undefined,
-	hasToolCallInTurn: boolean,
+	acpUsageSeen: boolean,
+	acpUsageSize: number | undefined,
 ): void {
-	// We must NOT early-return when promptResponse.usage is missing. The
-	// ACP stream may have already written `output.usage.totalTokens` from
-	// `usage_update.used` events (see event-mapper.ts), and on backends
-	// where that value is a session-wide running aggregate (observed on
-	// codex-acp), an early return leaks that aggregate straight into the
-	// footer — the actual cause of the GPT-5.5 "native 7.8% vs ACP 77%"
-	// discrepancy. Always overwrite the footer with our pi-first meter
-	// (visibleTranscript at minimum); fall back to zeros for raw fields.
 	const usage = promptResponse?.usage;
 	const hasUsage = usage && typeof usage === "object";
 
@@ -676,156 +463,35 @@ function applyPromptUsage(
 	const rawOutput = hasUsage ? Number(usage.outputTokens ?? 0) : 0;
 	const rawCacheRead = hasUsage ? Number(usage.cachedReadTokens ?? 0) : 0;
 	const rawCacheWrite = hasUsage ? Number(usage.cachedWriteTokens ?? 0) : 0;
-	const rawTotal = hasUsage ? Number(usage.totalTokens ?? rawInput + rawOutput + rawCacheRead + rawCacheWrite) : 0;
 
-	const visibleTranscript = estimateVisibleTranscriptTokens(context, output, cwd, sessionKey);
+	output.usage.input = rawInput;
+	output.usage.output = rawOutput;
+	output.usage.cacheRead = rawCacheRead;
+	output.usage.cacheWrite = rawCacheWrite;
 
-	const writeFooter = (mode: string, tokens: number, calibrationStatus: string, components: string): void => {
-		output.usage.input = rawInput;
-		output.usage.output = rawOutput;
-		output.usage.cacheRead = rawCacheRead;
-		output.usage.cacheWrite = rawCacheWrite;
-		output.usage.totalTokens = tokens;
-		calculateCost(model, output.usage);
-		console.error(
-			`[pi-shell-acp:usage] mode=${mode} backend=${backend} tokens=${tokens} ` +
-				`${components} calibration=${calibrationStatus} ` +
-				`backendRaw: input=${rawInput} output=${rawOutput} ` +
-				`cacheRead=${rawCacheRead} cacheWrite=${rawCacheWrite} rawTotal=${rawTotal}`,
-		);
-	};
-
-	// Codex (and any non-claude backend) stays on visibleTranscriptOnly until
-	// its usage / cache semantics are independently verified. PR-B is
-	// claude-only by design; codex parity is tracked separately.
-	if (backend !== "claude") {
-		writeFooter(
-			"visibleTranscriptOnly",
-			visibleTranscript,
-			"skipped(reason=non_claude_backend)",
-			`components: transcript=${visibleTranscript}`,
-		);
-		return;
-	}
-
-	// Claude branch: calibration needs real backend usage. If the response
-	// omitted it, fall back to visibleTranscriptOnly so the footer still
-	// reflects pi-side state instead of any leaked stream value.
-	if (!hasUsage) {
-		writeFooter(
-			"visibleTranscriptOnly",
-			visibleTranscript,
-			"missing(reason=no_backend_usage)",
-			`components: transcript=${visibleTranscript}`,
-		);
-		return;
-	}
-
-	const currentSig: CalibrationSignature = {
-		backend: "claude",
-		modelId: model.id,
-		cwd,
-		bridgeConfigSignature,
-		systemPromptAppendHash,
-	};
-
-	let cached = loadCalibration(cwd, sessionKey);
-	let staleReason: string | undefined;
-	if (cached && !signaturesEqual(cached.signature, currentSig)) {
-		staleReason = signatureMismatchReasons(cached.signature, currentSig).join(",");
-		cached = undefined;
-	}
-
-	// Try to compute a fresh sample from this turn (claude + non-tool only).
-	const backendPromptTokens = rawInput + rawCacheRead + rawCacheWrite;
-	let freshPrefix: number | undefined;
-	let rejectReason: string | undefined;
-
-	if (hasToolCallInTurn) {
-		// Tool turn — execution aggregate, not a single LLM call. Skip silently.
-	} else if (backendPromptTokens <= BACKEND_PROMPT_MIN) {
-		rejectReason = `backend_prompt_too_small,backendPromptTokens=${backendPromptTokens}`;
+	// Pick meter mode by whether usage_update arrived, NOT by totalTokens > 0.
+	// `used = 0` is a legitimate backend value (codex-acp clamps with
+	// `.max(0)`, fresh-session edges can report zero) so a numeric check would
+	// silently misclassify legitimate "occupancy is zero" reports as fallback.
+	let meter: "acpUsageUpdate" | "componentSum";
+	let source: "backend" | "promptResponse";
+	if (acpUsageSeen) {
+		meter = "acpUsageUpdate";
+		source = "backend";
 	} else {
-		const visibleBeforeAssistant = estimateVisibleTranscriptBeforeAssistantTokens(context, cwd, sessionKey);
-		const candidate = backendPromptTokens - visibleBeforeAssistant;
-		if (candidate < PREFIX_OVERHEAD_MIN || candidate > PREFIX_OVERHEAD_MAX) {
-			rejectReason = `prefix_out_of_bounds,prefix=${candidate}`;
-		} else {
-			freshPrefix = candidate;
-		}
+		output.usage.totalTokens = rawInput + rawOutput + rawCacheRead + rawCacheWrite;
+		meter = "componentSum";
+		source = "promptResponse";
 	}
 
-	let calibrationStatus: string;
+	calculateCost(model, output.usage);
 
-	if (freshPrefix !== undefined) {
-		const visibleBeforeAssistant = estimateVisibleTranscriptBeforeAssistantTokens(context, cwd, sessionKey);
-		const sample = {
-			backendPromptTokens,
-			visibleTranscriptTokens: visibleBeforeAssistant,
-			rawInput,
-			rawCacheRead,
-			rawCacheWrite,
-		};
-		if (!cached) {
-			const calib: PiOccupancyCalibration = {
-				signature: currentSig,
-				calibratedAt: new Date().toISOString(),
-				prefixOverheadTokens: freshPrefix,
-				sample,
-			};
-			saveCalibration(cwd, sessionKey, calib);
-			cached = calib;
-			calibrationStatus = staleReason
-				? `fresh(prefix=${freshPrefix},after=stale:${staleReason})`
-				: `fresh(prefix=${freshPrefix})`;
-		} else {
-			const prev = cached.prefixOverheadTokens;
-			const absDelta = Math.abs(freshPrefix - prev);
-			const relDelta = absDelta / Math.max(prev, 1);
-			if (absDelta > DRIFT_ABS_THRESHOLD || relDelta > DRIFT_REL_THRESHOLD) {
-				const calib: PiOccupancyCalibration = {
-					signature: currentSig,
-					calibratedAt: new Date().toISOString(),
-					prefixOverheadTokens: freshPrefix,
-					sample,
-				};
-				saveCalibration(cwd, sessionKey, calib);
-				cached = calib;
-				const delta = freshPrefix - prev;
-				const sign = delta >= 0 ? "+" : "";
-				calibrationStatus = `drift(delta=${sign}${delta},prev=${prev},new=${freshPrefix})`;
-			} else {
-				calibrationStatus = `cached(${cached.calibratedAt},sig=${shortSig(currentSig)})`;
-			}
-		}
-	} else if (cached) {
-		calibrationStatus = `cached(${cached.calibratedAt},sig=${shortSig(currentSig)})`;
-	} else if (staleReason) {
-		calibrationStatus = `stale(reason=${staleReason})`;
-	} else if (hasToolCallInTurn) {
-		calibrationStatus = "missing(reason=tool_turn)";
-	} else if (rejectReason) {
-		calibrationStatus = `rejected(reason=${rejectReason})`;
-	} else {
-		calibrationStatus = "missing(reason=no_valid_sample_yet)";
-	}
-
-	if (cached) {
-		const tokens = cached.prefixOverheadTokens + visibleTranscript;
-		writeFooter(
-			"piOccupancy",
-			tokens,
-			calibrationStatus,
-			`components: overhead=${cached.prefixOverheadTokens} transcript=${visibleTranscript}`,
-		);
-	} else {
-		writeFooter(
-			"visibleTranscriptOnly",
-			visibleTranscript,
-			calibrationStatus,
-			`components: transcript=${visibleTranscript}`,
-		);
-	}
+	const used = output.usage.totalTokens;
+	const size = acpUsageSize ?? model.contextWindow;
+	console.error(
+		`[pi-shell-acp:usage] meter=${meter} source=${source} backend=${backend} used=${used} size=${size} ` +
+			`raw: input=${rawInput} output=${rawOutput} cacheRead=${rawCacheRead} cacheWrite=${rawCacheWrite}`,
+	);
 }
 
 function mapPromptStopReason(stopReason: string | undefined): AssistantMessage["stopReason"] {
@@ -966,15 +632,11 @@ function streamShellAcp(
 
 			applyPromptUsage(
 				model,
-				context,
 				output,
 				promptResponse,
-				cwd,
-				sessionKey,
 				providerSettings.backend,
-				providerSettings.bridgeConfigSignature,
-				computeSystemPromptAppendHash(mergedSystemPromptAppend),
-				streamState.hasToolCallInTurn === true,
+				streamState.acpUsageSeen === true,
+				streamState.acpUsageSize,
 			);
 			output.stopReason = mapPromptStopReason(promptResponse?.stopReason);
 			finalizeAcpStreamState(streamState);

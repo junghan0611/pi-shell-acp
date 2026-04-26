@@ -14,14 +14,21 @@ export type AcpPiStreamState = {
 	openThinkingIndex?: number;
 	showToolNotifications?: boolean;
 	observedTools?: Map<string, ObservedToolState>;
-	// PiOccupancy calibration uses this to skip tool turns as samples: a tool
-	// turn is plan → tool → final answer in one ACP prompt, so the backend
-	// usage is an execution aggregate that would inflate prefixOverhead.
-	// Set true on the first tool_call / tool_call_update event of the turn.
-	// streamShellAcp() creates a fresh AcpPiStreamState per turn so this
-	// resets implicitly. permission_request alone does not flip this flag —
-	// only actual tool execution counts.
-	hasToolCallInTurn?: boolean;
+	// Last `usage_update.size` reported by the ACP backend on this turn.
+	// claude-agent-acp adjusts its `contextWindowSize` based on the per-result
+	// `modelUsage` block, so backends can shift the reported size mid-session
+	// (e.g. when a per-model tier swap kicks in). We carry this through to the
+	// diagnostic line so audits show the size the backend actually claimed,
+	// not just the static `model.contextWindow`.
+	acpUsageSize?: number;
+	// True once any `usage_update` notification with a numeric `used` field
+	// has arrived. We track this as a boolean rather than checking
+	// `totalTokens > 0` because `used = 0` is a legitimate value — codex-acp
+	// uses `tokens_in_context_window().max(0)` (explicitly allows 0), and
+	// fresh-session / pre-first-call edges can also report 0. Treating 0 as
+	// "no usage_update" would silently fall back to the componentSum path
+	// when the backend was actually telling us "occupancy is zero."
+	acpUsageSeen?: boolean;
 };
 
 function getObservedTools(state: AcpPiStreamState): Map<string, ObservedToolState> {
@@ -190,13 +197,16 @@ function applyAcpSessionUpdate(state: AcpPiStreamState, update: any): void {
 		}
 		case "tool_call":
 		case "tool_call_update": {
-			state.hasToolCallInTurn = true;
 			renderToolUpdate(state, update);
 			break;
 		}
 		case "usage_update": {
 			if (typeof update.used === "number") {
 				state.output.usage.totalTokens = update.used;
+				state.acpUsageSeen = true;
+			}
+			if (typeof update.size === "number") {
+				state.acpUsageSize = update.size;
 			}
 			if (typeof update.cost?.amount === "number") {
 				state.output.usage.cost.total = update.cost.amount;
