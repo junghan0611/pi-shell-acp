@@ -661,18 +661,22 @@ function applyPromptUsage(
 	systemPromptAppendHash: string | undefined,
 	hasToolCallInTurn: boolean,
 ): void {
+	// We must NOT early-return when promptResponse.usage is missing. The
+	// ACP stream may have already written `output.usage.totalTokens` from
+	// `usage_update.used` events (see event-mapper.ts), and on backends
+	// where that value is a session-wide running aggregate (observed on
+	// codex-acp), an early return leaks that aggregate straight into the
+	// footer — the actual cause of the GPT-5.5 "native 7.8% vs ACP 77%"
+	// discrepancy. Always overwrite the footer with our pi-first meter
+	// (visibleTranscript at minimum); fall back to zeros for raw fields.
 	const usage = promptResponse?.usage;
-	if (!usage || typeof usage !== "object") return;
+	const hasUsage = usage && typeof usage === "object";
 
-	// BackendUsage — preserved for cost / audit. Never reaches the footer
-	// directly; ACP backends like Claude Code aggregate multiple internal LLM
-	// calls in one prompt (plan → tool → final answer), so the raw totalTokens
-	// would overstate occupancy on tool turns.
-	const rawInput = Number(usage.inputTokens ?? 0);
-	const rawOutput = Number(usage.outputTokens ?? 0);
-	const rawCacheRead = Number(usage.cachedReadTokens ?? 0);
-	const rawCacheWrite = Number(usage.cachedWriteTokens ?? 0);
-	const rawTotal = Number(usage.totalTokens ?? rawInput + rawOutput + rawCacheRead + rawCacheWrite);
+	const rawInput = hasUsage ? Number(usage.inputTokens ?? 0) : 0;
+	const rawOutput = hasUsage ? Number(usage.outputTokens ?? 0) : 0;
+	const rawCacheRead = hasUsage ? Number(usage.cachedReadTokens ?? 0) : 0;
+	const rawCacheWrite = hasUsage ? Number(usage.cachedWriteTokens ?? 0) : 0;
+	const rawTotal = hasUsage ? Number(usage.totalTokens ?? rawInput + rawOutput + rawCacheRead + rawCacheWrite) : 0;
 
 	const visibleTranscript = estimateVisibleTranscriptTokens(context, output, cwd, sessionKey);
 
@@ -693,12 +697,25 @@ function applyPromptUsage(
 
 	// Codex (and any non-claude backend) stays on visibleTranscriptOnly until
 	// its usage / cache semantics are independently verified. PR-B is
-	// claude-only by design.
+	// claude-only by design; codex parity is tracked separately.
 	if (backend !== "claude") {
 		writeFooter(
 			"visibleTranscriptOnly",
 			visibleTranscript,
 			"skipped(reason=non_claude_backend)",
+			`components: transcript=${visibleTranscript}`,
+		);
+		return;
+	}
+
+	// Claude branch: calibration needs real backend usage. If the response
+	// omitted it, fall back to visibleTranscriptOnly so the footer still
+	// reflects pi-side state instead of any leaked stream value.
+	if (!hasUsage) {
+		writeFooter(
+			"visibleTranscriptOnly",
+			visibleTranscript,
+			"missing(reason=no_backend_usage)",
 			`components: transcript=${visibleTranscript}`,
 		);
 		return;
