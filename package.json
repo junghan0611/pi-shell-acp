@@ -48,7 +48,7 @@
 		"typescript": "^6.0.2"
 	},
 	"scripts": {
-		"prepare": "husky",
+		"prepare": "husky || true",
 		"setup": "./run.sh setup",
 		"smoke": "./run.sh smoke",
 		"smoke-claude": "./run.sh smoke-claude",
