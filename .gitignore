@@ -11,3 +11,7 @@ CHECKLIST.md
 
 # Local agent incident reports / handoff notes (not for GitHub)
 .agent-reports/
+
+# Husky 9+ auto-managed hook plumbing — only the hook scripts under .husky/
+# (pre-commit, etc.) are committed; .husky/_/ is regenerated on `pnpm prepare`.
+.husky/_/

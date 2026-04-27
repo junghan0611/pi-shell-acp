@@ -44,9 +44,11 @@
 		"@mariozechner/pi-coding-agent": "0.70.2",
 		"@mariozechner/pi-tui": "0.70.2",
 		"@types/node": "^24.3.0",
+		"husky": "^9.1.7",
 		"typescript": "^6.0.2"
 	},
 	"scripts": {
+		"prepare": "husky",
 		"setup": "./run.sh setup",
 		"smoke": "./run.sh smoke",
 		"smoke-claude": "./run.sh smoke-claude",

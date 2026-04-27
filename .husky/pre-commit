@@ -1,0 +1,23 @@
+#!/usr/bin/env sh
+# pi-shell-acp pre-commit gate.
+#
+# `pnpm check` already covers the entire static-quality surface:
+#
+#   - biome check .
+#   - tsc --noEmit
+#   - run.sh check-mcp        (mcp normalizer assertions)
+#   - run.sh check-models     (curated codex/claude context windows)
+#   - run.sh check-backends   (launch + meta + overlay assertions)
+#   - run.sh check-registration (per-runtime provider semantics)
+#   - run.sh check-dep-versions (pin drift across package.json/run.sh/README)
+#
+# That is the single source of truth for "does this commit hold the bridge's
+# invariants". The hook just wires it in. Anything beyond this — runtime
+# smoke, dual-backend interview, resume continuity — stays manual; pi-shell-acp
+# is a daily-driver bridge and those gates need a real ACP subprocess.
+#
+# Bypass with `git commit --no-verify` only when you genuinely understand
+# why the gate complained — the typical answer is "fix the underlying
+# issue, not the hook".
+
+pnpm check
