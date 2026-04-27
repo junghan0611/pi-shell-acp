@@ -5,8 +5,11 @@
 	"piShellAcpProvider": {
 		"appendSystemPrompt": false,
 		"settingSources": [],
-		"strictMcpConfig": false,
+		"strictMcpConfig": true,
 		"showToolNotifications": true,
+		"tools": ["Read", "Bash", "Edit", "Write"],
+		"skillPlugins": [],
+		"permissionAllow": ["Read(*)", "Bash(*)", "Edit(*)", "Write(*)", "mcp__*"],
 		"mcpServers": {
 			"pi-tools-bridge": {
 				"command": "/path/to/pi-shell-acp/mcp/pi-tools-bridge/start.sh",

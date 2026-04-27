@@ -217,7 +217,10 @@ type AcpLaunchSpec = {
 	source: string;
 };
 
-type BackendSessionMetaParams = Pick<EnsureBridgeSessionParams, "modelId" | "settingSources" | "strictMcpConfig">;
+type BackendSessionMetaParams = Pick<
+	EnsureBridgeSessionParams,
+	"modelId" | "settingSources" | "strictMcpConfig" | "tools" | "skillPlugins" | "permissionAllow"
+>;
 
 type AcpBackendAdapter = {
 	id: AcpBackend;
@@ -287,6 +290,9 @@ export type AcpBridgeSession = {
 	settingSources: ClaudeSettingSource[];
 	strictMcpConfig: boolean;
 	mcpServers: McpServer[];
+	tools: string[];
+	skillPlugins: string[];
+	permissionAllow: string[];
 	bridgeConfigSignature: string;
 	contextMessageSignatures: string[];
 	stderrTail: string[];
@@ -307,6 +313,12 @@ export type EnsureBridgeSessionParams = {
 	settingSources: ClaudeSettingSource[];
 	strictMcpConfig: boolean;
 	mcpServers: McpServer[];
+	/** Built-in Claude Code tools to expose. Defaults to pi baseline (Read/Bash/Edit/Write) so the system prompt's advertised tools and the SDK's actual tool surface match. */
+	tools: string[];
+	/** Absolute paths to Claude Code plugin directories injected via SDK `plugins: [{type:"local", path}]`. Used to deliver skills explicitly without opening up `~/.claude/skills/` via settingSources. */
+	skillPlugins: string[];
+	/** Wildcard rules passed to the SDK as `Options.settings.permissions.allow`. Combined with the user's `~/.claude/settings.json` `defaultMode` (resolved by claude-agent-acp), this gives explicit YOLO without flipping the user's native default mode. */
+	permissionAllow: string[];
 	bridgeConfigSignature: string;
 	contextMessageSignatures: string[];
 };
@@ -609,15 +621,49 @@ function resolveClaudeCodeExecutable(): string | undefined {
 	return undefined;
 }
 
+// Build the `_meta.claudeCode.options` payload that pi-shell-acp hands to
+// claude-agent-acp on session_new / session_resume / session_load.
+//
+// Design contract (see AGENTS.md "Identity preservation, not config inheritance"):
+//   - Tool surface is restricted to the pi baseline by default (Read/Bash/
+//     Edit/Write) so the system prompt's advertised toolset and the SDK's
+//     actual toolset match. Users can override per-config.
+//   - Skills are injected explicitly via `plugins: [{type:"local", path}]`,
+//     not by opening `settingSources` to read `~/.claude/skills/`.
+//   - Permissions are granted explicitly via `settings.permissions.allow`
+//     wildcards. Combined with claude-agent-acp's own `permissionMode`
+//     resolution (which it derives from the user's filesystem
+//     `~/.claude/settings.json` `defaultMode` and we cannot override via
+//     `_meta`), this delivers de facto YOLO for the listed tools without
+//     touching the user's native Claude Code permission default.
+//   - `settingSources` defaults to `[]` (SDK isolation mode): no
+//     filesystem-sourced settings, MCP, hooks, env, or plugins from
+//     `~/.claude/`. The bridge's `mcpServers` argument and the explicit
+//     plugin paths above are the only injection surface.
+//   - `strict-mcp-config` is on by default at the index.ts layer so the
+//     bridge MCP servers are the only MCP source.
+//
+// Claude Code's auto-injected identity (its built-in system prompt preset,
+// model behavior, tool implementations) is not touched. Only the *operating
+// surface* — what tools, MCP, skills, and permissions are present — is
+// constrained to a pi-shaped envelope.
 function buildClaudeSessionMeta(
 	params: BackendSessionMetaParams,
 	normalizedSystemPrompt: string | undefined,
 ): Record<string, any> {
 	const claudeCodeOptions: Record<string, any> = {
 		...(params.modelId ? { model: params.modelId } : {}),
-		tools: { type: "preset", preset: "claude_code" },
+		tools: [...params.tools],
 		settingSources: [...params.settingSources],
+		settings: {
+			permissions: {
+				allow: [...params.permissionAllow],
+			},
+		},
 	};
+	if (params.skillPlugins.length > 0) {
+		claudeCodeOptions.plugins = params.skillPlugins.map((path) => ({ type: "local", path }));
+	}
 	const claudeCodeExecutable = resolveClaudeCodeExecutable();
 	if (claudeCodeExecutable) {
 		claudeCodeOptions.pathToClaudeCodeExecutable = claudeCodeExecutable;
@@ -1187,6 +1233,9 @@ async function createBridgeProcess(params: EnsureBridgeSessionParams): Promise<A
 		settingSources: [...params.settingSources],
 		strictMcpConfig: params.strictMcpConfig,
 		mcpServers: [...params.mcpServers],
+		tools: [...params.tools],
+		skillPlugins: [...params.skillPlugins],
+		permissionAllow: [...params.permissionAllow],
 		bridgeConfigSignature: params.bridgeConfigSignature,
 		contextMessageSignatures: [...params.contextMessageSignatures],
 		stderrTail,
@@ -1417,6 +1466,9 @@ export async function ensureBridgeSession(params: EnsureBridgeSessionParams): Pr
 		}
 		existing.settingSources = [...params.settingSources];
 		existing.strictMcpConfig = params.strictMcpConfig;
+		existing.tools = [...params.tools];
+		existing.skillPlugins = [...params.skillPlugins];
+		existing.permissionAllow = [...params.permissionAllow];
 		existing.bridgeConfigSignature = params.bridgeConfigSignature;
 		existing.contextMessageSignatures = [...params.contextMessageSignatures];
 		existing.bootstrapPath = "reuse";

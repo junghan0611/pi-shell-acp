@@ -95,8 +95,11 @@ Recommended reference shape for a pi-shell-acp development session lives in [`pi
   "piShellAcpProvider": {
     "appendSystemPrompt": false,
     "settingSources": [],
-    "strictMcpConfig": false,
+    "strictMcpConfig": true,
     "showToolNotifications": true,
+    "tools": ["Read", "Bash", "Edit", "Write"],
+    "skillPlugins": [],
+    "permissionAllow": ["Read(*)", "Bash(*)", "Edit(*)", "Write(*)", "mcp__*"],
     "mcpServers": {
       "pi-tools-bridge": {
         "command": "/path/to/pi-shell-acp/mcp/pi-tools-bridge/start.sh",
@@ -115,7 +118,21 @@ Recommended reference shape for a pi-shell-acp development session lives in [`pi
 
 Backend is inferred from the selected model. Set `backend` only when you intentionally want to pin one backend.
 
-`settingSources: []` intentionally isolates the ACP-spawned Claude Code process from user/project/local Claude settings. That prevents Claude-side hooks (for example notification sounds) or ambient MCP config from silently joining a pi-owned ACP session. If you deliberately need Claude Code user settings, opt in by setting `settingSources` to `["user"]`.
+#### Operating-surface contract — Claude backend
+
+`pi-shell-acp` is a thin bridge: it borrows Claude Code's *identity* (system prompt preset, model behavior, tool implementations) but keeps the *operating surface* — what tools, MCP, skills, and permissions are visible — under pi's control. The Claude session meta passed to `claude-agent-acp` is built from these explicit fields:
+
+| Field | Default | Purpose |
+|-------|---------|---------|
+| `tools` | `["Read", "Bash", "Edit", "Write"]` | Built-in tools exposed to Claude. Matches the pi baseline so the system prompt's `Available tools:` line and the SDK's actual tool surface stay aligned. Override to widen (e.g. add `"Grep"`) or further narrow per session. |
+| `settingSources` | `[]` | SDK isolation mode — no filesystem inheritance from `~/.claude/settings.json`, project `.claude/settings.json`, or local. Hooks, env, plugins, and skills declared via Claude Code's filesystem layout are *not* picked up. Opt in by setting to `["user"]` etc. when you want the inheritance. |
+| `strictMcpConfig` | `true` | Only the MCP servers in `mcpServers` reach the backend. Ambient `~/.mcp.json` and Claude Code-side MCP entries are ignored. |
+| `skillPlugins` | `[]` | Absolute paths to Claude Code plugin directories (each a directory containing `.claude-plugin/plugin.json` and a `skills/<name>/SKILL.md` layout). Each path is injected into the SDK as `{ type: "local", path }`. This is the explicit skill-injection lane — use it instead of opening `settingSources` to gain access to `~/.claude/skills/`. |
+| `permissionAllow` | `["Read(*)", "Bash(*)", "Edit(*)", "Write(*)", "mcp__*"]` | Wildcard rules threaded into `Options.settings.permissions.allow`. Combined with the user's `~/.claude/settings.json` `permissions.defaultMode` (which `claude-agent-acp` resolves itself and pi-shell-acp cannot override via `_meta`), this delivers de facto YOLO for the listed tools without flipping the user's native default mode. |
+
+Why these defaults in this shape: pi already advertises its 4-tool baseline in the system prompt it sends. Letting Claude Code surface a 15-tool preset under that prompt creates a silent declared-vs-actual mismatch. Tightening `tools` to the pi baseline makes the agent's stated and actual tools identical. The same alignment principle drives the explicit MCP / skills / permissions story.
+
+The codex backend ignores all five Claude-only fields above; codex's tool surface is governed by `codex-acp` itself, and skill access on codex is currently via the `mcpServers` bridge only.
 
 Tool/permission notifications (`[tool:start]`, `[tool:done]`, `[permission:*]`) are enabled in the reference config because this repo is usually debugged by watching ACP-side tool activity. Set `showToolNotifications: false` for quieter day-to-day sessions.
 

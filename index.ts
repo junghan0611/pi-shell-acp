@@ -64,6 +64,12 @@ type ProviderSettings = {
 	strictMcpConfig?: boolean;
 	showToolNotifications?: boolean;
 	mcpServers?: McpServerInputMap;
+	/** Built-in Claude Code tools to expose. Defaults to pi baseline (Read/Bash/Edit/Write). Only consumed by the Claude backend; codex ignores it. */
+	tools?: string[];
+	/** Absolute paths to Claude Code plugin directories. Each path is injected as `{ type: "local", path }` into the Claude SDK `plugins` option so skills can be delivered explicitly without opening `settingSources`. Claude-only. */
+	skillPlugins?: string[];
+	/** Wildcard rules passed to the SDK as `Options.settings.permissions.allow`. Defaults to allowing the pi-baseline tools and any MCP. Claude-only. */
+	permissionAllow?: string[];
 };
 
 type ResolvedProviderSettings = {
@@ -74,8 +80,25 @@ type ResolvedProviderSettings = {
 	strictMcpConfig: boolean;
 	showToolNotifications: boolean;
 	mcpServers: McpServer[];
+	tools: string[];
+	skillPlugins: string[];
+	permissionAllow: string[];
 	bridgeConfigSignature: string;
 };
+
+// pi baseline — matches what `coding-agent/src/core/system-prompt.ts` advertises
+// as `Available tools:` (lowercase pi names map 1:1 to capitalized Claude Code
+// tool names). Keeping these aligned is the whole point of the tool-surface
+// constraint: the agent's stated tools and actual tools are identical.
+const DEFAULT_CLAUDE_TOOLS: readonly string[] = ["Read", "Bash", "Edit", "Write"];
+
+// Default permission allowlist mirrors the pi-baseline tool surface plus
+// `mcp__*` so anything reaching us via the bridge MCP servers is auto-allowed.
+// claude-agent-acp resolves `permissionMode` from the user's filesystem
+// `~/.claude/settings.json`'s `permissions.defaultMode` (we cannot override
+// that via `_meta`); combined with this explicit allow list, even a `default`
+// or `auto` mode lets these tools through without prompts.
+const DEFAULT_CLAUDE_PERMISSION_ALLOW: readonly string[] = ["Read(*)", "Bash(*)", "Edit(*)", "Write(*)", "mcp__*"];
 
 // pi-shell-acp is an ACP BRIDGE provider, not a general-purpose OpenAI/Anthropic
 // provider. It should NOT expose the full pi-ai model registry. Users who pick
@@ -310,6 +333,10 @@ function readSettingsFile(filePath: string): ProviderSettings {
 		mcpServers = mcpServersRaw as McpServerInputMap;
 	}
 
+	const tools = parseStringArray(settings, "tools", filePath);
+	const skillPlugins = parseStringArray(settings, "skillPlugins", filePath);
+	const permissionAllow = parseStringArray(settings, "permissionAllow", filePath);
+
 	return {
 		backend: backend as AcpBackend | undefined,
 		appendSystemPrompt,
@@ -317,7 +344,19 @@ function readSettingsFile(filePath: string): ProviderSettings {
 		strictMcpConfig,
 		showToolNotifications,
 		mcpServers,
+		tools,
+		skillPlugins,
+		permissionAllow,
 	};
+}
+
+function parseStringArray(settings: Record<string, unknown>, key: string, filePath: string): string[] | undefined {
+	const value = settings[key];
+	if (value === undefined) return undefined;
+	if (!Array.isArray(value) || !value.every((entry) => typeof entry === "string")) {
+		throw settingsConfigError(filePath, `${key} must be an array of strings`);
+	}
+	return value as string[];
 }
 
 function inferBackendFromModel(model: Model<any>): AcpBackend {
@@ -345,9 +384,24 @@ function loadProviderSettings(cwd: string, model: Model<any>): ResolvedProviderS
 	const backend = merged.backend ?? inferBackendFromModel(model);
 	const backendSource = merged.backend ? "explicit" : "inferred";
 	const appendSystemPrompt = merged.appendSystemPrompt ?? false;
-	const settingSources = merged.settingSources ?? (appendSystemPrompt ? [] : ["user"]);
-	const strictMcpConfig = merged.strictMcpConfig ?? false;
+	// settingSources defaults to []  (SDK isolation) — pi-shell-acp does not
+	// inherit the user's filesystem Claude Code settings (MCP, hooks, env,
+	// plugins, skills). Skills are delivered explicitly via skillPlugins; MCP
+	// via mcpServers. Operators who want native filesystem inheritance can
+	// opt in by setting `settingSources: ["user"]` (or "project"/"local").
+	const settingSources = merged.settingSources ?? [];
+	// strictMcpConfig defaults to true — only the MCP servers we provide via
+	// `mcpServers` reach the backend. The user's `~/.mcp.json`, project
+	// `.mcp.json`, and `~/.claude/settings.json` MCP entries are ignored.
+	const strictMcpConfig = merged.strictMcpConfig ?? true;
 	const showToolNotifications = merged.showToolNotifications ?? false;
+	// Tool surface defaults to the pi baseline so the system prompt's
+	// "Available tools:" line and the SDK's actual tools align (Read, Bash,
+	// Edit, Write). MCP tools (mcp__*) are exposed independently via
+	// mcpServers and are auto-allowed by the default permissionAllow.
+	const tools = merged.tools ?? [...DEFAULT_CLAUDE_TOOLS];
+	const skillPlugins = merged.skillPlugins ?? [];
+	const permissionAllow = merged.permissionAllow ?? [...DEFAULT_CLAUDE_PERMISSION_ALLOW];
 	const mergedMcpServersRaw: McpServerInputMap = {
 		...(globalSettings.mcpServers ?? {}),
 		...(projectSettings.mcpServers ?? {}),
@@ -361,12 +415,18 @@ function loadProviderSettings(cwd: string, model: Model<any>): ResolvedProviderS
 		strictMcpConfig,
 		showToolNotifications,
 		mcpServers,
+		tools,
+		skillPlugins,
+		permissionAllow,
 		bridgeConfigSignature: JSON.stringify({
 			backend,
 			appendSystemPrompt,
 			settingSources,
 			strictMcpConfig,
 			mcpServersHash,
+			tools,
+			skillPlugins,
+			permissionAllow,
 		}),
 	};
 }
@@ -567,6 +627,9 @@ function streamShellAcp(
 				settingSources: providerSettings.settingSources,
 				strictMcpConfig: providerSettings.strictMcpConfig,
 				mcpServers: providerSettings.mcpServers,
+				tools: providerSettings.tools,
+				skillPlugins: providerSettings.skillPlugins,
+				permissionAllow: providerSettings.permissionAllow,
 				bridgeConfigSignature: providerSettings.bridgeConfigSignature,
 				contextMessageSignatures: getContextMessageSignatures(context),
 			});

@@ -35,6 +35,7 @@ When an agent sees a warning, it interprets it as "I did something wrong" and st
 6. **Shutdown → preserve mapping**: ordinary process exit keeps persisted mapping intact.
 7. **Dual-backend claim → dual-backend verification**: if the repo claims Claude + Codex support, both must pass runtime smoke.
 8. **This bridge is not a second harness**: no prompt reconstruction, no transcript hydration, no tool result ledger, no Claude Code emulation.
+9. **Identity preservation, not config inheritance** (Claude backend): pi-shell-acp borrows Claude Code's *identity* (system prompt preset, model behavior, tool implementations) but defines its own *operating surface*. Tools default to the pi baseline (`Read/Bash/Edit/Write`) so the system prompt's advertised tools and the SDK's actual tool surface match. Skills are injected explicitly via `skillPlugins`, not via `~/.claude/skills/` discovery. MCP is the bridge servers only (`strictMcpConfig: true` by default, `settingSources: []`). Permissions are granted explicitly via `permissionAllow` wildcards. The user's `~/.claude/settings.json` hooks/env/plugins are intentionally *not* inherited; opt in per-config when needed.
 
 ## Verification — Reproducible Gates
 

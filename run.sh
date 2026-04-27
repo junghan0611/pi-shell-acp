@@ -311,6 +311,9 @@ const session = await ensureBridgeSession({
   settingSources: ['user'],
   strictMcpConfig: false,
   mcpServers: [],
+  tools: ['Read', 'Bash', 'Edit', 'Write'],
+  skillPlugins: [],
+  permissionAllow: ['Read(*)', 'Bash(*)', 'Edit(*)', 'Write(*)', 'mcp__*'],
   bridgeConfigSignature: JSON.stringify({ backend, appendSystemPrompt: false, settingSources: ['user'], strictMcpConfig: false, mcpServersHash: emptyMcpHash }),
   contextMessageSignatures: [`smoke:${backend}:user:ok만 답하세요.`],
 });
@@ -468,6 +471,9 @@ const baseParams = {
   settingSources: ['user'],
   strictMcpConfig: false,
   mcpServers: [],
+  tools: ['Read', 'Bash', 'Edit', 'Write'],
+  skillPlugins: [],
+  permissionAllow: ['Read(*)', 'Bash(*)', 'Edit(*)', 'Write(*)', 'mcp__*'],
   bridgeConfigSignature: JSON.stringify({
     backend,
     appendSystemPrompt: false,
@@ -643,6 +649,9 @@ const makeParams = (sessionKey, modelId) => ({
   settingSources: ['user'],
   strictMcpConfig: false,
   mcpServers: [],
+  tools: ['Read', 'Bash', 'Edit', 'Write'],
+  skillPlugins: [],
+  permissionAllow: ['Read(*)', 'Bash(*)', 'Edit(*)', 'Write(*)', 'mcp__*'],
   bridgeConfigSignature: JSON.stringify({
     backend,
     appendSystemPrompt: false,
@@ -1101,26 +1110,62 @@ try {
 
   const claudeMeta = buildSessionMetaForBackend('claude', {
     modelId: 'claude-sonnet-4-6',
-    settingSources: ['user'],
+    settingSources: [],
     strictMcpConfig: true,
+    tools: ['Read', 'Bash', 'Edit', 'Write'],
+    skillPlugins: ['/abs/path/to/skill-plugin'],
+    permissionAllow: ['Bash(*)', 'Read(*)', 'Edit(*)', 'Write(*)', 'mcp__*'],
   }, 'system prompt');
   assert.equal(claudeMeta?.claudeCode?.options?.model, 'claude-sonnet-4-6');
-  assert.deepEqual(claudeMeta?.claudeCode?.options?.settingSources, ['user']);
-  assert.deepEqual(claudeMeta?.claudeCode?.options?.tools, { type: 'preset', preset: 'claude_code' });
+  // settingSources empty by default — pi-shell-acp does not inherit filesystem
+  // Claude Code settings; skills are delivered via plugins, MCP via mcpServers.
+  assert.deepEqual(claudeMeta?.claudeCode?.options?.settingSources, []);
+  // Tool surface is the explicit pi baseline, not the claude_code preset, so
+  // the system prompt's advertised tools and the SDK's actual tools match.
+  assert.deepEqual(claudeMeta?.claudeCode?.options?.tools, ['Read', 'Bash', 'Edit', 'Write']);
+  // Skills are injected as local plugins.
+  assert.deepEqual(claudeMeta?.claudeCode?.options?.plugins, [
+    { type: 'local', path: '/abs/path/to/skill-plugin' },
+  ]);
+  // Permission allowlist threads through `Options.settings.permissions.allow`.
+  // Combined with claude-agent-acp's own permissionMode resolution, this
+  // delivers de facto YOLO for the listed tools without flipping the user's
+  // native ~/.claude/settings.json defaultMode.
+  assert.deepEqual(claudeMeta?.claudeCode?.options?.settings?.permissions?.allow, [
+    'Bash(*)',
+    'Read(*)',
+    'Edit(*)',
+    'Write(*)',
+    'mcp__*',
+  ]);
   assert.deepEqual(claudeMeta?.systemPrompt, { append: 'system prompt' });
   assert.equal(claudeMeta?.claudeCode?.options?.extraArgs?.['strict-mcp-config'], null);
+
+  // Empty skillPlugins => no plugins field emitted (no-op vs absent is observable).
+  const claudeMetaNoPlugins = buildSessionMetaForBackend('claude', {
+    modelId: 'claude-sonnet-4-6',
+    settingSources: [],
+    strictMcpConfig: true,
+    tools: ['Read', 'Bash', 'Edit', 'Write'],
+    skillPlugins: [],
+    permissionAllow: ['Bash(*)', 'mcp__*'],
+  }, undefined);
+  assert.equal(claudeMetaNoPlugins?.claudeCode?.options?.plugins, undefined);
 
   const codexMeta = buildSessionMetaForBackend('codex', {
     modelId: 'codex-mini-latest',
     settingSources: ['user'],
     strictMcpConfig: true,
+    tools: ['Read', 'Bash', 'Edit', 'Write'],
+    skillPlugins: [],
+    permissionAllow: [],
   }, 'system prompt');
   assert.equal(codexMeta, undefined);
 
   assert.throws(() => resolveAcpBackendLaunch(undefined), /ACP backend is required\./);
   assert.throws(() => resolveAcpBackendLaunch('bogus'), /Unknown ACP backend: bogus\./);
 
-  console.log('[check-backends] 14 assertions ok');
+  console.log('[check-backends] 19 assertions ok');
 } finally {
   if (prevClaude === undefined) delete process.env.CLAUDE_AGENT_ACP_COMMAND;
   else process.env.CLAUDE_AGENT_ACP_COMMAND = prevClaude;
