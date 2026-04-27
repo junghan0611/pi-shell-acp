@@ -1070,7 +1070,7 @@ EOF
 check_backends() {
   (cd "$REPO_DIR" && node --input-type=module <<'EOF'
 import { strict as assert } from 'node:assert';
-import { buildSessionMetaForBackend, CLAUDE_CONFIG_OVERLAY_DIR, ensureClaudeConfigOverlay, resolveAcpBackendLaunch } from './acp-bridge.ts';
+import { buildSessionMetaForBackend, CLAUDE_CONFIG_OVERLAY_DIR, CODEX_CONFIG_OVERLAY_DIR, ensureClaudeConfigOverlay, ensureCodexConfigOverlay, resolveAcpBackendLaunch } from './acp-bridge.ts';
 import { existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -1305,7 +1305,61 @@ try {
     rmSync(overlayTestRoot, { recursive: true, force: true });
   }
 
-  console.log('[check-backends] 32 assertions ok');
+  // Codex config overlay — mirror of the Claude overlay above. Shields
+  // codex-acp's Config loader from ~/.codex/config.toml fields the operator
+  // sets for their personal codex use (model, model_reasoning_effort,
+  // personality, projects.trust_level, [notice.*]). pi-shell-acp pins every
+  // operating-surface knob it cares about via -c CLI flags; the overlay's
+  // config.toml is intentionally minimal so unpinned fields fall through to
+  // codex-rs defaults rather than to the operator's preferences.
+  assert.equal(typeof CODEX_CONFIG_OVERLAY_DIR, 'string');
+  assert.ok(CODEX_CONFIG_OVERLAY_DIR.endsWith('codex-config-overlay'),
+    'overlay dir constant must point at the pi-owned codex-config-overlay path');
+
+  const codexOverlayTestRoot = join(tmpdir(), `pi-shell-acp-codex-overlay-${Date.now()}`);
+  const codexRealDir = join(codexOverlayTestRoot, 'real');
+  const codexOverlayDir = join(codexOverlayTestRoot, 'overlay');
+  try {
+    mkdirSync(codexRealDir, { recursive: true });
+    // Seed with the operator-style content the overlay must reject:
+    //   - config.toml that, if inherited, would leak `model` and `personality`
+    //     through to pi-shell-acp sessions
+    //   - auth.json that the overlay MUST keep reachable via symlink (codex
+    //     can't authenticate without it)
+    //   - sessions/ and skills/ directories the overlay symlinks through
+    writeFileSync(join(codexRealDir, 'config.toml'), 'model = "leak-me"\npersonality = "leak"\n', 'utf8');
+    writeFileSync(join(codexRealDir, 'auth.json'), '{"token":"test"}', 'utf8');
+    mkdirSync(join(codexRealDir, 'sessions'), { recursive: true });
+    mkdirSync(join(codexRealDir, 'skills'), { recursive: true });
+
+    ensureCodexConfigOverlay(codexRealDir, codexOverlayDir);
+
+    // config.toml: regular file, NOT symlink, NOT inheriting operator content.
+    const configStat = lstatSync(join(codexOverlayDir, 'config.toml'));
+    assert.equal(configStat.isSymbolicLink(), false,
+      'overlay config.toml must be a regular file authored by pi-shell-acp, not a symlink');
+    const overlayContent = readFileSync(join(codexOverlayDir, 'config.toml'), 'utf8');
+    assert.ok(!overlayContent.includes('leak-me'),
+      'overlay config.toml must not inherit operator model setting');
+    assert.ok(!overlayContent.includes('personality'),
+      'overlay config.toml must not inherit operator personality setting');
+
+    // Other entries: symlinks back to real dir.
+    const codexAuthStat = lstatSync(join(codexOverlayDir, 'auth.json'));
+    assert.equal(codexAuthStat.isSymbolicLink(), true);
+    assert.equal(readlinkSync(join(codexOverlayDir, 'auth.json')), join(codexRealDir, 'auth.json'));
+    const codexSkillsStat = lstatSync(join(codexOverlayDir, 'skills'));
+    assert.equal(codexSkillsStat.isSymbolicLink(), true);
+    assert.equal(readlinkSync(join(codexOverlayDir, 'skills')), join(codexRealDir, 'skills'));
+
+    // Idempotence.
+    ensureCodexConfigOverlay(codexRealDir, codexOverlayDir);
+    assert.equal(readlinkSync(join(codexOverlayDir, 'auth.json')), join(codexRealDir, 'auth.json'));
+  } finally {
+    rmSync(codexOverlayTestRoot, { recursive: true, force: true });
+  }
+
+  console.log('[check-backends] 41 assertions ok');
 } finally {
   if (prevClaude === undefined) delete process.env.CLAUDE_AGENT_ACP_COMMAND;
   else process.env.CLAUDE_AGENT_ACP_COMMAND = prevClaude;

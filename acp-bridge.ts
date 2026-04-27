@@ -854,6 +854,89 @@ export function ensureClaudeConfigOverlay(
 	}
 }
 
+// ============================================================================
+// Codex config overlay — isolate codex-acp's Config loader from the
+// operator's `~/.codex/config.toml` field pickup.
+// ============================================================================
+//
+// codex-acp loads the codex-rs `Config` struct via
+// `Config::load_with_cli_overrides_and_harness_overrides`
+// (codex-acp/src/lib.rs:47). That call reads
+// `${CODEX_HOME:-~/.codex}/config.toml` and merges in our `-c key=value`
+// flags. Fields the operator sets in their personal config.toml that we do
+// NOT cover with `-c` flags — `model`, `model_reasoning_effort`,
+// `personality`, `[projects."*"].trust_level`, `[notice.*]` — therefore
+// leak straight into pi-shell-acp sessions.
+//
+// We mirror the Claude-side `CLAUDE_CONFIG_DIR` overlay shape: point
+// `CODEX_HOME` at a pi-owned overlay directory, write a minimal
+// `config.toml` there, and symlink every other entry from `~/.codex/`
+// (`auth.json`, `sessions`, `history.jsonl`, `skills`, `memories`,
+// `rules`, `cache`, ...) so nothing operator-facing breaks. The overlay is
+// rebuilt idempotently on every codex spawn so newly-created entries in
+// `~/.codex/` show up on the next launch automatically. process.env wins
+// over bridgeEnvDefaults, so an operator who explicitly exports CODEX_HOME
+// keeps full control.
+const CODEX_REAL_CONFIG_DIR = join(homedir(), ".codex");
+export const CODEX_CONFIG_OVERLAY_DIR = join(homedir(), ".pi", "agent", "codex-config-overlay");
+
+// Minimal codex config.toml content for the overlay.
+//
+// We do NOT inherit the operator's personal config.toml (model,
+// personality, model_reasoning_effort, projects.trust_level, etc.).
+// pi-shell-acp pins every operating-surface value it cares about via `-c`
+// CLI overrides at launch (approval_policy, sandbox_mode,
+// model_auto_compact_token_limit, model where needed). Anything not pinned
+// falls through to codex-rs's own hard-coded defaults — by design.
+//
+// The header is the only required content; codex-rs accepts an effectively
+// empty TOML file. We keep the comment so an operator who inspects the
+// overlay knows it is pi-managed and any manual edit will be overwritten.
+function overlayCodexConfigToml(): string {
+	return "# pi-shell-acp managed overlay — do not edit manually.\n# Operator config at ~/.codex/config.toml is intentionally NOT inherited.\n";
+}
+
+export function ensureCodexConfigOverlay(
+	realDir: string = CODEX_REAL_CONFIG_DIR,
+	overlayDir: string = CODEX_CONFIG_OVERLAY_DIR,
+): void {
+	mkdirSync(overlayDir, { recursive: true });
+
+	// config.toml — always written. Cheap, unconditional rewrite ensures the
+	// override is in place even if a prior process or operator edited it.
+	writeFileSync(join(overlayDir, "config.toml"), overlayCodexConfigToml(), "utf8");
+
+	if (!existsSync(realDir)) return;
+
+	// Symlink every other entry from the real config dir into the overlay.
+	// Idempotent — preserves correct symlinks, replaces wrong ones.
+	for (const entry of readdirSync(realDir)) {
+		if (entry === "config.toml") continue;
+		const realPath = join(realDir, entry);
+		const overlayPath = join(overlayDir, entry);
+
+		try {
+			const existing = lstatSync(overlayPath);
+			if (existing.isSymbolicLink()) {
+				if (readlinkSync(overlayPath) === realPath) continue;
+				unlinkSync(overlayPath);
+			} else {
+				rmSync(overlayPath, { recursive: true, force: true });
+			}
+		} catch {
+			// Doesn't exist — fall through to create.
+		}
+
+		try {
+			symlinkSync(realPath, overlayPath);
+		} catch (error) {
+			console.error(
+				`[pi-shell-acp:codex-overlay] symlink failed for ${entry}: ${error instanceof Error ? error.message : String(error)}`,
+			);
+		}
+	}
+}
+
 function buildCodexBootstrapPromptAugment(augmentText: string): PromptContentBlock[] | undefined {
 	const text = augmentText?.trim();
 	if (!text) return undefined;
@@ -895,6 +978,15 @@ const ACP_BACKEND_ADAPTERS: Record<AcpBackend, AcpBackendAdapter> = {
 		resolveLaunch: resolveCodexAcpLaunch,
 		buildSessionMeta: () => undefined,
 		buildBootstrapPromptAugment: buildCodexBootstrapPromptAugment,
+		bridgeEnvDefaults: {
+			// Redirect codex-rs's Config loader away from ~/.codex/config.toml so
+			// the operator's personal model/personality/reasoning_effort etc. do
+			// NOT silently apply to pi-shell-acp sessions. The overlay directory
+			// is rebuilt at every spawn (see ensureCodexConfigOverlay above).
+			// process.env wins, so an operator who explicitly exports CODEX_HOME
+			// keeps full control.
+			CODEX_HOME: CODEX_CONFIG_OVERLAY_DIR,
+		},
 		// codex-rs does not expose a boolean/env auto-compaction toggle like
 		// Claude Code. It does expose the same behavior as a config threshold:
 		// model_auto_compact_token_limit. resolveCodexAcpLaunch() raises that
@@ -1352,6 +1444,15 @@ async function createBridgeProcess(params: EnsureBridgeSessionParams): Promise<A
 		} catch (error) {
 			console.error(
 				`[pi-shell-acp:claude-overlay] failed to prepare overlay; falling back to operator's CLAUDE_CONFIG_DIR if any: ${error instanceof Error ? error.message : String(error)}`,
+			);
+		}
+	}
+	if (params.backend === "codex" && bridgeEnvDefaults?.CODEX_HOME === CODEX_CONFIG_OVERLAY_DIR) {
+		try {
+			ensureCodexConfigOverlay();
+		} catch (error) {
+			console.error(
+				`[pi-shell-acp:codex-overlay] failed to prepare overlay; falling back to operator's CODEX_HOME if any: ${error instanceof Error ? error.message : String(error)}`,
 			);
 		}
 	}
