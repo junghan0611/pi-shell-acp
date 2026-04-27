@@ -191,6 +191,19 @@ cd "$REPO_DIR"
 
 `setup` is a convenience that runs `install` + `smoke-all` in sequence, so a green `setup` implies both the settings.json wiring and the dual-backend runtime are healthy.
 
+### 1.5 Pre-verification snapshot — capture once, before §3
+
+Every verification run produces evidence by **comparing state before and after**. Capture these baselines **immediately before §3 begins** — once they're missed, §5/§10 lose their comparison axis for the rest of the run.
+
+```bash
+export BEFORE_CACHE=$(find "$CACHE_DIR" -maxdepth 1 -type f | wc -l)
+export BEFORE_ACP=$(pgrep -af claude-agent-acp | wc -l)
+export BEFORE_CODEX=$(pgrep -af codex-acp | wc -l)
+echo "before: cache=$BEFORE_CACHE claude-agent-acp=$BEFORE_ACP codex-acp=$BEFORE_CODEX"
+```
+
+Preserve these three numbers in your verification log. §5.1 (cache delta), §10 (process delta) all reference them.
+
 ---
 
 ## 1A. Main Agent Evaluation — Is `pi-shell-acp` Claude Strong Enough?
@@ -254,6 +267,8 @@ Note: check the default visibility boundary together with the operator verificat
 ### 1A.4 Layer 3 — Is Focus Maintained as Turns Accumulate?
 
 Intent: Not whether sessions continue, but **whether quality is maintained in a continuing state**. For a single target, inject a fact on the first turn (`entwurf`) (e.g., "Remember 3 core invariants from AGENTS.md, reply with READY only") → continue with `entwurf_resume` on the same taskId 4–5 times, mixing retrieval/exploration/retrieval.
+
+> **Continuation note.** When this layer is run **after §3 + §4 on the same target**, a fresh `entwurf` is no longer available (the bridge enforces uniqueness per target — see §3 operational note). Equivalent procedure: inject the §1A.4 invariants on the **next available turn** (e.g., turn 11) of the same `taskId`, then perform 3–4 more resumes mixing repo exploration (§9) before the recall quiz. The pass criterion is identical — the early-turn injection must survive the intervening exploration.
 
 Pass:
 - Still holds onto the initial invariants and intermediate exploration results after 5 turns
@@ -330,6 +345,8 @@ Note:
 ## 3. Single-Turn Verification — The First Regression Point to Break
 
 One sync `entwurf` call for the `pi-shell-acp/claude-sonnet-4-6` target.
+
+> **Operational note — `entwurf` uniqueness per (provider, model, session).** The MCP bridge enforces one live `entwurf` per (provider, model) tuple within a verifier session. Strictly speaking §3.1 and §3.2 are two separate single-turn intents, but the second one cannot be a fresh `entwurf` to the same target — it must be the **first `entwurf_resume` of the same `taskId`**. This is operationally fine: §3.1 verifies hook prompt extraction (turn 1), §3.2 verifies tool-call mapping (turn 2 = first resume). Fact injection (§4) then begins from turn 3 onward. If the verifier strictly needs a fresh ACP session for §3.2, run it against a different target (e.g., `claude-opus-4-7` or `gpt-5.2`).
 
 ### 3.1 SessionStart Hook Regression Check
 
@@ -486,6 +503,17 @@ Observation points:
 
 What we're looking at here is not native tools like `bash`, `read`, `grep`, but **whether pi's custom tools (`entwurf`, `entwurf_resume`, `entwurf_send`, `entwurf_peers` — the narrow set exposed by `mcp/pi-tools-bridge/` as of `035254b`) are visible when going through ACP**.
 
+> **Branching note — which PASS case applies depends on the project's `piShellAcpProvider.mcpServers`.**
+>
+> - If `piShellAcpProvider.mcpServers` is **empty or omitted** → §8.4 PASS = the spawn replies `entwurf tool not visible` / `pi custom tools not visible`. This is the default contract.
+> - If `piShellAcpProvider.mcpServers` **registers `pi-tools-bridge`** (e.g., this repo's own checkout) → §8.4 reduces to honesty check (no hallucination, no overclaim) and §8.5 takes over as the actual visibility verification — the spawn must list precisely those registered servers.
+>
+> Before running §8.4, verify which case applies:
+> ```bash
+> jq '.piShellAcpProvider.mcpServers // {} | keys' "$PROJECT_DIR/.pi/settings.json"
+> ```
+> An empty array (`[]`) means §8.4 strict path. A populated array means §8.5 strict path.
+
 Verification intent: inside the `pi-shell-acp/claude-sonnet-4-6` target, ask "can you see this tool?" and have it reply "not visible" if it cannot. Agreed exact responses:
 - Single entwurf visibility: `entwurf tool not visible`
 - pi custom tool bundle visibility: `pi custom tools not visible`
@@ -605,6 +633,31 @@ Note:
 - An increase in cache file count can be natural when creating new sessions
 - What matters is **whether boundaries are maintained** and **whether orphans remain**
 
+### 10.3 Expected `claude-agent-acp` count formula
+
+When checking process hygiene, `BEFORE_ACP` (captured in §1.5) sets the baseline. The expected count during verification is:
+
+```
+expected_claude_agent_acp = BEFORE_ACP
+                          + 1 (this verifier's own pi-shell-acp parent, if applicable)
+                          + N (number of distinct active entwurf taskIds whose
+                                bridge session has not been explicitly closed)
+```
+
+If the actual count exceeds this formula, walk the parent chain to identify the source:
+
+```bash
+for pid in $(pgrep claude-agent-acp); do
+  echo "=== $pid ==="
+  ps -o pid,ppid,etime,cmd -p $pid | tail -1
+  PARENT=$(ps -o ppid= -p $pid | tr -d ' ')
+  ps -o pid,etime,cmd -p $PARENT 2>/dev/null | tail -1
+  echo
+done
+```
+
+A `claude-agent-acp` whose parent `pi` process has already exited is an **orphan** — flag and preserve as evidence (§13). If the parent is alive but does not match any verifier-controlled taskId, it's likely a **prior verification cycle's leftover**; identify and close before continuing.
+
 ---
 
 ## 11. pi Session Record Check — Is It Usable as a Shared Memory Axis for andenken?
@@ -612,6 +665,21 @@ Note:
 The key is whether **pi session files are maintained as the shared record source** even when using ACP.
 
 After the `entwurf` → `entwurf_resume` pair from §4 finishes, locate the child pi session file for that task (identify location via taskId) and inspect it with `wc -l` / `tail`.
+
+> **Path pattern.** entwurf-spawned child pi sessions are written to:
+> ```
+> ~/.pi/agent/sessions/--<cwd-encoded>--/<timestamp>_entwurf-<taskId>.jsonl
+> ```
+> where `<cwd-encoded>` is the entwurf cwd with `/` replaced by `-`. To resolve a `taskId` to its session file in one line:
+> ```bash
+> ls ~/.pi/agent/sessions/--*--/*_entwurf-<TASK_ID>.jsonl 2>/dev/null
+> ```
+> A naive `grep -rl <TASK_ID> ~/.pi/agent/sessions/` will also match the **parent** verifier's session (where the verifier quoted the taskId in its own output) — do not analyze that file as the spawn's transcript. Use the path pattern instead.
+>
+> Schema reminder: `role` is at `.message.role`, not at the top level. To count actual user/assistant turns:
+> ```bash
+> jq -r '.message.role // .type' "$F" | sort | uniq -c
+> ```
 
 Pass:
 - user / assistant turns are normally accumulated in the pi session
@@ -629,6 +697,15 @@ Important:
 The following are documented but observability/automation is still insufficient.
 
 1. Making the actual bootstrap path — whether `resume`, `load`, or `new` — immediately visible externally. Currently only verifiable via stderr `[pi-shell-acp:bootstrap]` lines. In the entwurf orchestration path, that stderr is not surfaced to the front end, making it difficult to immediately answer whether `bridge continuity` passed during failure diagnosis. This lack of observability causes wording contamination to be misdiagnosed as continuity failure (see §0A "bridge vs semantic continuity"). **Current reinforcement path**: `PI_ENTWURF_CHILD_STDERR_LOG` opt-in env mirrors child stderr to a file to automatically verify the S6 (spawn `path=new`) / R4 (resume `path=resume|load`) gate. (This sentinel runner itself lives in the test runner maintained by agent-config as consumer, but spawn authority and registry are owned by this repo. The past agent-config sentinel commit is `9ee39aa`.)
+   <br>
+   **Verifier one-liner** — to capture bootstrap evidence during a manual VERIFY.md run, export the env before any `entwurf` call and grep the result after:
+   ```bash
+   export PI_ENTWURF_CHILD_STDERR_LOG=/tmp/pi-shell-acp-verify-stderr.log
+   # ... run §3 / §4 / §5 entwurf calls ...
+   grep -E '\[pi-shell-acp:(bootstrap|model-switch|cancel|shutdown)\]' \
+     "$PI_ENTWURF_CHILD_STDERR_LOG"
+   ```
+   Without this, §5/§7 can only judge **semantic continuity** — `bridge continuity` (sessionKey/acpSessionId/bootstrap path) remains unverified.
 2. When persisted session incompatibility occurs, operators reading the invalidation reason quickly
 3. ~~Clearly observing the `unstable_setSessionModel` path vs new session fallback path on model switch~~ — see §12.3
 4. ~~Observing how cleanly bridge and child process are cleaned up on cancel/abort~~ — see §12.4
@@ -742,6 +819,12 @@ When a problem occurs, at minimum preserve the following:
 ```bash
 pgrep -af claude-agent-acp || true
 find "$CACHE_DIR" -maxdepth 1 -type f | sort
+# resolve taskId(s) to entwurf-child session files (see §11 path pattern)
+ls ~/.pi/agent/sessions/--*--/*_entwurf-${TASK_ID}.jsonl 2>/dev/null
+# bootstrap evidence (only available if PI_ENTWURF_CHILD_STDERR_LOG was set, §12.1)
+[ -n "$PI_ENTWURF_CHILD_STDERR_LOG" ] && \
+  grep -E '\[pi-shell-acp:(bootstrap|model-switch|cancel|shutdown)\]' \
+    "$PI_ENTWURF_CHILD_STDERR_LOG"
 ```
 
 Also preserve:
@@ -785,3 +868,13 @@ The minimum passing bar is:
 10. pi-facing MCP injection is reflected only as configured in `piShellAcpProvider.mcpServers`, visibility is identical across resume/load/new paths, sessions are correctly invalidated on config change, and invalid configs fail-fast with `McpServerConfigError`
 
 When these 10 pass, `pi-shell-acp` is considered not just an experiment but an **operationally viable ACP bridge within the pi harness**.
+
+---
+
+## History
+
+A log of who ran this document end-to-end and what they changed. Each entry records: date, verifier identity (provider/model orchestrating the run), subject target(s) actually exercised, and a one-line summary of doc upgrades applied as a result.
+
+| Date | Verifier (orchestrator) | Subject target(s) | Notes |
+|------|-------------------------|-------------------|-------|
+| 2026-04-27 | pi-shell-acp / claude-opus-4-7 | pi-shell-acp / claude-sonnet-4-6 (1 target × 14 turns) | First full pass by an ACP-routed Claude (previously native gpt-5.x territory). Applied A–H upgrades: §3 entwurf-uniqueness operational note, §1.5 pre-verification snapshot block, §1A.4 in-session continuation note, §8.4 mcpServers branching note, §10.3 expected `claude-agent-acp` count formula + parent-walk recipe, §11 entwurf session file path pattern + `.message.role` schema reminder, §12.1 `PI_ENTWURF_CHILD_STDERR_LOG` verifier one-liner, §13 taskId→session-file helper. §3 / §4 / §5 / §6 / §7 / §8.4 / §8.5 / §9 / §11 / §1A.1–1A.4 all PASS. §10 borderline (3 `claude-agent-acp` for 14 turns / 1 spawn — bounded but more than the formula predicts; flagged as observation). |

@@ -1104,21 +1104,47 @@ try {
   assert.equal(codexLaunch.command, 'bash');
   assert.deepEqual(codexLaunch.args, [
     '-lc',
-    `${codexOverride} '-c' 'approval_policy=never' '-c' 'sandbox_mode=danger-full-access' '-c' 'model_auto_compact_token_limit=9223372036854775807' '-c' 'web_search="disabled"' '-c' 'tools.view_image=false'`,
+    `${codexOverride} '-c' 'approval_policy=never' '-c' 'sandbox_mode=danger-full-access' '-c' 'model_auto_compact_token_limit=9223372036854775807' '-c' 'web_search="disabled"' '-c' 'tools.view_image=false' '-c' 'features.image_generation=false' '-c' 'features.tool_suggest=false' '-c' 'features.tool_search=false' '-c' 'features.multi_agent=false' '-c' 'features.apps=false'`,
   ]);
   assert.equal(codexLaunch.source, 'env:CODEX_ACP_COMMAND');
-  // Defense-in-depth: pin web_search=disabled and tools.view_image=false
-  // even though the CODEX_HOME overlay already strips operator config.
-  // codex-rs lets later -c values for the same key win, so these flags
-  // hold even if the operator inlines `-c web_search="live"` via
-  // CODEX_ACP_COMMAND (ours come last).
+  // Defense-in-depth: pin web_search=disabled, tools.view_image=false, and
+  // four `features.*=false` flags even though the CODEX_HOME overlay
+  // already strips operator config. codex-rs lets later -c values for the
+  // same key win, so these flags hold even if the operator inlines
+  // counter-values (e.g. `-c features.multi_agent=true`) via
+  // CODEX_ACP_COMMAND — ours come last.
+  //
+  // Each features flag aligns one tool family with pi's advertised
+  // baseline; the assertions name the disabled tool so a regression in
+  // codex-rs's gating path (key rename, default flip) shows up here, not
+  // only in live verification.
   assert.ok(
     codexLaunch.args.some((arg) => arg.includes('web_search="disabled"')),
     'codex launch must pin web_search=disabled',
   );
   assert.ok(
     codexLaunch.args.some((arg) => arg.includes('tools.view_image=false')),
-    'codex launch must attempt to disable tools.view_image (best-effort; codex-rs 0.124.0 consumption unverified)',
+    'codex launch must attempt to disable tools.view_image (best-effort; codex-rs 0.124.0 has no consumer for this field, kept for forward-compat)',
+  );
+  assert.ok(
+    codexLaunch.args.some((arg) => arg.includes('features.image_generation=false')),
+    'codex launch must disable image_generation feature (suppresses image_gen tool)',
+  );
+  assert.ok(
+    codexLaunch.args.some((arg) => arg.includes('features.tool_suggest=false')),
+    'codex launch must disable tool_suggest feature (suppresses tool_suggest tool)',
+  );
+  assert.ok(
+    codexLaunch.args.some((arg) => arg.includes('features.tool_search=false')),
+    'codex launch must disable tool_search feature (suppresses deferred-MCP tool_search tool)',
+  );
+  assert.ok(
+    codexLaunch.args.some((arg) => arg.includes('features.multi_agent=false')),
+    'codex launch must disable multi_agent feature (suppresses spawn_agent / send_input / wait_agent / close_agent / resume_agent collab tools)',
+  );
+  assert.ok(
+    codexLaunch.args.some((arg) => arg.includes('features.apps=false')),
+    'codex launch must disable apps feature (suppresses auto-injected mcp__codex_apps__* MCP server bundle, e.g. codex_apps__github)',
   );
 
   // PI_SHELL_ACP_CODEX_MODE=auto opts into codex-rs's standard mode
@@ -1130,7 +1156,7 @@ try {
     const codexLaunchAutoMode = resolveAcpBackendLaunch('codex');
     assert.deepEqual(codexLaunchAutoMode.args, [
       '-lc',
-      `${codexOverride} '-c' 'approval_policy=on-request' '-c' 'sandbox_mode=workspace-write' '-c' 'model_auto_compact_token_limit=9223372036854775807' '-c' 'web_search="disabled"' '-c' 'tools.view_image=false'`,
+      `${codexOverride} '-c' 'approval_policy=on-request' '-c' 'sandbox_mode=workspace-write' '-c' 'model_auto_compact_token_limit=9223372036854775807' '-c' 'web_search="disabled"' '-c' 'tools.view_image=false' '-c' 'features.image_generation=false' '-c' 'features.tool_suggest=false' '-c' 'features.tool_search=false' '-c' 'features.multi_agent=false' '-c' 'features.apps=false'`,
     ]);
   } finally {
     if (prevMode === undefined) delete process.env.PI_SHELL_ACP_CODEX_MODE;
@@ -1161,12 +1187,43 @@ try {
     const codexLaunchOptOut = resolveAcpBackendLaunch('codex');
     assert.deepEqual(codexLaunchOptOut.args, [
       '-lc',
-      `${codexOverride} '-c' 'approval_policy=never' '-c' 'sandbox_mode=danger-full-access' '-c' 'web_search="disabled"' '-c' 'tools.view_image=false'`,
+      `${codexOverride} '-c' 'approval_policy=never' '-c' 'sandbox_mode=danger-full-access' '-c' 'web_search="disabled"' '-c' 'tools.view_image=false' '-c' 'features.image_generation=false' '-c' 'features.tool_suggest=false' '-c' 'features.tool_search=false' '-c' 'features.multi_agent=false' '-c' 'features.apps=false'`,
     ]);
   } finally {
     if (prevAllow === undefined) delete process.env.PI_SHELL_ACP_ALLOW_COMPACTION;
     else process.env.PI_SHELL_ACP_ALLOW_COMPACTION = prevAllow;
   }
+
+  // codexDisabledFeatures launch param — explicit empty list opts fully out
+  // of the bridge's feature-gate policy (operators who set
+  // `codexDisabledFeatures: []` in pi-shell-acp settings.json land here).
+  // Static surface flags (web_search, tools.view_image) stay in place; only
+  // the dynamic `features.*=false` portion drops out.
+  const codexLaunchEmptyFeatures = resolveAcpBackendLaunch('codex', { codexDisabledFeatures: [] });
+  assert.deepEqual(codexLaunchEmptyFeatures.args, [
+    '-lc',
+    `${codexOverride} '-c' 'approval_policy=never' '-c' 'sandbox_mode=danger-full-access' '-c' 'model_auto_compact_token_limit=9223372036854775807' '-c' 'web_search="disabled"' '-c' 'tools.view_image=false'`,
+  ]);
+  assert.ok(
+    !codexLaunchEmptyFeatures.args.some((arg) => arg.includes('features.')),
+    'codex launch with codexDisabledFeatures=[] must emit zero features.* gate flags',
+  );
+
+  // codexDisabledFeatures launch param — partial override. Operators can
+  // narrow the policy to a single feature (e.g. just block apps, leave
+  // image_gen registered) or extend it past the defaults. The launch path
+  // emits exactly the keys passed, in order, with no de-duplication or
+  // canonicalization (codex-rs validates keys at config load via
+  // is_known_feature_key, so a typo surfaces as a startup warning).
+  const codexLaunchPartialFeatures = resolveAcpBackendLaunch('codex', { codexDisabledFeatures: ['apps', 'multi_agent'] });
+  assert.deepEqual(codexLaunchPartialFeatures.args, [
+    '-lc',
+    `${codexOverride} '-c' 'approval_policy=never' '-c' 'sandbox_mode=danger-full-access' '-c' 'model_auto_compact_token_limit=9223372036854775807' '-c' 'web_search="disabled"' '-c' 'tools.view_image=false' '-c' 'features.apps=false' '-c' 'features.multi_agent=false'`,
+  ]);
+  assert.ok(
+    !codexLaunchPartialFeatures.args.some((arg) => arg.includes('features.image_generation')),
+    'codex launch with codexDisabledFeatures=["apps","multi_agent"] must NOT emit features.image_generation',
+  );
 
   // Skill listing in the system prompt is gated by the SDK on
   // `tools.some(name === "Skill")` (claude-agent-sdk SN1 emitter, identical
@@ -1372,7 +1429,7 @@ try {
     rmSync(codexOverlayTestRoot, { recursive: true, force: true });
   }
 
-  console.log('[check-backends] 43 assertions ok');
+  console.log('[check-backends] 52 assertions ok');
 } finally {
   if (prevClaude === undefined) delete process.env.CLAUDE_AGENT_ACP_COMMAND;
   else process.env.CLAUDE_AGENT_ACP_COMMAND = prevClaude;

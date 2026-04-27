@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Mechanics for cutting a release. Orchestration lives in
-# .claude/commands/make-release.md (and the update-changelog skill).
+# .pi/prompts/make-release.md (and the update-changelog skill).
 #
 # Usage: ./scripts/release.sh <version>   e.g. ./scripts/release.sh 0.2.1
 #

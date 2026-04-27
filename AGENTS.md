@@ -1,29 +1,25 @@
 # AGENTS.md — Maintainer Guidelines for pi-shell-acp
 
-This document is for agents that own this repo. It contains invariant principles and reproducible verification methods — not specifications that change.
+For agents that own this repo. Invariant principles + reproducible verification, not specs that change.
 
 ## What This Repo Is
 
-ACP bridge provider that connects pi to ACP backends (Claude Code, Codex). Pi stays the harness; each backend keeps its own identity.
-
-Two layers:
+ACP bridge provider that connects pi to ACP backends (Claude Code, Codex). Pi stays the harness; each backend keeps its own identity. Two layers:
 
 - **Layer A — ACP bridge**: provider registration, ACP subprocess lifecycle, session bootstrap (`resume > load > new`), prompt forwarding, event mapping, MCP injection
 - **Layer B — Entwurf orchestration**: spawn/resume, target registry, identity preservation, MCP adapter (`pi-tools-bridge`), session bridge (`session-bridge`)
 
 ## Code Principle — Crash, Don't Warn
 
-Code in this repo is used as a tool by agents. The core invariant for agent-facing tools:
+Code in this repo is used as a tool by agents. Core invariant:
 
 > **Never warn. Throw.**
 
 When an agent sees a warning, it interprets it as "I did something wrong" and starts flailing — rewording prompts, building workarounds, apologizing. The actual problem is the tool is broken, but the agent blames itself.
 
-- Bad config → `throw` (e.g. `McpServerConfigError`)
-- Bad path → spawn explodes (no warning)
-- Bad model id → fail fast, no fallback attempt
-- `catch {}` is allowed only for environment probing (optional package detection, ldd exit code variance)
-- `console.warn` is allowed only in stderr diagnostic lines (read by operators, not agents)
+- Bad config → throw (e.g. `McpServerConfigError`); same for bad path / bad model id. No fallback.
+- `catch {}` only for environment probing (optional package detection, ldd exit code variance).
+- `console.warn` only in stderr diagnostic lines (read by operators, not agents).
 
 ## Hard Rules
 
@@ -31,52 +27,38 @@ When an agent sees a warning, it interprets it as "I did something wrong" and st
 2. **Bootstrap order**: `resume > load > new`. Always.
 3. **Session persistence**: only `pi:<sessionId>` is persisted. `cwd:<cwd>` is never persisted.
 4. **MCP injection**: only via `piShellAcpProvider.mcpServers`. No ambient `~/.mcp.json` scanning.
-5. **Config change → session invalidation**: changing backend or mcpServers automatically invalidates the persisted session. No stale reuse.
+5. **Config change → session invalidation**: backend or `mcpServers` change automatically invalidates the persisted session. No stale reuse.
 6. **Shutdown → preserve mapping**: ordinary process exit keeps persisted mapping intact.
 7. **Dual-backend claim → dual-backend verification**: if the repo claims Claude + Codex support, both must pass runtime smoke.
 8. **This bridge is not a second harness**: no prompt reconstruction, no transcript hydration, no tool result ledger, no Claude Code emulation.
-9. **Identity preservation, not config inheritance** (both backends): pi-shell-acp borrows each backend's *identity* (system prompt preset, model behavior, tool implementations) but defines its own *operating surface*.
-   - **Claude**: tools default to the pi baseline (`Read/Bash/Edit/Write`, plus `Skill` when `skillPlugins` is non-empty) so the system prompt's advertised tools and the SDK's actual tool surface match. The SDK's deferred tools (`AskUserQuestion`, `Cron*`, `Task*`, `Worktree*`, `EnterPlanMode`/`ExitPlanMode`, `Monitor`, `NotebookEdit`, `PushNotification`, `RemoteTrigger`, `WebFetch`, `WebSearch`) are explicitly added to `disallowedTools` so the system-reminder block that advertises them via ToolSearch does not slip past the `tools` filter. Skills are injected explicitly via `skillPlugins`, not via `~/.claude/skills/` discovery. MCP is the bridge servers only (`strictMcpConfig: true` by default, `settingSources: []`). Permissions are granted explicitly via `permissionAllow` wildcards. The user's `~/.claude/settings.json` `permissions.defaultMode` (which `claude-agent-acp`'s SettingsManager reads independently of `settingSources`) is shielded by spawning `claude-agent-acp` with `CLAUDE_CONFIG_DIR` pointed at a pi-owned overlay (`~/.pi/agent/claude-config-overlay/`) — pi-authored `settings.json` + symlinks for every other entry. Hooks/env/plugins are intentionally *not* inherited; opt in per-config when needed.
-   - **Codex**: codex-acp exposes no `_meta` options surface, so the operating mode is pinned via codex-rs `-c key=value` flags at launch. Default is `approval_policy=never` + `sandbox_mode=danger-full-access` + `model_auto_compact_token_limit=i64::MAX` — pi-YOLO parity with the Claude side and the only sandbox preset that lets pi-baseline skills (e.g. `gogcli` reading `~/.gnupg/`) actually run. The operator's personal `~/.codex/config.toml` (`model`, `model_reasoning_effort`, `personality`, `[projects."*"].trust_level`, `[notice.*]`) is shielded by spawning codex-acp with `CODEX_HOME` pointed at a pi-owned overlay (`~/.pi/agent/codex-config-overlay/`) — pi-authored minimal `config.toml` + symlinks for every other entry. Operators can opt into a tighter mode with `PI_SHELL_ACP_CODEX_MODE=auto` or `=read-only`; the compaction guard is independent and toggled separately via `PI_SHELL_ACP_ALLOW_COMPACTION=1`.
+9. **Identity preservation, not config inheritance** (both backends): pi-shell-acp borrows each backend's *identity* (system prompt preset, model behavior, tool implementations) but defines its own *operating surface*. Each backend launches with a pi-owned config overlay — `CLAUDE_CONFIG_DIR=~/.pi/agent/claude-config-overlay/`, `CODEX_HOME=~/.pi/agent/codex-config-overlay/` — that holds pi-authored config + symlinks for every other entry, so operator personal config does not leak in. Hooks/env/plugins are intentionally not inherited.
+   - **Claude tool surface**: `tools` = `[Read, Bash, Edit, Write]` (+ `Skill` when `skillPlugins` non-empty). `disallowedTools` blocks the SDK's deferred-tool advertisement (`AskUserQuestion`, `Cron*`, `Task*`, `Worktree*`, `EnterPlanMode`/`ExitPlanMode`, `Monitor`, `NotebookEdit`, `PushNotification`, `RemoteTrigger`, `WebFetch`, `WebSearch`). MCP via `mcpServers` only (`strictMcpConfig: true`, `settingSources: []`). Skills via `skillPlugins` paths only. Permissions via `permissionAllow` wildcards.
+   - **Codex tool surface**: `approval_policy=never` + `sandbox_mode=danger-full-access` + `model_auto_compact_token_limit=i64::MAX` pinned via `-c` flags. `web_search="disabled"` + `tools.view_image=false` pinned. `codexDisabledFeatures` (mirror of Claude's `disallowedTools`) defaults to `image_generation`/`tool_suggest`/`tool_search`/`multi_agent`/`apps`.
+   - **Env knobs**: `PI_SHELL_ACP_CODEX_MODE=auto|read-only` for Codex mode opt-in; `PI_SHELL_ACP_ALLOW_COMPACTION=1` for compaction guard opt-out (both backends).
 
-## Verification — Reproducible Gates
+## Verification
 
-All gates run through `./run.sh`:
+Two axes, both required.
+
+**Protocol smoke** (`./run.sh`):
 
 ```bash
-# Full install + verification (one shot)
-./run.sh setup /path/to/consumer-project
-
-# Individual gates
-pnpm typecheck                          # TypeScript type check
-./run.sh check-registration             # pi registration
-./run.sh check-mcp                      # MCP normalization logic (no subprocess)
-./run.sh check-models                   # curated model allowlist + context caps
-./run.sh check-backends                 # backend adapter detection
-./run.sh smoke-all /path/to/project     # Claude + Codex runtime smoke (required)
-./run.sh verify-resume /path/to/project # cross-process continuity
-./run.sh check-bridge /path/to/project  # MCP bridge visibility + invocation
-./run.sh sentinel /path/to/project      # 6-cell entwurf matrix
+./run.sh setup /path/to/consumer-project    # one-shot install + all gates
+pnpm typecheck && ./run.sh check-backends && ./run.sh check-models && ./run.sh check-mcp && ./run.sh check-dep-versions && ./run.sh check-registration
+./run.sh smoke-all /path/to/project         # Claude + Codex runtime
+./run.sh verify-resume /path/to/project     # cross-process continuity
+./run.sh check-bridge /path/to/project      # MCP bridge visibility + invocation
+./run.sh sentinel /path/to/project          # 6-cell entwurf matrix
 ./run.sh session-messaging /path/to/project # 4-case cross-session messaging
 ```
 
-If any gate fails, do not commit.
+**Agent interview** ([VERIFY.md](./VERIFY.md), Layer 0–4): self-recognition / native tool use / pi MCP awareness / focus retention / quality vs direct Claude Code.
 
-## Verification — Agent Interview (Axis 2)
-
-Separate from protocol smoke (above), a real `pi-shell-acp/<model>` session must answer the interview. [VERIFY.md §1A](./VERIFY.md) defines Layer 0–4:
-
-- Layer 0: self-recognition at session start (did it read the engraving?)
-- Layer 1: natural use of native tools
-- Layer 2: awareness of pi MCP tool boundary
-- Layer 3: focus retention as turns accumulate
-- Layer 4: quality compared to direct Claude Code
-
-**Passing protocol smoke alone is not enough. The interview must also pass.** Pipes can be connected and the water can still taste wrong.
+If any gate fails or the interview drops a layer, do not commit. Pipes can be connected and the water can still taste wrong.
 
 ## Engraving
 
-A short text delivered to the agent once at session bootstrap. Lives in [`prompts/engraving.md`](./prompts/engraving.md). Six lines. Do not grow it beyond that.
+Short additive text delivered to the agent at session bootstrap. Lives in [`prompts/engraving.md`](./prompts/engraving.md). Six lines. Do not grow it beyond that.
 
 - Claude: `_meta.systemPrompt.append`
 - Codex: first prompt turn `ContentBlock` prepend
@@ -89,7 +71,7 @@ A short text delivered to the agent once at session bootstrap. Lives in [`prompt
 Uses `entwurf` instead of `delegate` to avoid collisions with existing pi ecosystem delegation terms.
 
 - Spawning creates a sibling, not a worker
-- Default mode is `sync`. Async is opt-in (Phase 0.5)
+- Default mode is `sync`; async is opt-in (Phase 0.5)
 - Target registry: `pi/entwurf-targets.json` (SSOT)
 - Identity Preservation Rule: model override is not allowed on resume
 
@@ -110,9 +92,7 @@ Messages are thrown, not awaited.
 | `event-mapper.ts` | ACP events → pi events |
 | `engraving.ts` + `prompts/engraving.md` | bridge engraving |
 | `run.sh` | install, smoke, verify, sentinel |
-| `pi-extensions/entwurf.ts` | entwurf spawn (sync + async) |
-| `pi-extensions/lib/entwurf-core.ts` | shared core: registry + identity preservation |
-| `pi-extensions/entwurf-control.ts` | Unix-socket control plane (ingested from Armin Ronacher) |
+| `pi-extensions/` | entwurf spawn + control plane + shared core |
 | `pi/entwurf-targets.json` | spawn target allowlist |
 | `mcp/pi-tools-bridge/` | `entwurf`, `entwurf_resume`, `entwurf_send`, `entwurf_peers` |
 | `mcp/session-bridge/` | Claude Code ↔ pi session bridge |
@@ -129,7 +109,7 @@ Messages are thrown, not awaited.
 - `codex-acp` — resolved from PATH. Install globally when using Codex.
 - `claude` CLI — Claude Code authentication, managed separately.
 
-Versions follow the pins in `package.json` / `run.sh`. Mismatches are caught by `check-backends` and setup preflight.
+Versions follow the pins in `package.json` / `run.sh`. Mismatches are caught by `check-dep-versions`.
 
 ## Working Style
 

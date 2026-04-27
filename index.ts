@@ -19,6 +19,7 @@ import {
 	cancelActivePrompt,
 	cleanupBridgeSessionProcess,
 	closeBridgeSession,
+	DEFAULT_CODEX_DISABLED_FEATURES,
 	describeBridgeSession,
 	ensureBridgeSession,
 	getBridgeErrorDetails,
@@ -72,6 +73,8 @@ type ProviderSettings = {
 	permissionAllow?: string[];
 	/** Tool names passed to the SDK as `Options.disallowedTools`. Defaults to the SDK's deferred-tool set (Cron+Task+Worktree+PlanMode families plus WebFetch, WebSearch, Monitor, PushNotification, RemoteTrigger, NotebookEdit, AskUserQuestion) so they cannot leak past the explicit `tools` filter via the SDK's deferred-advertisement surface. Set to `[]` to opt out entirely. Claude-only. */
 	disallowedTools?: string[];
+	/** codex-rs feature keys to disable at codex-acp launch via `-c features.<key>=false`. Defaults to `DEFAULT_CODEX_DISABLED_FEATURES` (image_generation, tool_suggest, tool_search, multi_agent, apps) so the codex tool surface aligns with pi's advertised baseline. Set to `[]` to opt out entirely. Codex-only — Claude ignores it. Mirror of `disallowedTools` on the codex side. */
+	codexDisabledFeatures?: string[];
 };
 
 type ResolvedProviderSettings = {
@@ -86,6 +89,7 @@ type ResolvedProviderSettings = {
 	skillPlugins: string[];
 	permissionAllow: string[];
 	disallowedTools: string[];
+	codexDisabledFeatures: string[];
 	bridgeConfigSignature: string;
 };
 
@@ -387,6 +391,7 @@ function readSettingsFile(filePath: string): ProviderSettings {
 	const skillPlugins = parseStringArray(settings, "skillPlugins", filePath);
 	const permissionAllow = parseStringArray(settings, "permissionAllow", filePath);
 	const disallowedTools = parseStringArray(settings, "disallowedTools", filePath);
+	const codexDisabledFeatures = parseStringArray(settings, "codexDisabledFeatures", filePath);
 
 	return {
 		backend: backend as AcpBackend | undefined,
@@ -399,6 +404,7 @@ function readSettingsFile(filePath: string): ProviderSettings {
 		skillPlugins,
 		permissionAllow,
 		disallowedTools,
+		codexDisabledFeatures,
 	};
 }
 
@@ -467,6 +473,7 @@ function loadProviderSettings(cwd: string, model: Model<any>): ResolvedProviderS
 	const permissionAllow =
 		skillPlugins.length > 0 && !baseAllow.includes("Skill(*)") ? [...baseAllow, "Skill(*)"] : baseAllow;
 	const disallowedTools = merged.disallowedTools ?? [...DEFAULT_CLAUDE_DISALLOWED_TOOLS];
+	const codexDisabledFeatures = merged.codexDisabledFeatures ?? [...DEFAULT_CODEX_DISABLED_FEATURES];
 	const mergedMcpServersRaw: McpServerInputMap = {
 		...(globalSettings.mcpServers ?? {}),
 		...(projectSettings.mcpServers ?? {}),
@@ -484,6 +491,7 @@ function loadProviderSettings(cwd: string, model: Model<any>): ResolvedProviderS
 		skillPlugins,
 		permissionAllow,
 		disallowedTools,
+		codexDisabledFeatures,
 		bridgeConfigSignature: JSON.stringify({
 			backend,
 			appendSystemPrompt,
@@ -494,6 +502,7 @@ function loadProviderSettings(cwd: string, model: Model<any>): ResolvedProviderS
 			skillPlugins,
 			permissionAllow,
 			disallowedTools,
+			codexDisabledFeatures,
 		}),
 	};
 }
@@ -698,6 +707,7 @@ function streamShellAcp(
 				skillPlugins: providerSettings.skillPlugins,
 				permissionAllow: providerSettings.permissionAllow,
 				disallowedTools: providerSettings.disallowedTools,
+				codexDisabledFeatures: providerSettings.codexDisabledFeatures,
 				bridgeConfigSignature: providerSettings.bridgeConfigSignature,
 				contextMessageSignatures: getContextMessageSignatures(context),
 			});

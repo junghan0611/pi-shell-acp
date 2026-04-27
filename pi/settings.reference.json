@@ -32,6 +32,7 @@
 			"WebFetch",
 			"WebSearch"
 		],
+		"codexDisabledFeatures": ["image_generation", "tool_suggest", "tool_search", "multi_agent", "apps"],
 		"mcpServers": {
 			"pi-tools-bridge": {
 				"command": "/path/to/pi-shell-acp/mcp/pi-tools-bridge/start.sh",

@@ -1,6 +1,6 @@
 # pi-shell-acp
 
-Use Claude Code and Codex subscriptions inside pi through the official Agent Client Protocol (ACP) path.
+Use Claude Code through the official Agent Client Protocol (ACP) path inside pi. Codex is supported as a second backend so the bridge's ACP boundary can be verified against a non-Anthropic ACP server.
 
 > **Status: Public, active development.**
 > This is real working code, but it is still young. Expect issues and verify it in your own workflow before relying on it all day.
@@ -22,15 +22,17 @@ pi
 
 If you see words like *entwurf* or *engraving* and wonder why a coding tool has philosophical vocabulary — this section is for you.
 
-**The problem.** Pi users who subscribe to Claude Code or Codex have no official way to use that subscription inside pi. The workarounds that exist either violate Anthropic's Terms of Service or rely on fragile hacks that break without warning. This project exists because the maintainer tried every one of those paths and needed something that wouldn't get his shared company account banned.
+**The problem.** Pi users who subscribe to Claude Code have no official way to use that subscription inside pi. The workarounds that exist either violate Anthropic's Terms of Service or rely on fragile hacks that break without warning. This project exists because the maintainer tried every one of those paths and needed something that wouldn't get his shared company account banned.
 
-**The solution.** ACP (Agent Client Protocol) is the official protocol that Zed and Obsidian use to connect to Claude Code. `pi-shell-acp` uses the same protocol — it connects pi to Claude Code and Codex as a bridge, keeping pi as the harness and each backend as itself.
+**The solution.** ACP (Agent Client Protocol) is the official protocol that Zed and Obsidian use to connect to Claude Code. `pi-shell-acp` uses the same protocol — it connects pi to Claude Code as a bridge, keeping pi as the harness and Claude Code as itself.
+
+**Why Codex too.** Codex already runs natively in pi, so the ACP path is not a workaround for Codex. It is supported here as a second backend kept to verify the bridge's ACP boundary against a non-Anthropic ACP server.
 
 **Why "entwurf" (not "delegate").** Pi's ecosystem already has users building their own delegation logic. To avoid naming collisions, this project uses *entwurf* — German for "draft" or "projection." When you invoke entwurf, you don't spawn a worker subprocess; you summon a sibling that holds the same tool. The difference matters: workers report to a master, siblings coordinate through messages.
 
-**Why "engraving."** When Claude Code starts through this bridge, it inherits its full native identity (system prompt, tools, skills). But it doesn't know it's reached *through* pi. The engraving is a short text (6 lines in [`prompts/engraving.md`](./prompts/engraving.md)) that tells the agent: "you are not alone — read your MCP servers to see what's connected." Without it, the agent guesses. With it, the agent reads. That's the difference between confusion and self-recognition.
+**Why "engraving."** When Claude Code starts through this bridge, it inherits its full native identity (system prompt, tools, skills). But it doesn't know it's reached *through* pi. The engraving is a short text (6 lines in [`prompts/engraving.md`](./prompts/engraving.md)) that tells the agent: "you are not alone — read your MCP servers to see what's connected." Without it, the agent guesses. With it, the agent reads.
 
-**Why this matters for daily use.** This is not a tool you use for an hour. It's a tool you use all day. Every friction point compounds across hundreds of interactions. The verification depth in [VERIFY.md](./VERIFY.md) exists because the maintainer uses this bridge as his primary coding environment, not as a side project.
+**Why this matters for daily use.** Every friction point compounds across many interactions over a working day. The verification depth in [VERIFY.md](./VERIFY.md) exists because the maintainer uses this bridge daily and keeps hitting edge cases worth recording.
 
 ## History — How We Got Here
 
@@ -44,7 +46,7 @@ Before this bridge, pi users who wanted Claude tried several paths. Each taught 
 | [proxycli](https://github.com/junghan0611/proxycli) | CLI wrapping gives full tools + skills, but depends on policy that can change |
 | **pi-shell-acp** | ACP is the protocol-level answer — official, turn-aware, session-persistent |
 
-Each prior approach contributed to the understanding that led here. `pi-shell-acp` chose ACP because it is the same protocol path that Zed and Obsidian use — a foundation that doesn't depend on workarounds or policy exceptions.
+Each prior approach contributed to the understanding that led here. `pi-shell-acp` chose ACP because it is the protocol path that Zed and Obsidian use — the same level Anthropic supports for ACP clients.
 
 ## Install & Setup
 
@@ -147,11 +149,13 @@ Skill-plugin manifest shape (`<plugin-root>/.claude-plugin/plugin.json`):
 
 Each `skills/<name>/SKILL.md` under the plugin root needs YAML frontmatter with at least `name` (matching the directory name) and `description`. The body below the frontmatter loads on invocation.
 
-The codex backend ignores the five Claude-only fields above; codex's tool surface is governed by `codex-acp` itself, and skill access on codex is currently via the `mcpServers` bridge only.
+The codex backend ignores the five Claude-only fields above; codex's tool surface is governed by `codex-acp` itself plus the codex-only `codexDisabledFeatures` knob documented below, and skill access on codex is currently via the `mcpServers` bridge only.
 
 #### Operating-surface contract — Codex backend
 
-`codex-acp` does not expose a `_meta`-style options extension to clients, so pi-shell-acp drives codex via codex-rs's `-c key=value` config flags at launch. The bridge defaults the codex session to a permissive operating mode that mirrors the pi-YOLO posture used on the Claude side:
+`codex-acp` does not expose a `_meta`-style options extension to clients, so pi-shell-acp drives codex via codex-rs's `-c key=value` config flags at launch. The bridge defaults the codex session to a permissive operating mode that mirrors the pi-YOLO posture used on the Claude side. The launch-flag policy is split into two layers:
+
+**Always-on flags** — pinned at every launch, not operator-tunable from settings.json (use the env knobs at the bottom of this section to adjust mode/compaction):
 
 | Flag | Value | Why |
 |------|-------|-----|
@@ -159,23 +163,31 @@ The codex backend ignores the five Claude-only fields above; codex's tool surfac
 | `sandbox_mode` | `danger-full-access` | Codex's other presets (`read-only`, `workspace-write`) block reads outside the cwd, which breaks pi-baseline skills that touch workspace-external paths (e.g. `gogcli` reading `~/.gnupg/` to decrypt API tokens). Full access is the only preset that lets pi's skill set work as a coherent unit. |
 | `model_auto_compact_token_limit` | `i64::MAX` | Disables codex-rs's silent auto-compaction inside the ACP session, matching the no-silent-rewrite policy the bridge enforces on both sides. |
 | `web_search` | `disabled` | Native codex `web_search` tool is pinned off. pi already exposes `brave-search` MCP for web access; double-exposure would create the same declared/actual mismatch the bridge fights elsewhere. codex-rs 0.124.0's default is already `Disabled`, so this is defense-in-depth against future default flips. |
-| `tools.view_image` | `false` | Best-effort disable of codex's `view_image` tool. The schema field exists in codex-rs (`config_toml.rs:514-525`) but the consumption path is not verified for 0.124.0; treat as defense-in-depth. If `view_image` still appears in the live tool list, that is the known limit, not a regression. |
+| `tools.view_image` | `false` | Best-effort disable of codex's `view_image` tool. The schema field exists in codex-rs (`config_toml.rs:514-525`) but no consumer in 0.124.0 — `tool_registry_plan.rs:381` gates `view_image` only on `has_environment` (hardcoded `true`), so this flag is forward-compat insurance. `view_image` therefore stays on; see the known-limits paragraph below. |
 
-A known limit on codex's tool surface: codex-rs 0.124.0 registers `update_plan` unconditionally (`tool_registry_plan.rs:215`, no config gate) and it cannot be disabled via the `-c` flag set or the `CODEX_HOME` overlay. Pi's plan workflow is independent of this tool, so there is no behavioral conflict in practice — only a declared/actual surface mismatch. Tracking codex-acp upstream for a feature gate.
+**Operator-tunable feature-gate policy — `codexDisabledFeatures`**: a string array of codex-rs feature keys (codex-rs/features/src/lib.rs FEATURES table) materialized at launch as `-c features.<key>=false`. Codex-only — Claude ignores it; this is the codex mirror of Claude's `disallowedTools`. Default disables five features whose default-on registration adds tools that fall outside pi's advertised baseline:
 
-Operators who prefer codex-rs's standard preset can opt in via `PI_SHELL_ACP_CODEX_MODE=auto` (`workspace-write` sandbox, `on-request` approvals) or `PI_SHELL_ACP_CODEX_MODE=read-only`. Invalid values throw at the launch surface — silent fallback would let typos like `readonly` (no dash) silently land on the `full-access` default, exactly the wrong direction. The compaction guard is independent — `PI_SHELL_ACP_ALLOW_COMPACTION=1` disables it; `PI_SHELL_ACP_CODEX_MODE` does not. Both env knobs apply uniformly to the default launch path and to the `CODEX_ACP_COMMAND` override path. In the override path the flags are appended *after* the operator's command, shell-quoted, so pi-shell-acp's mode + compaction policy always win against any `-c approval_policy=…` / `-c sandbox_mode=…` / `-c model_auto_compact_token_limit=…` the operator passes via `CODEX_ACP_COMMAND` (codex-rs lets later `-c` values for the same key win, and ours come last). Use `PI_SHELL_ACP_CODEX_MODE` to change the bridge's mode, not `CODEX_ACP_COMMAND`.
+| Feature key | Tools removed | Why disabled by default |
+|-------------|---------------|-------------------------|
+| `image_generation` | `image_gen` | Pi has no native image-generation surface; the tool is unused and creates a declared/actual mismatch against pi's 4-tool baseline. |
+| `tool_suggest` | `tool_suggest` | Codex's plugin/connector elicitation surface. Pi exposes its MCP servers explicitly via `mcpServers` and has no opinion on connector discovery; the tool would only widen the surface beyond what pi advertises. |
+| `tool_search` | `tool_search` (deferred-MCP search) | Equivalent of Claude's deferred-tool advertisement that pi-shell-acp also disallows on the other side. Pi already wires every MCP server it cares about into the immediate tool list; deferring some through a search surface duplicates the declared/actual mismatch the bridge is built to prevent. |
+| `multi_agent` | `spawn_agent`, `send_input`, `wait_agent`, `close_agent`, `resume_agent` (collab tools v1 and v2 — v2 is gated under v1) | Pi has its own sibling-spawning surface — `entwurf` + control-socket bridge — and the codex-internal collab path would shadow it with conflicting semantics. |
+| `apps` | `mcp__codex_apps__*` MCP server bundle | `with_codex_apps_mcp()` (codex-rs/codex-mcp/src/mcp/mod.rs:291) auto-injects a `codex_apps` MCP server (with GitHub etc. connectors) whenever `config.apps_enabled && CodexAuth::is_chatgpt_auth`. The `CODEX_HOME` overlay symlinks `auth.json`, so the chatgpt-auth half is true; this flag closes the other half. Pi wires the MCP servers it cares about explicitly via `mcpServers`; the auto-injected bundle would duplicate / contradict that surface. |
 
-**Config overlay**: pi-shell-acp launches `codex-acp` with `CODEX_HOME` pointed at a pi-owned overlay directory at `~/.pi/agent/codex-config-overlay/`, mirroring the Claude-side `CLAUDE_CONFIG_DIR` overlay. The overlay holds a minimal `config.toml` authored by pi-shell-acp (containing only a header comment — every operating-surface knob the bridge cares about is pinned by `-c` flags) plus a symlink for every other entry in `~/.codex/` (`auth.json`, `sessions`, `history.jsonl`, `skills`, `memories`, `rules`, `cache`, ...). The operator's personal config (`model`, `model_reasoning_effort`, `personality`, `[projects."*"].trust_level`, `[notice.*]`) is therefore intentionally NOT inherited into pi-shell-acp sessions; codex-rs falls back to its own hard-coded defaults for those fields. The overlay is rebuilt idempotently on every codex spawn, and `process.env.CODEX_HOME` wins over the bridge default, so an operator who explicitly exports `CODEX_HOME` in their shell keeps full control.
+Set `codexDisabledFeatures: []` in pi-shell-acp settings.json to opt fully out of the bridge's feature-gate policy. Set it to a custom array to narrow (e.g. just `["apps"]`) or extend (add a feature key codex-rs adds in a future release that registers a non-baseline tool). codex-rs validates feature keys at config-load time via `is_known_feature_key`, so a typo in the array surfaces as a codex-acp startup warning, not a silent no-op.
+
+A known limit on codex's tool surface: codex-rs 0.124.0 registers four tools without any config gate that the launch-flag layer or `CODEX_HOME` overlay can reach — `update_plan` and `request_user_input` are pushed unconditionally (`tool_registry_plan.rs:214`, `:236`), `view_image` is gated only on the hardcoded `has_environment = true` (`tool_config.rs:210`), and the MCP-resource trio (`list_mcp_resources`, `list_mcp_resource_templates`, `read_mcp_resource`) is gated on `params.mcp_tools.is_some()`, which is always true because pi ships MCP servers (`tool_registry_plan.rs:193`). Pi's workflows are independent of these tools, so the consequence is a declared/actual surface mismatch, not a behavioral conflict. Closing the gap requires patching codex-rs itself — out of scope for the launch-flag layer.
+
+**Mode opt-in**: `PI_SHELL_ACP_CODEX_MODE=auto` (`workspace-write` + `on-request`) or `=read-only`. Invalid values throw at the launch surface — silent fallback to the `full-access` default would be the wrong direction. The compaction guard is independent (`PI_SHELL_ACP_ALLOW_COMPACTION=1` disables it). Both env knobs apply to the `CODEX_ACP_COMMAND` override path; the bridge's flags are appended after the operator's command, so codex-rs's "later `-c` values win" rule keeps pi-shell-acp's mode + compaction policy authoritative.
+
+**Config overlay**: `codex-acp` launches with `CODEX_HOME` pointed at `~/.pi/agent/codex-config-overlay/` — pi-authored minimal `config.toml` (header comment only; the `-c` flags do the real work) plus a symlink for every other entry in `~/.codex/` (`auth.json`, `sessions`, `history.jsonl`, ...). The operator's personal config (`model`, `model_reasoning_effort`, `personality`, `[projects.trust_level]`, `[notice]`) is intentionally not inherited; codex-rs falls back to its defaults. Overlay rebuilds on every spawn; an exported `CODEX_HOME` wins over the bridge default.
 
 Tool/permission notifications (`[tool:start]`, `[tool:done]`, `[permission:*]`) are enabled in the reference config because this repo is usually debugged by watching ACP-side tool activity. Set `showToolNotifications: false` for quieter day-to-day sessions.
 
-`compaction.enabled: false` disables pi's auto-compaction switch and removes the TUI `(auto)` footer indicator. The provider still independently blocks all pi-side compaction paths unless `PI_SHELL_ACP_ALLOW_COMPACTION=1` is set.
+`compaction.enabled: false` disables pi's auto-compaction switch and removes the TUI `(auto)` footer indicator. See **Compaction policy** below for the full gate.
 
 Authentication is handled by Claude Code / claude-agent-acp; pi-shell-acp adds no separate auth layer.
-
-> **No party silently rewrites the conversation.**
->
-> Compaction is gated centrally by this provider — operators do **not** need to add `compaction.enabled=false` to their pi settings. The provider registers a `session_before_compact` handler that returns `{ cancel: true }` for every compaction path pi exposes (silent overflow recovery, threshold compaction, explicit-error overflow recovery, manual `/compact`). Backend-side auto-compaction is also disabled at launch (`DISABLE_AUTO_COMPACT=1` + `DISABLE_COMPACT=1` for Claude Code; `-c model_auto_compact_token_limit=i64::MAX` for codex-acp). An operator who really wants pi-side compaction back — for example for a long-running maintenance session — can opt out via `PI_SHELL_ACP_ALLOW_COMPACTION=1` at the process level. See the **Compaction policy** section below for the full rationale.
 
 ### Smoke commands
 
@@ -288,7 +300,7 @@ The two backends are intentionally not perfectly symmetric. Claude Code is the p
 
 The maintainer also publishes the project repositories where pi-shell-acp is exercised on actual work, so the bridge can be evaluated against day-to-day sessions instead of synthetic smoke tests. Session transcripts and design notes from these repos are progressively being made public as the harness stabilizes.
 
-- [junghan0611/legoagent-config](https://github.com/junghan0611/legoagent-config) — primary daily-driver repo where Claude Code is run through pi-shell-acp via ACP. Long-running resume sessions, tool-heavy turns, and the context-meter cases that drive [issue #2](https://github.com/junghan0611/pi-shell-acp/issues/2) all originate here. Useful as a reference for what a "real" multi-session, multi-day pi+ACP workflow looks like in practice.
+- [junghan0611/legoagent-config](https://github.com/junghan0611/legoagent-config) — daily-driver repo where Claude Code is run through pi-shell-acp via ACP. Long-running resume sessions, tool-heavy turns, and the context-meter cases that drive [issue #2](https://github.com/junghan0611/pi-shell-acp/issues/2) all originate here. Useful as a reference for what a multi-session, multi-day pi+ACP workflow looks like in practice.
 
 ## Status
 

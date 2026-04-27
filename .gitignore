@@ -1,11 +1,16 @@
 node_modules/
-.pi/
+# Local pi state (operator's settings.json, etc.) stays ignored. Repo-shared
+# pi prompts live in .pi/prompts/ and ARE tracked — that path is the SSOT for
+# /make-release.
+.pi/*
+!.pi/prompts/
 .tmp-verify/
 /.agent-shell/
 /.codex
-/.claude/*
-# Repo-shared slash commands (e.g. /make-release) live here and ARE tracked.
-!/.claude/commands/
+# This repo is a daily-driver bridge primarily exercised through pi, not
+# through Claude Code in this cwd. The .claude/ scratch directory stays out
+# of git entirely — slash commands have been migrated to .pi/prompts/.
+/.claude/
 
 CHECKLIST.md
 *.html

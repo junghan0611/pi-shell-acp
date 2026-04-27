@@ -228,6 +228,18 @@ type AcpLaunchSpec = {
 	source: string;
 };
 
+/**
+ * Inputs to backend launch resolution. Currently only consumed by the codex
+ * adapter (`resolveCodexAcpLaunch`) to materialize `-c features.<key>=false`
+ * flags from the resolved `codexDisabledFeatures` settings.json field. The
+ * claude adapter ignores it. Defined here (not in EnsureBridgeSessionParams)
+ * because it is also passed at test time by check-backends, which doesn't
+ * construct full session params.
+ */
+export type AcpBackendLaunchParams = {
+	codexDisabledFeatures: readonly string[];
+};
+
 type BackendSessionMetaParams = Pick<
 	EnsureBridgeSessionParams,
 	"modelId" | "settingSources" | "strictMcpConfig" | "tools" | "skillPlugins" | "permissionAllow" | "disallowedTools"
@@ -236,7 +248,7 @@ type BackendSessionMetaParams = Pick<
 type AcpBackendAdapter = {
 	id: AcpBackend;
 	stderrLabel: string;
-	resolveLaunch(): AcpLaunchSpec;
+	resolveLaunch(launchParams: AcpBackendLaunchParams): AcpLaunchSpec;
 	buildSessionMeta(
 		params: BackendSessionMetaParams,
 		normalizedSystemPrompt: string | undefined,
@@ -305,6 +317,7 @@ export type AcpBridgeSession = {
 	skillPlugins: string[];
 	permissionAllow: string[];
 	disallowedTools: string[];
+	codexDisabledFeatures: string[];
 	bridgeConfigSignature: string;
 	contextMessageSignatures: string[];
 	stderrTail: string[];
@@ -333,6 +346,8 @@ export type EnsureBridgeSessionParams = {
 	permissionAllow: string[];
 	/** Tool names passed to the SDK as `Options.disallowedTools`. Used to suppress the SDK's deferred-tool advertisement (Cron+Task+Worktree+PlanMode families plus WebFetch, WebSearch, Monitor, PushNotification, RemoteTrigger, NotebookEdit, AskUserQuestion) so the agent's awareness of available tools stays inside pi's declared baseline. claude-agent-acp merges its own ["AskUserQuestion"] default with this list. */
 	disallowedTools: string[];
+	/** codex-rs feature keys (e.g. "image_generation", "tool_suggest", "multi_agent", "apps") materialized as `-c features.<key>=false` flags at codex-acp launch. Codex-only — the claude adapter ignores this. Mirror of `disallowedTools` on the codex side: the sole operator-tunable knob for the codex tool surface. Defaults to `DEFAULT_CODEX_DISABLED_FEATURES` (defined in acp-bridge.ts). Set to `[]` in pi-shell-acp settings.json to opt fully out of bridge feature gating. */
+	codexDisabledFeatures: string[];
 	bridgeConfigSignature: string;
 	contextMessageSignatures: string[];
 };
@@ -479,7 +494,10 @@ function resolvePermissionResponse(params: RequestPermissionRequest): RequestPer
 	return { outcome: { outcome: "selected", optionId: options[0].optionId } };
 }
 
-function resolveClaudeAcpLaunch(): AcpLaunchSpec {
+// claude-side launch resolution ignores launchParams — Claude's tool surface
+// is configured via `_meta.claudeCode.options.disallowedTools` at session
+// open time (see buildClaudeSessionMeta), not via launch flags.
+function resolveClaudeAcpLaunch(_launchParams: AcpBackendLaunchParams): AcpLaunchSpec {
 	const override = process.env.CLAUDE_AGENT_ACP_COMMAND?.trim();
 	if (override) {
 		return {
@@ -522,10 +540,34 @@ const CODEX_DISABLE_AUTO_COMPACT_ARGS = ["-c", "model_auto_compact_token_limit=9
 // the codex equivalents) in its system prompt. codex-rs registers extra
 // tools that are not part of that baseline. The CODEX_HOME overlay above
 // already prevents the operator's `~/.codex/config.toml` from re-enabling
-// these via `[tools].web_search = "live"` etc. — but pinning the same
-// values via `-c` flags belt-and-suspenders the policy: even if a future
-// codex-rs default flips (e.g. web_search default → Cached), the bridge
-// still says "off".
+// these via `[tools].web_search = "live"` or `[features].image_generation
+// = true` — but pinning the same values via `-c` flags belt-and-suspenders
+// the policy: even if a future codex-rs default flips, the bridge still
+// says "off".
+//
+// codex-rs gates most non-baseline tools via the `[features]` table
+// (codex-rs/tools/src/tool_config.rs:140-227 reads
+// `features.enabled(Feature::X)` for each registration). The CLI parser
+// at codex-rs/utils/cli/src/config_override.rs:42 accepts dotted-path
+// `-c features.<key>=<bool>`, which merges into the same table.
+//
+// Live verification surfaces these tools when the corresponding feature
+// gate is absent; each entry maps a single tool family to its feature key
+// (consumed via `features.<key>=false` -c flags built dynamically from the
+// `codexDisabledFeatures` launch param — see DEFAULT_CODEX_DISABLED_FEATURES
+// below):
+//
+//   `image_gen`                  → features.image_generation
+//   `tool_suggest`               → features.tool_suggest
+//   deferred-MCP `tool_search`   → features.tool_search
+//   `spawn_agent` / `send_input` / `wait_agent` / `close_agent` /
+//   `resume_agent` (collab tools, both v1 and v2)
+//                                → features.multi_agent (= Feature::Collab)
+//   `mcp__codex_apps__*` server (the auto-injected GitHub etc. ChatGPT
+//   connector bundle that codex-rs adds when chatgpt auth is present —
+//   `with_codex_apps_mcp()` at codex-rs/codex-mcp/src/mcp/mod.rs:291
+//   gates this on `config.apps_enabled && CodexAuth::is_chatgpt_auth`)
+//                                → features.apps
 //
 // `web_search` — codex-rs 0.124.0 default is already off
 // (WebSearchMode::Disabled, codex-rs/tools/src/tool_spec.rs:99-104 returns
@@ -533,17 +575,73 @@ const CODEX_DISABLE_AUTO_COMPACT_ARGS = ["-c", "model_auto_compact_token_limit=9
 // defense-in-depth, not a behavioral change against the current default.
 //
 // `tools.view_image` — schema has the Option<bool> field
-// (codex-rs/config/src/config_toml.rs:514-525) but the consumption path is
-// not verified for 0.124.0 (the field may be a no-op). Setting it false
-// is best-effort; if codex-rs ignores the field, view_image stays
-// registered. Treat live verification as the source of truth and the
-// README captures this as a known limit.
+// (codex-rs/config/src/config_toml.rs:514-525) but no consumer in 0.124.0
+// (the path that would gate registration at
+// tool_registry_plan.rs:381 only checks `has_environment`, which is
+// hardcoded true at tool_config.rs:210). Setting the field is a no-op
+// today and survives only as future-proofing if codex-rs wires the
+// consumption path. README known-limits row captures this.
 //
-// `update_plan` is NOT in this list — codex-rs 0.124.0 registers it
-// unconditionally (codex-rs/tools/src/tool_registry_plan.rs:215, no config
-// gate), so disabling it is an upstream codex-acp patch concern, not a
-// pi-shell-acp launch-flag concern.
-const CODEX_TOOL_SURFACE_ARGS = ["-c", 'web_search="disabled"', "-c", "tools.view_image=false"] as const;
+// Tools that have no config gate in 0.124.0 and remain on after these
+// flags — tracked as known limits, not addressable from the launch
+// surface:
+//
+//   `update_plan`         tool_registry_plan.rs:214 — unconditional push.
+//   `view_image`          tool_registry_plan.rs:381 — gated only on
+//                         `has_environment` (hardcoded true).
+//   `request_user_input`  tool_registry_plan.rs:236 — unconditional push.
+//   `list_mcp_resources`, `list_mcp_resource_templates`, `read_mcp_resource`
+//                         tool_registry_plan.rs:193 — gated on
+//                         `params.mcp_tools.is_some()`. Pi always ships
+//                         MCP servers, so always on. Read-only surface,
+//                         lower risk than the others.
+//
+// Closing these requires patching codex-rs itself — out of scope for
+// pi-shell-acp's launch-flag layer.
+// Static portion of the codex tool-surface args — fields that are not
+// operator-tunable from pi-shell-acp's settings.json layer. `web_search` is
+// a top-level codex-rs option (not under [features]) and `tools.view_image`
+// is a separate `[tools]` table entry whose consumption path is currently
+// a no-op in 0.124.0 (kept for forward-compat). The feature-gate args are
+// built dynamically from the resolved `codexDisabledFeatures` launch param
+// — see codexFeatureGateArgs() below.
+const CODEX_STATIC_TOOL_SURFACE_ARGS = ["-c", 'web_search="disabled"', "-c", "tools.view_image=false"] as const;
+
+// Default set of codex-rs feature flags pi-shell-acp disables at launch to
+// align the codex tool surface with pi's advertised baseline. The Claude
+// side mirror is `DEFAULT_CLAUDE_DISALLOWED_TOOLS` in index.ts; both lists
+// are operator-overridable via the corresponding settings.json field
+// (`disallowedTools` for Claude, `codexDisabledFeatures` for codex). Each
+// entry below is a codex-rs feature key (codex-rs/features/src/lib.rs FEATURES
+// table) — values are merged into `[features]` via `-c features.<key>=false`.
+//
+// To re-enable a feature: set `codexDisabledFeatures` in pi-shell-acp
+// settings.json to a list that omits the entry (or `[]` to opt fully out
+// of the bridge's feature-gate policy). To extend the default policy:
+// override the array including the new key.
+//
+// When codex-rs adds a feature whose default registers a tool that does
+// not match pi's advertised baseline, this list must follow.
+export const DEFAULT_CODEX_DISABLED_FEATURES: readonly string[] = [
+	"image_generation",
+	"tool_suggest",
+	"tool_search",
+	"multi_agent",
+	"apps",
+] as const;
+
+// Build the dynamic `-c features.<key>=false` arg sequence from a resolved
+// disabled-features list. Keys are passed through verbatim — codex-rs
+// validates them at config-load time (`is_known_feature_key`), so a typo in
+// settings.json will surface as a codex-acp startup warning, not a silent
+// no-op.
+function codexFeatureGateArgs(disabledFeatures: readonly string[]): string[] {
+	const args: string[] = [];
+	for (const key of disabledFeatures) {
+		args.push("-c", `features.${key}=false`);
+	}
+	return args;
+}
 
 // codex-rs approval/sandbox preset table — kebab-case ids match
 // codex-utils-approval-presets builtin_approval_presets() so the same
@@ -598,7 +696,7 @@ function codexModeArgs(): string[] {
 	return [...CODEX_MODE_ARGS[resolveCodexMode()]];
 }
 
-function resolveCodexAcpLaunch(): AcpLaunchSpec {
+function resolveCodexAcpLaunch(launchParams: AcpBackendLaunchParams): AcpLaunchSpec {
 	const override = process.env.CODEX_ACP_COMMAND?.trim();
 	// codex-rs merges `-c key=value` flags left-to-right, with later values
 	// for the same key winning. We append our mode + compaction guard *after*
@@ -608,8 +706,16 @@ function resolveCodexAcpLaunch(): AcpLaunchSpec {
 	// `-c model_auto_compact_token_limit=…` the operator may have inlined.
 	// This is intentional — the env knobs (PI_SHELL_ACP_CODEX_MODE,
 	// PI_SHELL_ACP_ALLOW_COMPACTION) are the supported way to change these
-	// policies, not CODEX_ACP_COMMAND.
-	const allArgs = [...codexModeArgs(), ...codexAutoCompactArgs(), ...CODEX_TOOL_SURFACE_ARGS];
+	// policies, not CODEX_ACP_COMMAND. The feature-gate args are built from
+	// the launch param so operators who set `codexDisabledFeatures` in
+	// settings.json control the policy from there, mirroring how Claude's
+	// `disallowedTools` is operator-tunable on the other side.
+	const allArgs = [
+		...codexModeArgs(),
+		...codexAutoCompactArgs(),
+		...CODEX_STATIC_TOOL_SURFACE_ARGS,
+		...codexFeatureGateArgs(launchParams.codexDisabledFeatures),
+	];
 	if (override) {
 		const command = allArgs.length > 0 ? `${override} ${allArgs.map(shellQuote).join(" ")}` : override;
 		return {
@@ -1035,8 +1141,11 @@ export function resolveAcpBackendAdapter(backend: AcpBackend): AcpBackendAdapter
 	return adapter;
 }
 
-export function resolveAcpBackendLaunch(backend: AcpBackend): AcpLaunchSpec {
-	return resolveAcpBackendAdapter(backend).resolveLaunch();
+export function resolveAcpBackendLaunch(
+	backend: AcpBackend,
+	launchParams: AcpBackendLaunchParams = { codexDisabledFeatures: DEFAULT_CODEX_DISABLED_FEATURES },
+): AcpLaunchSpec {
+	return resolveAcpBackendAdapter(backend).resolveLaunch(launchParams);
 }
 
 export function buildSessionMetaForBackend(
@@ -1459,7 +1568,7 @@ function isStrictBootstrapEnabled(): boolean {
 
 async function createBridgeProcess(params: EnsureBridgeSessionParams): Promise<AcpBridgeSession> {
 	const adapter = resolveAcpBackendAdapter(params.backend);
-	const launch = adapter.resolveLaunch();
+	const launch = adapter.resolveLaunch({ codexDisabledFeatures: params.codexDisabledFeatures });
 	// Adapter defaults first, process.env last → operator's shell always wins.
 	// PI_SHELL_ACP_ALLOW_COMPACTION=1 disables both pi-side and backend-side
 	// compaction guards for this process.
@@ -1554,6 +1663,7 @@ async function createBridgeProcess(params: EnsureBridgeSessionParams): Promise<A
 		skillPlugins: [...params.skillPlugins],
 		permissionAllow: [...params.permissionAllow],
 		disallowedTools: [...params.disallowedTools],
+		codexDisabledFeatures: [...params.codexDisabledFeatures],
 		bridgeConfigSignature: params.bridgeConfigSignature,
 		contextMessageSignatures: [...params.contextMessageSignatures],
 		stderrTail,
@@ -1788,6 +1898,7 @@ export async function ensureBridgeSession(params: EnsureBridgeSessionParams): Pr
 		existing.skillPlugins = [...params.skillPlugins];
 		existing.permissionAllow = [...params.permissionAllow];
 		existing.disallowedTools = [...params.disallowedTools];
+		existing.codexDisabledFeatures = [...params.codexDisabledFeatures];
 		existing.bridgeConfigSignature = params.bridgeConfigSignature;
 		existing.contextMessageSignatures = [...params.contextMessageSignatures];
 		existing.bootstrapPath = "reuse";
