@@ -70,6 +70,8 @@ type ProviderSettings = {
 	skillPlugins?: string[];
 	/** Wildcard rules passed to the SDK as `Options.settings.permissions.allow`. Defaults to allowing the pi-baseline tools and any MCP. Claude-only. */
 	permissionAllow?: string[];
+	/** Tool names passed to the SDK as `Options.disallowedTools`. Defaults to the SDK's deferred-tool set (Cron+Task+Worktree+PlanMode families plus WebFetch, WebSearch, Monitor, PushNotification, RemoteTrigger, NotebookEdit, AskUserQuestion) so they cannot leak past the explicit `tools` filter via the SDK's deferred-advertisement surface. Set to `[]` to opt out entirely. Claude-only. */
+	disallowedTools?: string[];
 };
 
 type ResolvedProviderSettings = {
@@ -83,6 +85,7 @@ type ResolvedProviderSettings = {
 	tools: string[];
 	skillPlugins: string[];
 	permissionAllow: string[];
+	disallowedTools: string[];
 	bridgeConfigSignature: string;
 };
 
@@ -99,6 +102,52 @@ const DEFAULT_CLAUDE_TOOLS: readonly string[] = ["Read", "Bash", "Edit", "Write"
 // that via `_meta`); combined with this explicit allow list, even a `default`
 // or `auto` mode lets these tools through without prompts.
 const DEFAULT_CLAUDE_PERMISSION_ALLOW: readonly string[] = ["Read(*)", "Bash(*)", "Edit(*)", "Write(*)", "mcp__*"];
+
+// SDK 0.2.119 advertises a set of deferred tools via a system-reminder
+// block ("The following deferred tools are now available via ToolSearch").
+// `Options.tools` only filters the immediate function list — the deferred
+// advertisement is a separate surface that slips through. Pi advertises a
+// fixed 4–5 tool baseline in its system prompt, so the deferred set creates
+// the same declared-vs-actual mismatch the explicit `tools` field was meant
+// to prevent.
+//
+// We therefore disallow the full deferred set by default. claude-agent-acp
+// already prunes one entry (`AskUserQuestion`) via its own disallowedTools
+// list (acp-agent.ts:1719) — we re-include it for explicitness; the
+// downstream spread (acp-agent.ts:1768) merges idempotently. Pi's own
+// equivalents already cover every capability disallowed here:
+//
+//   Cron*               → /schedule skill
+//   WebFetch/WebSearch  → brave-search MCP, summarize / medium-extractor
+//   EnterPlanMode/...   → pi's plan model (separate)
+//   EnterWorktree/...   → operator's git
+//   Monitor/PushNotif…  → pi's tmux/session mechanisms
+//   NotebookEdit        → covered by Edit
+//   Task*/RemoteTrigger → entwurf + control-socket bridge
+//
+// When the SDK adds a new deferred tool, this list must follow.
+const DEFAULT_CLAUDE_DISALLOWED_TOOLS: readonly string[] = [
+	"AskUserQuestion",
+	"CronCreate",
+	"CronDelete",
+	"CronList",
+	"EnterPlanMode",
+	"EnterWorktree",
+	"ExitPlanMode",
+	"ExitWorktree",
+	"Monitor",
+	"NotebookEdit",
+	"PushNotification",
+	"RemoteTrigger",
+	"TaskCreate",
+	"TaskGet",
+	"TaskList",
+	"TaskOutput",
+	"TaskStop",
+	"TaskUpdate",
+	"WebFetch",
+	"WebSearch",
+];
 
 // pi-shell-acp is an ACP BRIDGE provider, not a general-purpose OpenAI/Anthropic
 // provider. It should NOT expose the full pi-ai model registry. Users who pick
@@ -337,6 +386,7 @@ function readSettingsFile(filePath: string): ProviderSettings {
 	const tools = parseStringArray(settings, "tools", filePath);
 	const skillPlugins = parseStringArray(settings, "skillPlugins", filePath);
 	const permissionAllow = parseStringArray(settings, "permissionAllow", filePath);
+	const disallowedTools = parseStringArray(settings, "disallowedTools", filePath);
 
 	return {
 		backend: backend as AcpBackend | undefined,
@@ -348,6 +398,7 @@ function readSettingsFile(filePath: string): ProviderSettings {
 		tools,
 		skillPlugins,
 		permissionAllow,
+		disallowedTools,
 	};
 }
 
@@ -415,6 +466,7 @@ function loadProviderSettings(cwd: string, model: Model<any>): ResolvedProviderS
 	const tools = skillPlugins.length > 0 && !baseTools.includes("Skill") ? [...baseTools, "Skill"] : baseTools;
 	const permissionAllow =
 		skillPlugins.length > 0 && !baseAllow.includes("Skill(*)") ? [...baseAllow, "Skill(*)"] : baseAllow;
+	const disallowedTools = merged.disallowedTools ?? [...DEFAULT_CLAUDE_DISALLOWED_TOOLS];
 	const mergedMcpServersRaw: McpServerInputMap = {
 		...(globalSettings.mcpServers ?? {}),
 		...(projectSettings.mcpServers ?? {}),
@@ -431,6 +483,7 @@ function loadProviderSettings(cwd: string, model: Model<any>): ResolvedProviderS
 		tools,
 		skillPlugins,
 		permissionAllow,
+		disallowedTools,
 		bridgeConfigSignature: JSON.stringify({
 			backend,
 			appendSystemPrompt,
@@ -440,6 +493,7 @@ function loadProviderSettings(cwd: string, model: Model<any>): ResolvedProviderS
 			tools,
 			skillPlugins,
 			permissionAllow,
+			disallowedTools,
 		}),
 	};
 }
@@ -643,6 +697,7 @@ function streamShellAcp(
 				tools: providerSettings.tools,
 				skillPlugins: providerSettings.skillPlugins,
 				permissionAllow: providerSettings.permissionAllow,
+				disallowedTools: providerSettings.disallowedTools,
 				bridgeConfigSignature: providerSettings.bridgeConfigSignature,
 				contextMessageSignatures: getContextMessageSignatures(context),
 			});

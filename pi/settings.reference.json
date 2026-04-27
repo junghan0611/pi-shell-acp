@@ -10,6 +10,28 @@
 		"tools": ["Read", "Bash", "Edit", "Write"],
 		"skillPlugins": [],
 		"permissionAllow": ["Read(*)", "Bash(*)", "Edit(*)", "Write(*)", "mcp__*"],
+		"disallowedTools": [
+			"AskUserQuestion",
+			"CronCreate",
+			"CronDelete",
+			"CronList",
+			"EnterPlanMode",
+			"EnterWorktree",
+			"ExitPlanMode",
+			"ExitWorktree",
+			"Monitor",
+			"NotebookEdit",
+			"PushNotification",
+			"RemoteTrigger",
+			"TaskCreate",
+			"TaskGet",
+			"TaskList",
+			"TaskOutput",
+			"TaskStop",
+			"TaskUpdate",
+			"WebFetch",
+			"WebSearch"
+		],
 		"mcpServers": {
 			"pi-tools-bridge": {
 				"command": "/path/to/pi-shell-acp/mcp/pi-tools-bridge/start.sh",

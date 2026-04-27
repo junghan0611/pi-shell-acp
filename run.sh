@@ -314,6 +314,7 @@ const session = await ensureBridgeSession({
   tools: ['Read', 'Bash', 'Edit', 'Write'],
   skillPlugins: [],
   permissionAllow: ['Read(*)', 'Bash(*)', 'Edit(*)', 'Write(*)', 'mcp__*'],
+  disallowedTools: [],
   bridgeConfigSignature: JSON.stringify({ backend, appendSystemPrompt: false, settingSources: ['user'], strictMcpConfig: false, mcpServersHash: emptyMcpHash }),
   contextMessageSignatures: [`smoke:${backend}:user:ok만 답하세요.`],
 });
@@ -474,6 +475,7 @@ const baseParams = {
   tools: ['Read', 'Bash', 'Edit', 'Write'],
   skillPlugins: [],
   permissionAllow: ['Read(*)', 'Bash(*)', 'Edit(*)', 'Write(*)', 'mcp__*'],
+  disallowedTools: [],
   bridgeConfigSignature: JSON.stringify({
     backend,
     appendSystemPrompt: false,
@@ -652,6 +654,7 @@ const makeParams = (sessionKey, modelId) => ({
   tools: ['Read', 'Bash', 'Edit', 'Write'],
   skillPlugins: [],
   permissionAllow: ['Read(*)', 'Bash(*)', 'Edit(*)', 'Write(*)', 'mcp__*'],
+  disallowedTools: [],
   bridgeConfigSignature: JSON.stringify({
     backend,
     appendSystemPrompt: false,
@@ -1164,6 +1167,17 @@ try {
     tools: ['Read', 'Bash', 'Edit', 'Write', 'Skill'],
     skillPlugins: ['/abs/path/to/skill-plugin'],
     permissionAllow: ['Bash(*)', 'Read(*)', 'Edit(*)', 'Write(*)', 'mcp__*', 'Skill(*)'],
+    disallowedTools: [
+      'AskUserQuestion',
+      'CronCreate', 'CronDelete', 'CronList',
+      'EnterPlanMode', 'EnterWorktree', 'ExitPlanMode', 'ExitWorktree',
+      'Monitor',
+      'NotebookEdit',
+      'PushNotification',
+      'RemoteTrigger',
+      'TaskCreate', 'TaskGet', 'TaskList', 'TaskOutput', 'TaskStop', 'TaskUpdate',
+      'WebFetch', 'WebSearch',
+    ],
   }, 'system prompt');
   assert.equal(claudeMeta?.claudeCode?.options?.model, 'claude-sonnet-4-6');
   // settingSources empty by default — pi-shell-acp does not inherit filesystem
@@ -1190,11 +1204,30 @@ try {
     'mcp__*',
     'Skill(*)',
   ]);
+  // Disallowed tools — full deferred set passes through verbatim. The SDK's
+  // skill-listing emitter is gated on `tools.includes("Skill")`, but the
+  // separate deferred-tool advertisement surface (system-reminder block
+  // listing tools available via ToolSearch) bypasses Options.tools and
+  // requires Options.disallowedTools to suppress.
+  assert.deepEqual(claudeMeta?.claudeCode?.options?.disallowedTools, [
+    'AskUserQuestion',
+    'CronCreate', 'CronDelete', 'CronList',
+    'EnterPlanMode', 'EnterWorktree', 'ExitPlanMode', 'ExitWorktree',
+    'Monitor',
+    'NotebookEdit',
+    'PushNotification',
+    'RemoteTrigger',
+    'TaskCreate', 'TaskGet', 'TaskList', 'TaskOutput', 'TaskStop', 'TaskUpdate',
+    'WebFetch', 'WebSearch',
+  ]);
   assert.deepEqual(claudeMeta?.systemPrompt, { append: 'system prompt' });
   assert.equal(claudeMeta?.claudeCode?.options?.extraArgs?.['strict-mcp-config'], null);
 
   // Empty skillPlugins => no plugins field emitted, no Skill auto-added.
-  // (loadProviderSettings would not augment tools/permissionAllow either.)
+  // Empty disallowedTools => no disallowedTools field emitted (escape hatch
+  // for operators who explicitly opt back into the SDK's deferred-tool
+  // advertisement). (loadProviderSettings would not augment
+  // tools/permissionAllow either.)
   const claudeMetaNoPlugins = buildSessionMetaForBackend('claude', {
     modelId: 'claude-sonnet-4-6',
     settingSources: [],
@@ -1202,9 +1235,11 @@ try {
     tools: ['Read', 'Bash', 'Edit', 'Write'],
     skillPlugins: [],
     permissionAllow: ['Bash(*)', 'mcp__*'],
+    disallowedTools: [],
   }, undefined);
   assert.equal(claudeMetaNoPlugins?.claudeCode?.options?.plugins, undefined);
   assert.deepEqual(claudeMetaNoPlugins?.claudeCode?.options?.tools, ['Read', 'Bash', 'Edit', 'Write']);
+  assert.equal(claudeMetaNoPlugins?.claudeCode?.options?.disallowedTools, undefined);
 
   const codexMeta = buildSessionMetaForBackend('codex', {
     modelId: 'codex-mini-latest',
@@ -1213,6 +1248,7 @@ try {
     tools: ['Read', 'Bash', 'Edit', 'Write'],
     skillPlugins: [],
     permissionAllow: [],
+    disallowedTools: [],
   }, 'system prompt');
   assert.equal(codexMeta, undefined);
 
@@ -1268,7 +1304,7 @@ try {
     rmSync(overlayTestRoot, { recursive: true, force: true });
   }
 
-  console.log('[check-backends] 30 assertions ok');
+  console.log('[check-backends] 32 assertions ok');
 } finally {
   if (prevClaude === undefined) delete process.env.CLAUDE_AGENT_ACP_COMMAND;
   else process.env.CLAUDE_AGENT_ACP_COMMAND = prevClaude;

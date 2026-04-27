@@ -230,7 +230,7 @@ type AcpLaunchSpec = {
 
 type BackendSessionMetaParams = Pick<
 	EnsureBridgeSessionParams,
-	"modelId" | "settingSources" | "strictMcpConfig" | "tools" | "skillPlugins" | "permissionAllow"
+	"modelId" | "settingSources" | "strictMcpConfig" | "tools" | "skillPlugins" | "permissionAllow" | "disallowedTools"
 >;
 
 type AcpBackendAdapter = {
@@ -304,6 +304,7 @@ export type AcpBridgeSession = {
 	tools: string[];
 	skillPlugins: string[];
 	permissionAllow: string[];
+	disallowedTools: string[];
 	bridgeConfigSignature: string;
 	contextMessageSignatures: string[];
 	stderrTail: string[];
@@ -330,6 +331,8 @@ export type EnsureBridgeSessionParams = {
 	skillPlugins: string[];
 	/** Wildcard rules passed to the SDK as `Options.settings.permissions.allow`. Combined with the user's `~/.claude/settings.json` `defaultMode` (resolved by claude-agent-acp), this gives explicit YOLO without flipping the user's native default mode. */
 	permissionAllow: string[];
+	/** Tool names passed to the SDK as `Options.disallowedTools`. Used to suppress the SDK's deferred-tool advertisement (Cron+Task+Worktree+PlanMode families plus WebFetch, WebSearch, Monitor, PushNotification, RemoteTrigger, NotebookEdit, AskUserQuestion) so the agent's awareness of available tools stays inside pi's declared baseline. claude-agent-acp merges its own ["AskUserQuestion"] default with this list. */
+	disallowedTools: string[];
 	bridgeConfigSignature: string;
 	contextMessageSignatures: string[];
 };
@@ -723,6 +726,16 @@ function buildClaudeSessionMeta(
 	};
 	if (params.skillPlugins.length > 0) {
 		claudeCodeOptions.plugins = params.skillPlugins.map((path) => ({ type: "local", path }));
+	}
+	// Disallowed tools — passed through to claude-agent-acp's userProvidedOptions
+	// spread (acp-agent.ts:1768), where the agent merges its own default
+	// ["AskUserQuestion"] on top. We only emit the field when non-empty so
+	// operators who set `disallowedTools: []` in pi-shell-acp config opt fully
+	// out of the bridge's deferred-tool muting (the agent's own
+	// AskUserQuestion mute still applies — that's claude-agent-acp's call,
+	// not ours).
+	if (params.disallowedTools.length > 0) {
+		claudeCodeOptions.disallowedTools = [...params.disallowedTools];
 	}
 	const claudeCodeExecutable = resolveClaudeCodeExecutable();
 	if (claudeCodeExecutable) {
@@ -1410,6 +1423,7 @@ async function createBridgeProcess(params: EnsureBridgeSessionParams): Promise<A
 		tools: [...params.tools],
 		skillPlugins: [...params.skillPlugins],
 		permissionAllow: [...params.permissionAllow],
+		disallowedTools: [...params.disallowedTools],
 		bridgeConfigSignature: params.bridgeConfigSignature,
 		contextMessageSignatures: [...params.contextMessageSignatures],
 		stderrTail,
@@ -1643,6 +1657,7 @@ export async function ensureBridgeSession(params: EnsureBridgeSessionParams): Pr
 		existing.tools = [...params.tools];
 		existing.skillPlugins = [...params.skillPlugins];
 		existing.permissionAllow = [...params.permissionAllow];
+		existing.disallowedTools = [...params.disallowedTools];
 		existing.bridgeConfigSignature = params.bridgeConfigSignature;
 		existing.contextMessageSignatures = [...params.contextMessageSignatures];
 		existing.bootstrapPath = "reuse";
