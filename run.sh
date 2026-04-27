@@ -1120,15 +1120,16 @@ try {
     else process.env.PI_SHELL_ACP_CODEX_MODE = prevMode;
   }
 
-  // Bogus PI_SHELL_ACP_CODEX_MODE values fall back to the default
-  // ("full-access") rather than crashing — robust against typos.
+  // Invalid PI_SHELL_ACP_CODEX_MODE values throw at the launch surface.
+  // Silent fallback would land typos like "readonly" (no dash) on the
+  // full-access default — exactly the wrong direction for a sandbox knob.
+  // "Never warn. Throw." (AGENTS.md).
   process.env.PI_SHELL_ACP_CODEX_MODE = 'super-yolo';
   try {
-    const codexLaunchBogusMode = resolveAcpBackendLaunch('codex');
-    assert.deepEqual(codexLaunchBogusMode.args, [
-      '-lc',
-      `${codexOverride} '-c' 'approval_policy=never' '-c' 'sandbox_mode=danger-full-access' '-c' 'model_auto_compact_token_limit=9223372036854775807'`,
-    ]);
+    assert.throws(
+      () => resolveAcpBackendLaunch('codex'),
+      /Invalid PI_SHELL_ACP_CODEX_MODE=super-yolo/,
+    );
   } finally {
     if (prevMode === undefined) delete process.env.PI_SHELL_ACP_CODEX_MODE;
     else process.env.PI_SHELL_ACP_CODEX_MODE = prevMode;
@@ -1602,8 +1603,8 @@ verify_resume() {
   check_claude_sessions "$project_dir"
 }
 
-CLAUDE_ACP_REQUIRED_VERSION="0.30.0"
-CODEX_ACP_REQUIRED_VERSION="0.11.1"
+CLAUDE_ACP_REQUIRED_VERSION="0.31.0"
+CODEX_ACP_REQUIRED_VERSION="0.12.0"
 
 check_global_claude_acp() {
   local installed

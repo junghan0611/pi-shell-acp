@@ -550,8 +550,16 @@ function codexAutoCompactArgs(): string[] {
 
 export function resolveCodexMode(): CodexMode {
 	const raw = process.env.PI_SHELL_ACP_CODEX_MODE?.trim().toLowerCase();
+	if (raw === undefined || raw === "") return DEFAULT_CODEX_MODE;
 	if (raw === "read-only" || raw === "auto" || raw === "full-access") return raw;
-	return DEFAULT_CODEX_MODE;
+	// "Never warn. Throw." — silently falling back to DEFAULT_CODEX_MODE
+	// (which is full-access) on a typo would land the operator on the most
+	// permissive sandbox when they likely intended a tighter one. Make the
+	// failure loud at the launch surface so the typo is fixed, not papered
+	// over.
+	throw new Error(
+		`Invalid PI_SHELL_ACP_CODEX_MODE=${process.env.PI_SHELL_ACP_CODEX_MODE}: expected one of "read-only", "auto", "full-access".`,
+	);
 }
 
 function codexModeArgs(): string[] {
@@ -560,11 +568,15 @@ function codexModeArgs(): string[] {
 
 function resolveCodexAcpLaunch(): AcpLaunchSpec {
 	const override = process.env.CODEX_ACP_COMMAND?.trim();
-	// Order matters: mode flags first, then auto-compact guard. Both are
-	// `-c key=value` pairs that codex-rs merges into its config; later flags
-	// override earlier ones for the same key, so this order leaves operators
-	// free to override our mode (via CODEX_ACP_COMMAND) without us silently
-	// reasserting it after, while still pinning the auto-compact guard.
+	// codex-rs merges `-c key=value` flags left-to-right, with later values
+	// for the same key winning. We append our mode + compaction guard *after*
+	// the operator's CODEX_ACP_COMMAND override (see the override branch
+	// below: `${override} ${ourFlags}`), so pi-shell-acp's policy always wins
+	// against any `-c approval_policy=…` / `-c sandbox_mode=…` /
+	// `-c model_auto_compact_token_limit=…` the operator may have inlined.
+	// This is intentional — the env knobs (PI_SHELL_ACP_CODEX_MODE,
+	// PI_SHELL_ACP_ALLOW_COMPACTION) are the supported way to change these
+	// policies, not CODEX_ACP_COMMAND.
 	const allArgs = [...codexModeArgs(), ...codexAutoCompactArgs()];
 	if (override) {
 		const command = allArgs.length > 0 ? `${override} ${allArgs.map(shellQuote).join(" ")}` : override;

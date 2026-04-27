@@ -77,7 +77,7 @@ pi install ./
 ### Codex backend
 
 ```bash
-pnpm add -g @zed-industries/codex-acp@0.11.1
+pnpm add -g @zed-industries/codex-acp@0.12.0
 ./run.sh smoke-codex /path/to/your-project
 ```
 
@@ -158,7 +158,7 @@ The codex backend ignores the five Claude-only fields above; codex's tool surfac
 | `sandbox_mode` | `danger-full-access` | Codex's other presets (`read-only`, `workspace-write`) block reads outside the cwd, which breaks pi-baseline skills that touch workspace-external paths (e.g. `gogcli` reading `~/.gnupg/` to decrypt API tokens). Full access is the only preset that lets pi's skill set work as a coherent unit. |
 | `model_auto_compact_token_limit` | `i64::MAX` | Disables codex-rs's silent auto-compaction inside the ACP session, matching the no-silent-rewrite policy the bridge enforces on both sides. |
 
-Operators who prefer codex-rs's standard preset can opt in via `PI_SHELL_ACP_CODEX_MODE=auto` (`workspace-write` sandbox, `on-request` approvals) or `PI_SHELL_ACP_CODEX_MODE=read-only`. Bogus values fall back to the default. The compaction guard is independent — `PI_SHELL_ACP_ALLOW_COMPACTION=1` disables it; `PI_SHELL_ACP_CODEX_MODE` does not. Both env knobs apply uniformly to the default launch path and to the `CODEX_ACP_COMMAND` override path; in the override path the flags are appended after the operator's command, shell-quoted, so an operator who really needs to override pi-shell-acp's mode can re-pass `-c approval_policy=…` / `-c sandbox_mode=…` later in the override string and codex-rs will let the later value win.
+Operators who prefer codex-rs's standard preset can opt in via `PI_SHELL_ACP_CODEX_MODE=auto` (`workspace-write` sandbox, `on-request` approvals) or `PI_SHELL_ACP_CODEX_MODE=read-only`. Invalid values throw at the launch surface — silent fallback would let typos like `readonly` (no dash) silently land on the `full-access` default, exactly the wrong direction. The compaction guard is independent — `PI_SHELL_ACP_ALLOW_COMPACTION=1` disables it; `PI_SHELL_ACP_CODEX_MODE` does not. Both env knobs apply uniformly to the default launch path and to the `CODEX_ACP_COMMAND` override path. In the override path the flags are appended *after* the operator's command, shell-quoted, so pi-shell-acp's mode + compaction policy always win against any `-c approval_policy=…` / `-c sandbox_mode=…` / `-c model_auto_compact_token_limit=…` the operator passes via `CODEX_ACP_COMMAND` (codex-rs lets later `-c` values for the same key win, and ours come last). Use `PI_SHELL_ACP_CODEX_MODE` to change the bridge's mode, not `CODEX_ACP_COMMAND`.
 
 Tool/permission notifications (`[tool:start]`, `[tool:done]`, `[permission:*]`) are enabled in the reference config because this repo is usually debugged by watching ACP-side tool activity. Set `showToolNotifications: false` for quieter day-to-day sessions.
 
