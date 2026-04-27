@@ -1,0 +1,7 @@
+{
+	"name": "pi-shell-acp-skill-plugin-reference",
+	"description": "Reference layout for piShellAcpProvider.skillPlugins entries. Drop SKILL.md files under skills/<name>/ and pi-shell-acp will inject them into the Claude session via SDK plugins:[{type:'local', path}]. Replace this manifest with your own when adopting the layout.",
+	"author": {
+		"name": "pi-shell-acp"
+	}
+}
