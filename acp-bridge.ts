@@ -516,6 +516,35 @@ function resolveClaudeAcpLaunch(): AcpLaunchSpec {
 
 const CODEX_DISABLE_AUTO_COMPACT_ARGS = ["-c", "model_auto_compact_token_limit=9223372036854775807"] as const;
 
+// Codex tool surface alignment — defense in depth.
+//
+// Pi advertises a fixed 4-tool baseline (Read/Bash/Edit/Write, mapped to
+// the codex equivalents) in its system prompt. codex-rs registers extra
+// tools that are not part of that baseline. The CODEX_HOME overlay above
+// already prevents the operator's `~/.codex/config.toml` from re-enabling
+// these via `[tools].web_search = "live"` etc. — but pinning the same
+// values via `-c` flags belt-and-suspenders the policy: even if a future
+// codex-rs default flips (e.g. web_search default → Cached), the bridge
+// still says "off".
+//
+// `web_search` — codex-rs 0.124.0 default is already off
+// (WebSearchMode::Disabled, codex-rs/tools/src/tool_spec.rs:99-104 returns
+// no tool when the mode is None or Disabled). Explicit `disabled` is
+// defense-in-depth, not a behavioral change against the current default.
+//
+// `tools.view_image` — schema has the Option<bool> field
+// (codex-rs/config/src/config_toml.rs:514-525) but the consumption path is
+// not verified for 0.124.0 (the field may be a no-op). Setting it false
+// is best-effort; if codex-rs ignores the field, view_image stays
+// registered. Treat live verification as the source of truth and the
+// README captures this as a known limit.
+//
+// `update_plan` is NOT in this list — codex-rs 0.124.0 registers it
+// unconditionally (codex-rs/tools/src/tool_registry_plan.rs:215, no config
+// gate), so disabling it is an upstream codex-acp patch concern, not a
+// pi-shell-acp launch-flag concern.
+const CODEX_TOOL_SURFACE_ARGS = ["-c", 'web_search="disabled"', "-c", "tools.view_image=false"] as const;
+
 // codex-rs approval/sandbox preset table — kebab-case ids match
 // codex-utils-approval-presets builtin_approval_presets() so the same
 // vocabulary works on both sides of the bridge. We default to `full-access`
@@ -580,7 +609,7 @@ function resolveCodexAcpLaunch(): AcpLaunchSpec {
 	// This is intentional — the env knobs (PI_SHELL_ACP_CODEX_MODE,
 	// PI_SHELL_ACP_ALLOW_COMPACTION) are the supported way to change these
 	// policies, not CODEX_ACP_COMMAND.
-	const allArgs = [...codexModeArgs(), ...codexAutoCompactArgs()];
+	const allArgs = [...codexModeArgs(), ...codexAutoCompactArgs(), ...CODEX_TOOL_SURFACE_ARGS];
 	if (override) {
 		const command = allArgs.length > 0 ? `${override} ${allArgs.map(shellQuote).join(" ")}` : override;
 		return {

@@ -1104,9 +1104,22 @@ try {
   assert.equal(codexLaunch.command, 'bash');
   assert.deepEqual(codexLaunch.args, [
     '-lc',
-    `${codexOverride} '-c' 'approval_policy=never' '-c' 'sandbox_mode=danger-full-access' '-c' 'model_auto_compact_token_limit=9223372036854775807'`,
+    `${codexOverride} '-c' 'approval_policy=never' '-c' 'sandbox_mode=danger-full-access' '-c' 'model_auto_compact_token_limit=9223372036854775807' '-c' 'web_search="disabled"' '-c' 'tools.view_image=false'`,
   ]);
   assert.equal(codexLaunch.source, 'env:CODEX_ACP_COMMAND');
+  // Defense-in-depth: pin web_search=disabled and tools.view_image=false
+  // even though the CODEX_HOME overlay already strips operator config.
+  // codex-rs lets later -c values for the same key win, so these flags
+  // hold even if the operator inlines `-c web_search="live"` via
+  // CODEX_ACP_COMMAND (ours come last).
+  assert.ok(
+    codexLaunch.args.some((arg) => arg.includes('web_search="disabled"')),
+    'codex launch must pin web_search=disabled',
+  );
+  assert.ok(
+    codexLaunch.args.some((arg) => arg.includes('tools.view_image=false')),
+    'codex launch must attempt to disable tools.view_image (best-effort; codex-rs 0.124.0 consumption unverified)',
+  );
 
   // PI_SHELL_ACP_CODEX_MODE=auto opts into codex-rs's standard mode
   // (workspace-write sandbox, on-request approvals). Compaction guard
@@ -1117,7 +1130,7 @@ try {
     const codexLaunchAutoMode = resolveAcpBackendLaunch('codex');
     assert.deepEqual(codexLaunchAutoMode.args, [
       '-lc',
-      `${codexOverride} '-c' 'approval_policy=on-request' '-c' 'sandbox_mode=workspace-write' '-c' 'model_auto_compact_token_limit=9223372036854775807'`,
+      `${codexOverride} '-c' 'approval_policy=on-request' '-c' 'sandbox_mode=workspace-write' '-c' 'model_auto_compact_token_limit=9223372036854775807' '-c' 'web_search="disabled"' '-c' 'tools.view_image=false'`,
     ]);
   } finally {
     if (prevMode === undefined) delete process.env.PI_SHELL_ACP_CODEX_MODE;
@@ -1148,7 +1161,7 @@ try {
     const codexLaunchOptOut = resolveAcpBackendLaunch('codex');
     assert.deepEqual(codexLaunchOptOut.args, [
       '-lc',
-      `${codexOverride} '-c' 'approval_policy=never' '-c' 'sandbox_mode=danger-full-access'`,
+      `${codexOverride} '-c' 'approval_policy=never' '-c' 'sandbox_mode=danger-full-access' '-c' 'web_search="disabled"' '-c' 'tools.view_image=false'`,
     ]);
   } finally {
     if (prevAllow === undefined) delete process.env.PI_SHELL_ACP_ALLOW_COMPACTION;
@@ -1359,7 +1372,7 @@ try {
     rmSync(codexOverlayTestRoot, { recursive: true, force: true });
   }
 
-  console.log('[check-backends] 41 assertions ok');
+  console.log('[check-backends] 43 assertions ok');
 } finally {
   if (prevClaude === undefined) delete process.env.CLAUDE_AGENT_ACP_COMMAND;
   else process.env.CLAUDE_AGENT_ACP_COMMAND = prevClaude;
