@@ -120,10 +120,11 @@ const SUPPORTED_CODEX_SET = new Set(SUPPORTED_CODEX_MODEL_IDS);
 
 // Codex metadata must come from `openai-codex` (not `openai`). The two sources
 // diverge: `openai/gpt-5.5` declares 1,050,000 context (Chat Completions tier),
-// while `openai-codex/gpt-5.5` declares 400,000 (the capacity codex-acp
-// actually delivers). Reading from `openai` causes pi-shell-acp to advertise
-// context it cannot serve — a concrete bug that showed up as
-// "pi-shell-acp/gpt-5.5 ctx=1.1M" in --list-models.
+// while the `openai-codex` line declares the capacity codex-acp actually
+// delivers (272,000 across the gpt-5.x line as of pi-ai 0.70.2). Reading from
+// `openai` causes pi-shell-acp to advertise context it cannot serve — a
+// concrete bug that showed up as "pi-shell-acp/gpt-5.5 ctx=1.1M" in
+// --list-models.
 const ANTHROPIC_MODELS_ALL = getModels("anthropic");
 const CODEX_MODELS_ALL = getModels("openai-codex");
 
@@ -182,7 +183,7 @@ function curatedCodexModels(): CodexRegistryModel[] {
 			...base,
 			id: "gpt-5.5",
 			name: "GPT-5.5",
-			contextWindow: 400_000,
+			contextWindow: 272_000,
 		});
 	}
 	return models;

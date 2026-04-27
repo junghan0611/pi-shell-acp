@@ -1284,14 +1284,16 @@ async function collectModels(envOverride) {
 
   // Codex context metadata — source is openai-codex (NOT openai). The regression
   // that motivated this gate: reading from openai source made pi-shell-acp
-  // advertise gpt-5.5 ctx=1,050,000 while codex-acp could only serve 400,000.
+  // advertise gpt-5.5 ctx=1,050,000 while the openai-codex source reflects what
+  // codex-acp actually delivers. As of pi-ai 0.70.2 the entire openai-codex
+  // gpt-5.x line declares 272,000.
   // Values below must match @mariozechner/pi-ai getModels("openai-codex") —
   // if upstream updates a context, update this gate with it.
   const CODEX_EXPECTED_CTX = {
     'gpt-5.2':      272000,
     'gpt-5.4':      272000,
     'gpt-5.4-mini': 272000,
-    'gpt-5.5':      400000,
+    'gpt-5.5':      272000,
   };
   for (const [id, expected] of Object.entries(CODEX_EXPECTED_CTX)) {
     const m = models.get(id);
