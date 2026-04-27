@@ -3,7 +3,9 @@ node_modules/
 .tmp-verify/
 /.agent-shell/
 /.codex
-/.claude
+/.claude/*
+# Repo-shared slash commands (e.g. /make-release) live here and ARE tracked.
+!/.claude/commands/
 
 CHECKLIST.md
 *.html
