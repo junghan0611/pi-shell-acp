@@ -316,6 +316,7 @@ const session = await ensureBridgeSession({
   skillPlugins: [],
   permissionAllow: ['Read(*)', 'Bash(*)', 'Edit(*)', 'Write(*)', 'mcp__*'],
   disallowedTools: [],
+  codexDisabledFeatures: [],
   bridgeConfigSignature: JSON.stringify({ backend, appendSystemPrompt: false, settingSources: ['user'], strictMcpConfig: false, mcpServersHash: emptyMcpHash }),
   contextMessageSignatures: [`smoke:${backend}:user:ok만 답하세요.`],
 });
@@ -477,6 +478,7 @@ const baseParams = {
   skillPlugins: [],
   permissionAllow: ['Read(*)', 'Bash(*)', 'Edit(*)', 'Write(*)', 'mcp__*'],
   disallowedTools: [],
+  codexDisabledFeatures: [],
   bridgeConfigSignature: JSON.stringify({
     backend,
     appendSystemPrompt: false,
@@ -656,6 +658,7 @@ const makeParams = (sessionKey, modelId) => ({
   skillPlugins: [],
   permissionAllow: ['Read(*)', 'Bash(*)', 'Edit(*)', 'Write(*)', 'mcp__*'],
   disallowedTools: [],
+  codexDisabledFeatures: [],
   bridgeConfigSignature: JSON.stringify({
     backend,
     appendSystemPrompt: false,

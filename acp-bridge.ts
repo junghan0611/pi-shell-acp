@@ -1568,7 +1568,15 @@ function isStrictBootstrapEnabled(): boolean {
 
 async function createBridgeProcess(params: EnsureBridgeSessionParams): Promise<AcpBridgeSession> {
 	const adapter = resolveAcpBackendAdapter(params.backend);
-	const launch = adapter.resolveLaunch({ codexDisabledFeatures: params.codexDisabledFeatures });
+	// run.sh smoke embed scripts call ensureBridgeSession directly without
+	// going through loadProviderSettings, so codexDisabledFeatures may be
+	// undefined here. Normalize once with the same default that
+	// loadProviderSettings would have applied (DEFAULT_CODEX_DISABLED_FEATURES)
+	// so smoke and production paths see identical behavior. Backend-agnostic:
+	// the claude adapter ignores this field, so the default is harmless even
+	// for claude smoke runs.
+	const codexDisabledFeatures = params.codexDisabledFeatures ?? [...DEFAULT_CODEX_DISABLED_FEATURES];
+	const launch = adapter.resolveLaunch({ codexDisabledFeatures });
 	// Adapter defaults first, process.env last → operator's shell always wins.
 	// PI_SHELL_ACP_ALLOW_COMPACTION=1 disables both pi-side and backend-side
 	// compaction guards for this process.
@@ -1663,7 +1671,7 @@ async function createBridgeProcess(params: EnsureBridgeSessionParams): Promise<A
 		skillPlugins: [...params.skillPlugins],
 		permissionAllow: [...params.permissionAllow],
 		disallowedTools: [...params.disallowedTools],
-		codexDisabledFeatures: [...params.codexDisabledFeatures],
+		codexDisabledFeatures: [...codexDisabledFeatures],
 		bridgeConfigSignature: params.bridgeConfigSignature,
 		contextMessageSignatures: [...params.contextMessageSignatures],
 		stderrTail,
@@ -1898,7 +1906,10 @@ export async function ensureBridgeSession(params: EnsureBridgeSessionParams): Pr
 		existing.skillPlugins = [...params.skillPlugins];
 		existing.permissionAllow = [...params.permissionAllow];
 		existing.disallowedTools = [...params.disallowedTools];
-		existing.codexDisabledFeatures = [...params.codexDisabledFeatures];
+		// Same normalization as createBridgeProcess: smoke embed callers may
+		// omit this field; default to DEFAULT_CODEX_DISABLED_FEATURES so reuse
+		// path stays consistent with the launch path.
+		existing.codexDisabledFeatures = [...(params.codexDisabledFeatures ?? DEFAULT_CODEX_DISABLED_FEATURES)];
 		existing.bridgeConfigSignature = params.bridgeConfigSignature;
 		existing.contextMessageSignatures = [...params.contextMessageSignatures];
 		existing.bootstrapPath = "reuse";

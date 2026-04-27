@@ -72,8 +72,10 @@ Uses `entwurf` instead of `delegate` to avoid collisions with existing pi ecosys
 
 - Spawning creates a sibling, not a worker
 - Default mode is `sync`; async is opt-in (Phase 0.5)
-- Target registry: `pi/entwurf-targets.json` (SSOT)
+- Target registry: `pi/entwurf-targets.json` (SSOT — bare model IDs auto-resolve here, native preferred; ACP route requires explicit `provider="pi-shell-acp"`)
 - Identity Preservation Rule: model override is not allowed on resume
+
+> **Naming pair.** *Entwurf* (기투, projection-of-self) lives here in pi-shell-acp — the mechanism by which a resident agent throws siblings forward (spawn / resume / messaging). The resident-side counterpart is *Mitsein* (공존, being-with), documented in [`agent-config/home/MITSEIN.md`](https://github.com/junghan0611/agent-config/blob/main/home/MITSEIN.md). pi-shell-acp owns the entwurf surface; resident-side conventions live in agent-config.
 
 ### Send-is-throw
 
