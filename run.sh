@@ -1108,21 +1108,28 @@ try {
     else process.env.PI_SHELL_ACP_ALLOW_COMPACTION = prevAllow;
   }
 
+  // Skill listing in the system prompt is gated by the SDK on
+  // `tools.some(name === "Skill")` (claude-agent-sdk SN1 emitter, identical
+  // in 0.2.114 and 0.2.119). loadProviderSettings() augments tools with
+  // "Skill" and permissionAllow with "Skill(*)" whenever skillPlugins is
+  // non-empty, so the params reaching buildSessionMetaForBackend in the
+  // skill-plugins case look like this:
   const claudeMeta = buildSessionMetaForBackend('claude', {
     modelId: 'claude-sonnet-4-6',
     settingSources: [],
     strictMcpConfig: true,
-    tools: ['Read', 'Bash', 'Edit', 'Write'],
+    tools: ['Read', 'Bash', 'Edit', 'Write', 'Skill'],
     skillPlugins: ['/abs/path/to/skill-plugin'],
-    permissionAllow: ['Bash(*)', 'Read(*)', 'Edit(*)', 'Write(*)', 'mcp__*'],
+    permissionAllow: ['Bash(*)', 'Read(*)', 'Edit(*)', 'Write(*)', 'mcp__*', 'Skill(*)'],
   }, 'system prompt');
   assert.equal(claudeMeta?.claudeCode?.options?.model, 'claude-sonnet-4-6');
   // settingSources empty by default — pi-shell-acp does not inherit filesystem
   // Claude Code settings; skills are delivered via plugins, MCP via mcpServers.
   assert.deepEqual(claudeMeta?.claudeCode?.options?.settingSources, []);
-  // Tool surface is the explicit pi baseline, not the claude_code preset, so
-  // the system prompt's advertised tools and the SDK's actual tools match.
-  assert.deepEqual(claudeMeta?.claudeCode?.options?.tools, ['Read', 'Bash', 'Edit', 'Write']);
+  // Tool surface is the explicit pi baseline plus Skill (added by
+  // loadProviderSettings when skillPlugins is non-empty), so the SDK's
+  // SN1 emitter actually produces a skill listing in the system prompt.
+  assert.deepEqual(claudeMeta?.claudeCode?.options?.tools, ['Read', 'Bash', 'Edit', 'Write', 'Skill']);
   // Skills are injected as local plugins.
   assert.deepEqual(claudeMeta?.claudeCode?.options?.plugins, [
     { type: 'local', path: '/abs/path/to/skill-plugin' },
@@ -1130,18 +1137,21 @@ try {
   // Permission allowlist threads through `Options.settings.permissions.allow`.
   // Combined with claude-agent-acp's own permissionMode resolution, this
   // delivers de facto YOLO for the listed tools without flipping the user's
-  // native ~/.claude/settings.json defaultMode.
+  // native ~/.claude/settings.json defaultMode. Skill(*) is included so the
+  // listing surface is not silently denied at the permission layer.
   assert.deepEqual(claudeMeta?.claudeCode?.options?.settings?.permissions?.allow, [
     'Bash(*)',
     'Read(*)',
     'Edit(*)',
     'Write(*)',
     'mcp__*',
+    'Skill(*)',
   ]);
   assert.deepEqual(claudeMeta?.systemPrompt, { append: 'system prompt' });
   assert.equal(claudeMeta?.claudeCode?.options?.extraArgs?.['strict-mcp-config'], null);
 
-  // Empty skillPlugins => no plugins field emitted (no-op vs absent is observable).
+  // Empty skillPlugins => no plugins field emitted, no Skill auto-added.
+  // (loadProviderSettings would not augment tools/permissionAllow either.)
   const claudeMetaNoPlugins = buildSessionMetaForBackend('claude', {
     modelId: 'claude-sonnet-4-6',
     settingSources: [],
@@ -1151,6 +1161,7 @@ try {
     permissionAllow: ['Bash(*)', 'mcp__*'],
   }, undefined);
   assert.equal(claudeMetaNoPlugins?.claudeCode?.options?.plugins, undefined);
+  assert.deepEqual(claudeMetaNoPlugins?.claudeCode?.options?.tools, ['Read', 'Bash', 'Edit', 'Write']);
 
   const codexMeta = buildSessionMetaForBackend('codex', {
     modelId: 'codex-mini-latest',
@@ -1165,7 +1176,7 @@ try {
   assert.throws(() => resolveAcpBackendLaunch(undefined), /ACP backend is required\./);
   assert.throws(() => resolveAcpBackendLaunch('bogus'), /Unknown ACP backend: bogus\./);
 
-  console.log('[check-backends] 19 assertions ok');
+  console.log('[check-backends] 20 assertions ok');
 } finally {
   if (prevClaude === undefined) delete process.env.CLAUDE_AGENT_ACP_COMMAND;
   else process.env.CLAUDE_AGENT_ACP_COMMAND = prevClaude;

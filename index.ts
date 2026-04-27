@@ -400,9 +400,21 @@ function loadProviderSettings(cwd: string, model: Model<any>): ResolvedProviderS
 	// "Available tools:" line and the SDK's actual tools align (Read, Bash,
 	// Edit, Write). MCP tools (mcp__*) are exposed independently via
 	// mcpServers and are auto-allowed by the default permissionAllow.
-	const tools = merged.tools ?? [...DEFAULT_CLAUDE_TOOLS];
 	const skillPlugins = merged.skillPlugins ?? [];
-	const permissionAllow = merged.permissionAllow ?? [...DEFAULT_CLAUDE_PERMISSION_ALLOW];
+	const baseTools = merged.tools ?? [...DEFAULT_CLAUDE_TOOLS];
+	const baseAllow = merged.permissionAllow ?? [...DEFAULT_CLAUDE_PERMISSION_ALLOW];
+	// When skillPlugins is non-empty, ensure the SDK's "Skill" tool is in the
+	// surface. The SDK's skill-listing emitter (SN1 in claude-agent-sdk) is
+	// gated on `tools.some(name === "Skill")`: without it, the listing returns
+	// empty and skills never reach the system prompt — even though the plugin
+	// loaded all skills/<name>/SKILL.md into memory. Verified against
+	// claude-agent-sdk 0.2.114 and 0.2.119; the gate is identical in both, so
+	// this is independent of the dep bump in 32a3dee. We also auto-allow
+	// `Skill(*)` so the listing surface is not silently denied at the
+	// permission layer.
+	const tools = skillPlugins.length > 0 && !baseTools.includes("Skill") ? [...baseTools, "Skill"] : baseTools;
+	const permissionAllow =
+		skillPlugins.length > 0 && !baseAllow.includes("Skill(*)") ? [...baseAllow, "Skill(*)"] : baseAllow;
 	const mergedMcpServersRaw: McpServerInputMap = {
 		...(globalSettings.mcpServers ?? {}),
 		...(projectSettings.mcpServers ?? {}),
