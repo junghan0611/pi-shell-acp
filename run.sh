@@ -38,6 +38,7 @@ Usage:
   ./run.sh check-mcp                  # local deterministic check of normalizeMcpServers() — no Claude/ACP subprocess
   ./run.sh check-backends             # local deterministic check of backend launch resolution + backend-specific _meta shape
   ./run.sh check-registration         # local deterministic check of per-runtime provider registration semantics
+  ./run.sh check-dep-versions         # local deterministic check that version pins (package.json/run.sh/README.md) agree
   ./run.sh check-models               # local deterministic check of MODELS contextWindow defaults (sonnet 200K, opus 1M) + override
   ./run.sh check-claude-sessions [project-dir]  # compare pi persisted sessions vs Claude SDK session visibility
   ./run.sh verify-resume [project-dir] # exact pi -> ACP -> Claude continuity check with visible acpSessionId diagnostics
@@ -1491,6 +1492,43 @@ EOF
   rm -rf "$verify_dir"
 }
 
+check_dep_versions() {
+  # Catches version-pin drift across package.json, run.sh, and README.md.
+  # Concretely the kind of skew that produced commit 21de0f9's "0.11.1
+  # leftover" review comment: package.json bumped to 0.12.0 while README
+  # and run.sh's setup gate still claimed 0.11.1. Static check, no
+  # subprocess — fast enough to run inside `pnpm check` and pre-commit.
+  (cd "$REPO_DIR" && node --input-type=module <<'EOF'
+import { strict as assert } from 'node:assert';
+import { readFileSync } from 'node:fs';
+
+const pkg = JSON.parse(readFileSync('package.json', 'utf8'));
+const claudePinned = pkg.dependencies['@agentclientprotocol/claude-agent-acp'];
+const codexPinned = pkg.dependencies['@zed-industries/codex-acp'];
+assert.ok(claudePinned, 'package.json must pin @agentclientprotocol/claude-agent-acp');
+assert.ok(codexPinned, 'package.json must pin @zed-industries/codex-acp');
+
+// `^` + `m` flag anchors to the start-of-line shell assignment so we don't
+// accidentally pick up the regex literal inside this very check function's
+// heredoc (which is indented, so won't match `^...`).
+const runSh = readFileSync('run.sh', 'utf8');
+const claudeRequired = runSh.match(/^CLAUDE_ACP_REQUIRED_VERSION="([^"]+)"/m)?.[1];
+const codexRequired = runSh.match(/^CODEX_ACP_REQUIRED_VERSION="([^"]+)"/m)?.[1];
+assert.equal(claudeRequired, claudePinned,
+  `run.sh CLAUDE_ACP_REQUIRED_VERSION (${claudeRequired}) must match package.json @agentclientprotocol/claude-agent-acp (${claudePinned})`);
+assert.equal(codexRequired, codexPinned,
+  `run.sh CODEX_ACP_REQUIRED_VERSION (${codexRequired}) must match package.json @zed-industries/codex-acp (${codexPinned})`);
+
+const readme = readFileSync('README.md', 'utf8');
+const readmeCodex = readme.match(/@zed-industries\/codex-acp@([0-9.]+)/)?.[1];
+assert.equal(readmeCodex, codexPinned,
+  `README.md @zed-industries/codex-acp install pin (${readmeCodex}) must match package.json (${codexPinned})`);
+
+console.log('[check-dep-versions] 5 assertions ok');
+EOF
+  )
+}
+
 check_registration() {
   local verify_dir
   verify_dir="$REPO_DIR/.tmp-verify"
@@ -2084,6 +2122,9 @@ case "$cmd" in
     ;;
   check-models)
     check_models
+    ;;
+  check-dep-versions)
+    check_dep_versions
     ;;
   check-claude-sessions)
     check_claude_sessions "$TARGET_PROJECT_DIR"
