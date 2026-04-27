@@ -1085,27 +1085,66 @@ try {
   assert.deepEqual(claudeLaunch.args, ['-lc', claudeOverride]);
   assert.equal(claudeLaunch.source, 'env:CLAUDE_AGENT_ACP_COMMAND');
 
-  // Codex override path now appends auto-compaction guard args (-c
-  // model_auto_compact_token_limit=i64::MAX), shell-quoted, so silent
-  // backend compaction stays disabled even when CODEX_ACP_COMMAND
-  // overrides the launch command. Operators can opt out for the whole
-  // process via PI_SHELL_ACP_ALLOW_COMPACTION=1 (covered below).
+  // Codex override path appends two argument groups in order:
+  //   1. Codex mode flags (-c approval_policy=… -c sandbox_mode=…) chosen
+  //      by resolveCodexMode(). Default = "full-access" — pi-YOLO parity
+  //      with the Claude side and the only preset that lets workspace-
+  //      external files (e.g. ~/.gnupg/ for gogcli) reach the agent.
+  //   2. Auto-compaction guard (-c model_auto_compact_token_limit=i64::MAX),
+  //      so silent backend compaction stays disabled even when
+  //      CODEX_ACP_COMMAND replaces the launch command. Order matters:
+  //      operators who set CODEX_ACP_COMMAND can re-pass earlier `-c`
+  //      flags to override our mode while we still pin the compact guard
+  //      after.
   const codexLaunch = resolveAcpBackendLaunch('codex');
   assert.equal(codexLaunch.command, 'bash');
   assert.deepEqual(codexLaunch.args, [
     '-lc',
-    `${codexOverride} '-c' 'model_auto_compact_token_limit=9223372036854775807'`,
+    `${codexOverride} '-c' 'approval_policy=never' '-c' 'sandbox_mode=danger-full-access' '-c' 'model_auto_compact_token_limit=9223372036854775807'`,
   ]);
   assert.equal(codexLaunch.source, 'env:CODEX_ACP_COMMAND');
 
+  // PI_SHELL_ACP_CODEX_MODE=auto opts into codex-rs's standard mode
+  // (workspace-write sandbox, on-request approvals). Compaction guard
+  // stays in place independently.
+  const prevMode = process.env.PI_SHELL_ACP_CODEX_MODE;
+  process.env.PI_SHELL_ACP_CODEX_MODE = 'auto';
+  try {
+    const codexLaunchAutoMode = resolveAcpBackendLaunch('codex');
+    assert.deepEqual(codexLaunchAutoMode.args, [
+      '-lc',
+      `${codexOverride} '-c' 'approval_policy=on-request' '-c' 'sandbox_mode=workspace-write' '-c' 'model_auto_compact_token_limit=9223372036854775807'`,
+    ]);
+  } finally {
+    if (prevMode === undefined) delete process.env.PI_SHELL_ACP_CODEX_MODE;
+    else process.env.PI_SHELL_ACP_CODEX_MODE = prevMode;
+  }
+
+  // Bogus PI_SHELL_ACP_CODEX_MODE values fall back to the default
+  // ("full-access") rather than crashing — robust against typos.
+  process.env.PI_SHELL_ACP_CODEX_MODE = 'super-yolo';
+  try {
+    const codexLaunchBogusMode = resolveAcpBackendLaunch('codex');
+    assert.deepEqual(codexLaunchBogusMode.args, [
+      '-lc',
+      `${codexOverride} '-c' 'approval_policy=never' '-c' 'sandbox_mode=danger-full-access' '-c' 'model_auto_compact_token_limit=9223372036854775807'`,
+    ]);
+  } finally {
+    if (prevMode === undefined) delete process.env.PI_SHELL_ACP_CODEX_MODE;
+    else process.env.PI_SHELL_ACP_CODEX_MODE = prevMode;
+  }
+
   // PI_SHELL_ACP_ALLOW_COMPACTION=1 disables the codex auto-compaction
   // guard args at the launch surface — opt-out is single-source and
-  // applies to override + default paths uniformly.
+  // applies to override + default paths uniformly. Mode flags stay.
   const prevAllow = process.env.PI_SHELL_ACP_ALLOW_COMPACTION;
   process.env.PI_SHELL_ACP_ALLOW_COMPACTION = '1';
   try {
     const codexLaunchOptOut = resolveAcpBackendLaunch('codex');
-    assert.deepEqual(codexLaunchOptOut.args, ['-lc', codexOverride]);
+    assert.deepEqual(codexLaunchOptOut.args, [
+      '-lc',
+      `${codexOverride} '-c' 'approval_policy=never' '-c' 'sandbox_mode=danger-full-access'`,
+    ]);
   } finally {
     if (prevAllow === undefined) delete process.env.PI_SHELL_ACP_ALLOW_COMPACTION;
     else process.env.PI_SHELL_ACP_ALLOW_COMPACTION = prevAllow;
@@ -1228,7 +1267,7 @@ try {
     rmSync(overlayTestRoot, { recursive: true, force: true });
   }
 
-  console.log('[check-backends] 28 assertions ok');
+  console.log('[check-backends] 30 assertions ok');
 } finally {
   if (prevClaude === undefined) delete process.env.CLAUDE_AGENT_ACP_COMMAND;
   else process.env.CLAUDE_AGENT_ACP_COMMAND = prevClaude;

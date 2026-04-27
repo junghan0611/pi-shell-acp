@@ -146,7 +146,19 @@ Skill-plugin manifest shape (`<plugin-root>/.claude-plugin/plugin.json`):
 
 Each `skills/<name>/SKILL.md` under the plugin root needs YAML frontmatter with at least `name` (matching the directory name) and `description`. The body below the frontmatter loads on invocation.
 
-The codex backend ignores all five Claude-only fields above; codex's tool surface is governed by `codex-acp` itself, and skill access on codex is currently via the `mcpServers` bridge only.
+The codex backend ignores the five Claude-only fields above; codex's tool surface is governed by `codex-acp` itself, and skill access on codex is currently via the `mcpServers` bridge only.
+
+#### Operating-surface contract — Codex backend
+
+`codex-acp` does not expose a `_meta`-style options extension to clients, so pi-shell-acp drives codex via codex-rs's `-c key=value` config flags at launch. The bridge defaults the codex session to a permissive operating mode that mirrors the pi-YOLO posture used on the Claude side:
+
+| Flag | Value | Why |
+|------|-------|-----|
+| `approval_policy` | `never` | Codex agent runs without prompting the operator on each command — same autonomous-operation invariant pi-shell-acp enforces on the Claude side. |
+| `sandbox_mode` | `danger-full-access` | Codex's other presets (`read-only`, `workspace-write`) block reads outside the cwd, which breaks pi-baseline skills that touch workspace-external paths (e.g. `gogcli` reading `~/.gnupg/` to decrypt API tokens). Full access is the only preset that lets pi's skill set work as a coherent unit. |
+| `model_auto_compact_token_limit` | `i64::MAX` | Disables codex-rs's silent auto-compaction inside the ACP session, matching the no-silent-rewrite policy the bridge enforces on both sides. |
+
+Operators who prefer codex-rs's standard preset can opt in via `PI_SHELL_ACP_CODEX_MODE=auto` (`workspace-write` sandbox, `on-request` approvals) or `PI_SHELL_ACP_CODEX_MODE=read-only`. Bogus values fall back to the default. The compaction guard is independent — `PI_SHELL_ACP_ALLOW_COMPACTION=1` disables it; `PI_SHELL_ACP_CODEX_MODE` does not. Both env knobs apply uniformly to the default launch path and to the `CODEX_ACP_COMMAND` override path; in the override path the flags are appended after the operator's command, shell-quoted, so an operator who really needs to override pi-shell-acp's mode can re-pass `-c approval_policy=…` / `-c sandbox_mode=…` later in the override string and codex-rs will let the later value win.
 
 Tool/permission notifications (`[tool:start]`, `[tool:done]`, `[permission:*]`) are enabled in the reference config because this repo is usually debugged by watching ACP-side tool activity. Set `showToolNotifications: false` for quieter day-to-day sessions.
 

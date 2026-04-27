@@ -513,6 +513,28 @@ function resolveClaudeAcpLaunch(): AcpLaunchSpec {
 
 const CODEX_DISABLE_AUTO_COMPACT_ARGS = ["-c", "model_auto_compact_token_limit=9223372036854775807"] as const;
 
+// codex-rs approval/sandbox preset table — kebab-case ids match
+// codex-utils-approval-presets builtin_approval_presets() so the same
+// vocabulary works on both sides of the bridge. We default to `full-access`
+// for parity with pi-shell-acp's pi-YOLO model on the Claude side
+// (permissionAllow wildcards, no auto-compaction). It is also the only
+// codex preset that lets workspace-external files (e.g. ~/.gnupg/ which
+// gogcli reads to decrypt tokens) come through, so pi-baseline skills
+// continue to work without piecewise sandbox carve-outs.
+//
+// Operators who prefer a tighter default can opt in via
+// PI_SHELL_ACP_CODEX_MODE=auto (codex-rs's own default — workspace-write
+// sandbox, on-request approvals) or =read-only.
+export type CodexMode = "read-only" | "auto" | "full-access";
+
+const DEFAULT_CODEX_MODE: CodexMode = "full-access";
+
+const CODEX_MODE_ARGS: Record<CodexMode, readonly string[]> = {
+	"read-only": ["-c", "approval_policy=on-request", "-c", "sandbox_mode=read-only"],
+	auto: ["-c", "approval_policy=on-request", "-c", "sandbox_mode=workspace-write"],
+	"full-access": ["-c", "approval_policy=never", "-c", "sandbox_mode=danger-full-access"],
+};
+
 function isCompactionAllowedByOperator(): boolean {
 	const allow = process.env.PI_SHELL_ACP_ALLOW_COMPACTION?.trim().toLowerCase();
 	return allow === "1" || allow === "true" || allow === "yes";
@@ -526,11 +548,26 @@ function codexAutoCompactArgs(): string[] {
 	return isCompactionAllowedByOperator() ? [] : [...CODEX_DISABLE_AUTO_COMPACT_ARGS];
 }
 
+export function resolveCodexMode(): CodexMode {
+	const raw = process.env.PI_SHELL_ACP_CODEX_MODE?.trim().toLowerCase();
+	if (raw === "read-only" || raw === "auto" || raw === "full-access") return raw;
+	return DEFAULT_CODEX_MODE;
+}
+
+function codexModeArgs(): string[] {
+	return [...CODEX_MODE_ARGS[resolveCodexMode()]];
+}
+
 function resolveCodexAcpLaunch(): AcpLaunchSpec {
 	const override = process.env.CODEX_ACP_COMMAND?.trim();
-	const autoCompactArgs = codexAutoCompactArgs();
+	// Order matters: mode flags first, then auto-compact guard. Both are
+	// `-c key=value` pairs that codex-rs merges into its config; later flags
+	// override earlier ones for the same key, so this order leaves operators
+	// free to override our mode (via CODEX_ACP_COMMAND) without us silently
+	// reasserting it after, while still pinning the auto-compact guard.
+	const allArgs = [...codexModeArgs(), ...codexAutoCompactArgs()];
 	if (override) {
-		const command = autoCompactArgs.length > 0 ? `${override} ${autoCompactArgs.map(shellQuote).join(" ")}` : override;
+		const command = allArgs.length > 0 ? `${override} ${allArgs.map(shellQuote).join(" ")}` : override;
 		return {
 			command: "bash",
 			args: ["-lc", command],
@@ -540,7 +577,7 @@ function resolveCodexAcpLaunch(): AcpLaunchSpec {
 
 	return {
 		command: "codex-acp",
-		args: autoCompactArgs,
+		args: allArgs,
 		source: "PATH:codex-acp",
 	};
 }
