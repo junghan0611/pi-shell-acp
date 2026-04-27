@@ -1066,7 +1066,10 @@ EOF
 check_backends() {
   (cd "$REPO_DIR" && node --input-type=module <<'EOF'
 import { strict as assert } from 'node:assert';
-import { buildSessionMetaForBackend, resolveAcpBackendLaunch } from './acp-bridge.ts';
+import { buildSessionMetaForBackend, CLAUDE_CONFIG_OVERLAY_DIR, ensureClaudeConfigOverlay, resolveAcpBackendLaunch } from './acp-bridge.ts';
+import { existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, rmSync, writeFileSync } from 'node:fs';
+import { homedir, tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 const claudeOverride = 'node /tmp/fake-claude-acp.js';
 const codexOverride = 'node /tmp/fake-codex-acp.js';
@@ -1176,7 +1179,56 @@ try {
   assert.throws(() => resolveAcpBackendLaunch(undefined), /ACP backend is required\./);
   assert.throws(() => resolveAcpBackendLaunch('bogus'), /Unknown ACP backend: bogus\./);
 
-  console.log('[check-backends] 20 assertions ok');
+  // Claude config overlay — isolate claude-agent-acp's SettingsManager from
+  // ~/.claude/settings.json's permissionMode pickup. We rebuild the overlay
+  // on every claude session bootstrap (idempotent symlink farm + minimal
+  // settings.json) and point CLAUDE_CONFIG_DIR at it via bridgeEnvDefaults.
+  assert.equal(typeof CLAUDE_CONFIG_OVERLAY_DIR, 'string');
+  assert.ok(CLAUDE_CONFIG_OVERLAY_DIR.endsWith('claude-config-overlay'),
+    'overlay dir constant must point at the pi-owned claude-config-overlay path');
+
+  // Exercise ensureClaudeConfigOverlay against a synthetic real/overlay pair
+  // so the production filesystem stays untouched.
+  const overlayTestRoot = join(tmpdir(), `pi-shell-acp-overlay-${Date.now()}`);
+  const realDir = join(overlayTestRoot, 'real');
+  const overlayDir = join(overlayTestRoot, 'overlay');
+  try {
+    mkdirSync(realDir, { recursive: true });
+    // Seed the synthetic real dir with shapes the production overlay should
+    // mirror: a settings.json (overridden, NOT symlinked), a credentials
+    // file (symlinked), a directory entry (symlinked).
+    writeFileSync(join(realDir, 'settings.json'), JSON.stringify({ permissions: { defaultMode: 'auto' } }), 'utf8');
+    writeFileSync(join(realDir, '.credentials.json'), '{"token":"test"}', 'utf8');
+    mkdirSync(join(realDir, 'projects'), { recursive: true });
+
+    ensureClaudeConfigOverlay(realDir, overlayDir);
+
+    // settings.json must be authored, not symlinked, and contain our override.
+    const settingsStat = lstatSync(join(overlayDir, 'settings.json'));
+    assert.equal(settingsStat.isSymbolicLink(), false,
+      'overlay settings.json must be a regular file authored by pi-shell-acp, not a symlink');
+    const overlaySettings = JSON.parse(readFileSync(join(overlayDir, 'settings.json'), 'utf8'));
+    assert.equal(overlaySettings.permissions?.defaultMode, 'default',
+      'overlay settings.json must pin permissions.defaultMode to "default"');
+
+    // Other entries must be symlinks pointing back at the real dir.
+    const credStat = lstatSync(join(overlayDir, '.credentials.json'));
+    assert.equal(credStat.isSymbolicLink(), true);
+    assert.equal(readlinkSync(join(overlayDir, '.credentials.json')), join(realDir, '.credentials.json'));
+
+    const projStat = lstatSync(join(overlayDir, 'projects'));
+    assert.equal(projStat.isSymbolicLink(), true);
+    assert.equal(readlinkSync(join(overlayDir, 'projects')), join(realDir, 'projects'));
+
+    // Idempotence: a second call must succeed without throwing and preserve
+    // the same shape.
+    ensureClaudeConfigOverlay(realDir, overlayDir);
+    assert.equal(readlinkSync(join(overlayDir, '.credentials.json')), join(realDir, '.credentials.json'));
+  } finally {
+    rmSync(overlayTestRoot, { recursive: true, force: true });
+  }
+
+  console.log('[check-backends] 28 assertions ok');
 } finally {
   if (prevClaude === undefined) delete process.env.CLAUDE_AGENT_ACP_COMMAND;
   else process.env.CLAUDE_AGENT_ACP_COMMAND = prevClaude;

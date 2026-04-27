@@ -1,6 +1,17 @@
 import { type ChildProcessByStdio, execFileSync, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	lstatSync,
+	mkdirSync,
+	readdirSync,
+	readFileSync,
+	readlinkSync,
+	rmSync,
+	symlinkSync,
+	unlinkSync,
+	writeFileSync,
+} from "node:fs";
 import { createRequire } from "node:module";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
@@ -686,6 +697,101 @@ function buildClaudeSessionMeta(
 	return meta;
 }
 
+// ============================================================================
+// Claude config overlay — isolate claude-agent-acp's SettingsManager from
+// the operator's `~/.claude/settings.json` permissionMode pickup.
+// ============================================================================
+//
+// claude-agent-acp's SettingsManager loads `~/.claude/settings.json` directly
+// (independent of the SDK's `settingSources` option) and resolves
+// `permissions.defaultMode` into the SDK's top-level `Options.permissionMode`.
+// pi-shell-acp cannot override this via `_meta.claudeCode.options` — the
+// agent hardcodes the resolved value after spreading user-provided options
+// (acp-agent.ts:1761). The operator's preferred native default mode (often
+// `"auto"`) therefore leaks into pi-shell-acp sessions even when we set
+// `settingSources: []`.
+//
+// CLAUDE_CONFIG_DIR is the env var that determines where SettingsManager
+// looks for the user-level `settings.json`. By spawning claude-agent-acp
+// with CLAUDE_CONFIG_DIR pointing at a pi-owned overlay directory, we
+// redirect the SettingsManager read to a settings.json *we* control while
+// keeping the rest of `~/.claude/` (credentials, projects, agents, plugins,
+// skills caches) reachable through symlinks. The overlay's settings.json is
+// minimal — only the fields we need to override. No filesystem inheritance
+// of hooks, env, or other ambient values.
+//
+// Overlay structure:
+//
+//   ~/.pi/agent/claude-config-overlay/
+//   ├── settings.json         (pi-shell-acp authored — minimal override)
+//   ├── .credentials.json     -> ~/.claude/.credentials.json (symlink)
+//   ├── projects/             -> ~/.claude/projects/        (symlink)
+//   ├── agents/               -> ~/.claude/agents/          (symlink)
+//   └── ... (every other entry of ~/.claude/ symlinked to its real path)
+//
+// The overlay is rebuilt on every claude session bootstrap (idempotent), so
+// new entries appearing in `~/.claude/` later (a new project directory, etc.)
+// surface on the next launch without manual intervention.
+const CLAUDE_REAL_CONFIG_DIR = join(homedir(), ".claude");
+export const CLAUDE_CONFIG_OVERLAY_DIR = join(homedir(), ".pi", "agent", "claude-config-overlay");
+
+// Minimal settings.json content for the overlay. Only fields we have a
+// reason to pin live here. Currently we override `permissions.defaultMode`
+// to neutralize the operator's native `"auto"` setting, which would
+// otherwise apply to pi-shell-acp sessions and (a) trigger Claude Code's
+// auto mode classifier inside an ACP session, (b) be invisible to operators
+// who only set it for their direct Claude Code use. With our explicit
+// `tools` surface and `permissionAllow` wildcard list, `"default"` mode
+// auto-passes every tool we actually expose — no prompts in practice — and
+// degrades gracefully if the surface ever expands without an allow update.
+function overlaySettingsJson(): string {
+	return `${JSON.stringify({ permissions: { defaultMode: "default" } }, null, 2)}\n`;
+}
+
+export function ensureClaudeConfigOverlay(
+	realDir: string = CLAUDE_REAL_CONFIG_DIR,
+	overlayDir: string = CLAUDE_CONFIG_OVERLAY_DIR,
+): void {
+	mkdirSync(overlayDir, { recursive: true });
+
+	// Settings.json — always written. Cheap, unconditional rewrite ensures the
+	// override is in place even if a prior process or operator edited it.
+	writeFileSync(join(overlayDir, "settings.json"), overlaySettingsJson(), "utf8");
+
+	if (!existsSync(realDir)) return;
+
+	// Symlink every other entry from the real config dir into the overlay.
+	// Idempotent — preserves correct symlinks, replaces wrong ones.
+	for (const entry of readdirSync(realDir)) {
+		if (entry === "settings.json") continue;
+		const realPath = join(realDir, entry);
+		const overlayPath = join(overlayDir, entry);
+
+		try {
+			const existing = lstatSync(overlayPath);
+			if (existing.isSymbolicLink()) {
+				if (readlinkSync(overlayPath) === realPath) continue;
+				unlinkSync(overlayPath);
+			} else {
+				// Wrong file type at this path — remove and replace with symlink.
+				rmSync(overlayPath, { recursive: true, force: true });
+			}
+		} catch {
+			// Doesn't exist — fall through to create.
+		}
+
+		try {
+			symlinkSync(realPath, overlayPath);
+		} catch (error) {
+			// Best-effort: a symlink failure should not block the session bootstrap.
+			// Operator can inspect the overlay manually if a flow breaks.
+			console.error(
+				`[pi-shell-acp:claude-overlay] symlink failed for ${entry}: ${error instanceof Error ? error.message : String(error)}`,
+			);
+		}
+	}
+}
+
 function buildCodexBootstrapPromptAugment(augmentText: string): PromptContentBlock[] | undefined {
 	const text = augmentText?.trim();
 	if (!text) return undefined;
@@ -712,6 +818,13 @@ const ACP_BACKEND_ADAPTERS: Record<AcpBackend, AcpBackendAdapter> = {
 			// shell — process.env wins below.
 			DISABLE_AUTO_COMPACT: "1",
 			DISABLE_COMPACT: "1",
+			// Redirect claude-agent-acp's SettingsManager away from
+			// ~/.claude/settings.json so the operator's native `permissions.defaultMode`
+			// (often "auto") does not silently apply to pi-shell-acp sessions. The
+			// overlay directory is rebuilt at every spawn (see
+			// ensureClaudeConfigOverlay below). process.env wins, so an operator who
+			// explicitly exports CLAUDE_CONFIG_DIR keeps full control.
+			CLAUDE_CONFIG_DIR: CLAUDE_CONFIG_OVERLAY_DIR,
 		},
 	},
 	codex: {
@@ -1168,6 +1281,18 @@ async function createBridgeProcess(params: EnsureBridgeSessionParams): Promise<A
 	// PI_SHELL_ACP_ALLOW_COMPACTION=1 disables both pi-side and backend-side
 	// compaction guards for this process.
 	const bridgeEnvDefaults = isCompactionAllowedByOperator() ? undefined : adapter.bridgeEnvDefaults;
+	// Refresh the claude config overlay before every claude session bootstrap.
+	// Idempotent — picks up any new entries that appeared in ~/.claude/ since
+	// the last run (e.g. a freshly created project) without manual intervention.
+	if (params.backend === "claude" && bridgeEnvDefaults?.CLAUDE_CONFIG_DIR === CLAUDE_CONFIG_OVERLAY_DIR) {
+		try {
+			ensureClaudeConfigOverlay();
+		} catch (error) {
+			console.error(
+				`[pi-shell-acp:claude-overlay] failed to prepare overlay; falling back to operator's CLAUDE_CONFIG_DIR if any: ${error instanceof Error ? error.message : String(error)}`,
+			);
+		}
+	}
 	const childEnv = { ...bridgeEnvDefaults, ...process.env };
 	const child = spawn(launch.command, launch.args, {
 		cwd: params.cwd,
