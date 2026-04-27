@@ -1602,7 +1602,21 @@ async function createBridgeProcess(params: EnsureBridgeSessionParams): Promise<A
 			);
 		}
 	}
-	const childEnv = { ...bridgeEnvDefaults, ...process.env };
+	// claude-agent-acp 0.31.0 (dist/acp-agent.js:1298) reads
+	// `process.env.CLAUDE_CODE_EXECUTABLE` only and ignores the
+	// `_meta.claudeCode.options.pathToClaudeCodeExecutable` we pass. Without
+	// the env var, the SDK's auto-detect (`[musl, glibc]` order) resolves
+	// the musl variant first via NODE_PATH (pnpm-installed pi-coding-agent
+	// hoists both variants, no libc filter) and spawn fails with ENOENT on
+	// glibc hosts. Force the libc-aware path through the env so the SDK's
+	// auto-detect is bypassed entirely. process.env spread last —
+	// operator's exported var still wins.
+	const claudeCodeExe = params.backend === "claude" ? resolveClaudeCodeExecutable() : undefined;
+	const childEnv = {
+		...bridgeEnvDefaults,
+		...(claudeCodeExe ? { CLAUDE_CODE_EXECUTABLE: claudeCodeExe } : {}),
+		...process.env,
+	};
 	const child = spawn(launch.command, launch.args, {
 		cwd: params.cwd,
 		env: childEnv,

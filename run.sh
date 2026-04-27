@@ -183,6 +183,40 @@ settings_path.write_text(json.dumps(data, indent=2) + "\n")
 print(f"install: updated {settings_path}")
 print(f"install: package source -> {repo_dir}")
 PY
+  ensure_agent_dir_symlinks
+}
+
+# Ensure agent-level resources that pi-shell-acp code reads from
+# ~/.pi/agent/ are wired up at install time. Currently:
+#   - entwurf-targets.json — pi-extensions/lib/entwurf-core.ts reads
+#     ~/.pi/agent/entwurf-targets.json. The package ships the canonical
+#     version at $REPO_DIR/pi/entwurf-targets.json. Without this symlink
+#     any entwurf tool call throws EntwurfRegistryError (lazy load — no
+#     surface during plain `pi --model ...` runs but blocks delegation
+#     immediately when the operator first calls entwurf).
+#
+# Idempotent — preserves an operator's existing file/symlink without
+# overwriting. Lazy load means new symlinks are picked up on next entwurf
+# call without restarting any running pi process.
+ensure_agent_dir_symlinks() {
+  local agent_dir="$HOME/.pi/agent"
+  mkdir -p "$agent_dir"
+
+  local target="$REPO_DIR/pi/entwurf-targets.json"
+  local link="$agent_dir/entwurf-targets.json"
+
+  if [ -L "$link" ]; then
+    if [ "$(readlink "$link")" = "$target" ]; then
+      :  # already correct, silent
+    else
+      echo "install: preserved $link (operator override -> $(readlink "$link"))"
+    fi
+  elif [ -e "$link" ]; then
+    echo "install: preserved $link (operator file)"
+  elif [ -f "$target" ]; then
+    ln -s "$target" "$link"
+    echo "install: linked $link -> $target"
+  fi
 }
 
 remove_local_package() {
