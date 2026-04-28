@@ -1108,7 +1108,7 @@ check_backends() {
   (cd "$REPO_DIR" && node --input-type=module <<'EOF'
 import { strict as assert } from 'node:assert';
 import { buildSessionMetaForBackend, CLAUDE_CONFIG_OVERLAY_DIR, CODEX_CONFIG_OVERLAY_DIR, ensureClaudeConfigOverlay, ensureCodexConfigOverlay, resolveAcpBackendLaunch } from './acp-bridge.ts';
-import { existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -1328,7 +1328,13 @@ try {
     'TaskCreate', 'TaskGet', 'TaskList', 'TaskOutput', 'TaskStop', 'TaskUpdate',
     'WebFetch', 'WebSearch',
   ]);
-  assert.deepEqual(claudeMeta?.systemPrompt, { append: 'system prompt' });
+  // _meta.systemPrompt is delivered as a *string*, not as { append: ... }.
+  // claude-agent-acp interprets a string-form systemPrompt as a full preset
+  // replacement (acp-agent.ts:1685), so the claude_code preset's per-cwd
+  // dynamic sections (working directory, auto-memory path, git status,
+  // todo handling) drop out of the system prompt. The engraving alone
+  // carries identity context above Anthropic's SDK-level minimum prefix.
+  assert.deepEqual(claudeMeta?.systemPrompt, 'system prompt');
   assert.equal(claudeMeta?.claudeCode?.options?.extraArgs?.['strict-mcp-config'], null);
 
   // Empty skillPlugins => no plugins field emitted, no Skill auto-added.
@@ -1380,10 +1386,16 @@ try {
     mkdirSync(realDir, { recursive: true });
     // Seed the synthetic real dir with shapes the production overlay should
     // mirror: a settings.json (overridden, NOT symlinked), a credentials
-    // file (symlinked), a directory entry (symlinked).
+    // file (symlinked passthrough), a projects/ tree carrying an
+    // operator-side MEMORY.md (must NOT pass through — overlay creates its
+    // own empty projects/), and a non-whitelisted entry like hooks/ (must
+    // be wiped by the stale-cleanup loop, not symlinked through).
     writeFileSync(join(realDir, 'settings.json'), JSON.stringify({ permissions: { defaultMode: 'auto' } }), 'utf8');
     writeFileSync(join(realDir, '.credentials.json'), '{"token":"test"}', 'utf8');
-    mkdirSync(join(realDir, 'projects'), { recursive: true });
+    mkdirSync(join(realDir, 'projects', 'operator-cwd', 'memory'), { recursive: true });
+    writeFileSync(join(realDir, 'projects', 'operator-cwd', 'memory', 'MEMORY.md'), 'OPERATOR-LEAK-CANARY', 'utf8');
+    mkdirSync(join(realDir, 'hooks'), { recursive: true });
+    writeFileSync(join(realDir, 'hooks', 'preToolUse.sh'), '#!/bin/sh\nexit 0\n', 'utf8');
 
     ensureClaudeConfigOverlay(realDir, overlayDir);
 
@@ -1394,20 +1406,39 @@ try {
     const overlaySettings = JSON.parse(readFileSync(join(overlayDir, 'settings.json'), 'utf8'));
     assert.equal(overlaySettings.permissions?.defaultMode, 'default',
       'overlay settings.json must pin permissions.defaultMode to "default"');
+    assert.equal(overlaySettings.autoMemoryEnabled, false,
+      'overlay settings.json must opt out of the SDK auto-memory subsystem');
 
-    // Other entries must be symlinks pointing back at the real dir.
+    // Whitelisted entries pass through as symlinks to the operator's real dir.
     const credStat = lstatSync(join(overlayDir, '.credentials.json'));
     assert.equal(credStat.isSymbolicLink(), true);
     assert.equal(readlinkSync(join(overlayDir, '.credentials.json')), join(realDir, '.credentials.json'));
 
+    // projects/ is overlay-private — an empty directory, NOT a symlink to
+    // the operator's tree. Closes the per-cwd MEMORY.md auto-injection
+    // channel: the binary's sanitized-cwd lookup finds nothing here.
     const projStat = lstatSync(join(overlayDir, 'projects'));
-    assert.equal(projStat.isSymbolicLink(), true);
-    assert.equal(readlinkSync(join(overlayDir, 'projects')), join(realDir, 'projects'));
+    assert.equal(projStat.isSymbolicLink(), false,
+      'overlay projects/ must be an overlay-private directory, not a symlink to operator data');
+    assert.equal(projStat.isDirectory(), true);
+    const projContents = readdirSync(join(overlayDir, 'projects'));
+    assert.deepEqual(projContents, [],
+      'overlay projects/ must start empty — operator MEMORY.md must not leak through');
+    assert.equal(existsSync(join(overlayDir, 'projects', 'operator-cwd', 'memory', 'MEMORY.md')), false,
+      'operator-side MEMORY.md must not be reachable through the overlay');
+
+    // Non-whitelisted entries (operator hooks, agents, sessions data,
+    // settings.local.json with personal env, ...) must NOT appear in the
+    // overlay. The stale-cleanup loop guarantees this each bootstrap.
+    assert.equal(existsSync(join(overlayDir, 'hooks')), false,
+      'overlay must not expose operator hooks/ — execution surface leak');
 
     // Idempotence: a second call must succeed without throwing and preserve
-    // the same shape.
+    // the same shape (still no operator data, still empty projects/).
     ensureClaudeConfigOverlay(realDir, overlayDir);
     assert.equal(readlinkSync(join(overlayDir, '.credentials.json')), join(realDir, '.credentials.json'));
+    assert.equal(existsSync(join(overlayDir, 'hooks')), false,
+      'second-call idempotence must not let operator hooks/ leak back in');
   } finally {
     rmSync(overlayTestRoot, { recursive: true, force: true });
   }

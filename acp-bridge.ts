@@ -888,8 +888,25 @@ function buildClaudeSessionMeta(
 			options: claudeCodeOptions,
 		},
 	};
+
+	// Replace the claude_code preset entirely with engraving-as-system-prompt.
+	// claude-agent-acp's _meta.systemPrompt accepts a string for full preset
+	// replacement (acp-agent.ts:1685-1686), and the SDK's Options.systemPrompt
+	// union has `string` as a first-class form (sdk.d.ts:1695). Result: the
+	// claude_code preset disappears entirely — including its `# auto memory`
+	// guidance section and per-cwd MEMORY.md auto-load reference — and the
+	// engraving alone carries whatever identity context the agent gets.
+	//
+	// Anthropic's SDK still prepends a one-line minimum identity claim
+	// ("You are a Claude agent, built on Anthropic's Claude Agent SDK.") at
+	// the binary level — that boundary is intentionally respected. Above
+	// that line, pi-shell-acp authors the operating surface entirely.
+	//
+	// We do not author additional identity-stamping copy on purpose: the
+	// agent's identity comes through the engraving and the visible MCP/tool
+	// surface, not through preset replacement boilerplate.
 	if (normalizedSystemPrompt) {
-		meta.systemPrompt = { append: normalizedSystemPrompt };
+		meta.systemPrompt = normalizedSystemPrompt;
 	}
 	return meta;
 }
@@ -933,17 +950,89 @@ const CLAUDE_REAL_CONFIG_DIR = join(homedir(), ".claude");
 export const CLAUDE_CONFIG_OVERLAY_DIR = join(homedir(), ".pi", "agent", "claude-config-overlay");
 
 // Minimal settings.json content for the overlay. Only fields we have a
-// reason to pin live here. Currently we override `permissions.defaultMode`
-// to neutralize the operator's native `"auto"` setting, which would
-// otherwise apply to pi-shell-acp sessions and (a) trigger Claude Code's
-// auto mode classifier inside an ACP session, (b) be invisible to operators
-// who only set it for their direct Claude Code use. With our explicit
-// `tools` surface and `permissionAllow` wildcard list, `"default"` mode
-// auto-passes every tool we actually expose — no prompts in practice — and
-// degrades gracefully if the surface ever expands without an allow update.
+// reason to pin live here. Current overrides:
+//
+// - `permissions.defaultMode`: neutralize the operator's native `"auto"`
+//   setting, which would otherwise apply to pi-shell-acp sessions and
+//   (a) trigger Claude Code's auto mode classifier inside an ACP session,
+//   (b) be invisible to operators who only set it for their direct Claude
+//   Code use. With our explicit `tools` surface and `permissionAllow`
+//   wildcard list, `"default"` mode auto-passes every tool we actually
+//   expose — no prompts in practice — and degrades gracefully if the
+//   surface ever expands without an allow update.
+//
+// - `autoMemoryEnabled: false`: SDK-level opt-out for the auto-memory
+//   subsystem (sdk.d.ts:4913). On its own this does not fully close the
+//   per-cwd MEMORY.md leak — the binary v2.1.121 auto-injects MEMORY.md
+//   content via a separate channel — so the real closure is the empty
+//   `projects/` tree below. We still pin this field as a defense-in-depth
+//   layer: it disables agent-side memory R/W via the SDK contract and
+//   stays effective if a future binary version honors the field more
+//   strictly.
 function overlaySettingsJson(): string {
-	return `${JSON.stringify({ permissions: { defaultMode: "default" } }, null, 2)}\n`;
+	return `${JSON.stringify(
+		{
+			permissions: { defaultMode: "default" },
+			autoMemoryEnabled: false,
+		},
+		null,
+		2,
+	)}\n`;
 }
+
+// Whitelist of operator's ~/.claude/ entries we expose to pi-shell-acp
+// sessions via symlink. Anything not in here is intentionally hidden:
+// operator personal config (CLAUDE.md, hooks, agents, sessions data,
+// settings.local.json with personal env / GitHub PAT, plugin enablement,
+// command history, todos, tasks, keybindings, ...) does not leak into
+// pi-shell-acp's model context, hook execution surface, or environment.
+//
+// Entries here are limited to:
+//   - what backend authentication needs (`.credentials.json`)
+//   - Claude Code's runtime caches and telemetry (cache, debug,
+//     stats-cache.json, statsig, telemetry, session-env)
+//   - the bridge's own scratch surfaces (session-bridge, shell-snapshots)
+//   - built-in (non-operator-defined) skill content (skills)
+//
+// `plugins` is deliberately excluded: plugin enablement is operator
+// personal config, and pi-shell-acp injects its own plugin set via
+// `claudeCodeOptions.plugins` (see buildClaudeSessionMeta), not via
+// filesystem inheritance.
+const OVERLAY_PASSTHROUGH = new Set([
+	".credentials.json",
+	"cache",
+	"debug",
+	"session-bridge",
+	"session-env",
+	"shell-snapshots",
+	"skills",
+	"stats-cache.json",
+	"statsig",
+	"telemetry",
+]);
+
+// Empty directories owned by the overlay itself. The Claude Code binary
+// auto-creates and writes per-cwd state under these paths; we give it
+// empty trees scoped to the overlay so:
+// - operator's existing data at ~/.claude/{projects,sessions}/ is never
+//   read or written from pi-shell-acp.
+// - the binary's missing-path-graceful behavior closes the auto-memory
+//   leak: if it would have read MEMORY.md from
+//   <projects>/<sanitized-cwd>/memory/MEMORY.md, it finds an empty tree
+//   and silently injects nothing.
+const OVERLAY_EMPTY_DIRS = new Set(["projects", "sessions"]);
+
+// Entries the Claude Code binary creates inside the overlay itself
+// (feature-flag cache, automatic backups of `.claude.json`, ...). These
+// are *not* present in the operator's real `~/.claude/` — the binary
+// makes them in whatever `CLAUDE_CONFIG_DIR` it is pointed at. We exempt
+// them from stale-cleanup so the binary's runtime self-management is
+// preserved across session bootstraps; deleting them would force a
+// rewrite-then-cleanup cycle every session.
+//
+// `settings.json` is overlay-authored (overlaySettingsJson above) but
+// listed here for symmetry — we never want the cleanup loop to nuke it.
+const OVERLAY_BINARY_OWNED = new Set([".claude.json", "backups", "settings.json"]);
 
 export function ensureClaudeConfigOverlay(
 	realDir: string = CLAUDE_REAL_CONFIG_DIR,
@@ -955,36 +1044,73 @@ export function ensureClaudeConfigOverlay(
 	// override is in place even if a prior process or operator edited it.
 	writeFileSync(join(overlayDir, "settings.json"), overlaySettingsJson(), "utf8");
 
-	if (!existsSync(realDir)) return;
-
-	// Symlink every other entry from the real config dir into the overlay.
-	// Idempotent — preserves correct symlinks, replaces wrong ones.
-	for (const entry of readdirSync(realDir)) {
-		if (entry === "settings.json") continue;
-		const realPath = join(realDir, entry);
+	// Empty dirs — owned by the overlay, replace any prior symlink.
+	for (const entry of OVERLAY_EMPTY_DIRS) {
 		const overlayPath = join(overlayDir, entry);
-
 		try {
 			const existing = lstatSync(overlayPath);
-			if (existing.isSymbolicLink()) {
-				if (readlinkSync(overlayPath) === realPath) continue;
-				unlinkSync(overlayPath);
-			} else {
-				// Wrong file type at this path — remove and replace with symlink.
+			if (existing.isSymbolicLink() || !existing.isDirectory()) {
 				rmSync(overlayPath, { recursive: true, force: true });
+				mkdirSync(overlayPath, { recursive: true });
 			}
 		} catch {
-			// Doesn't exist — fall through to create.
+			mkdirSync(overlayPath, { recursive: true });
 		}
+	}
 
+	// Symlinked passthrough — only entries on the whitelist, only if they
+	// exist in the operator's real ~/.claude/. Idempotent: keeps correct
+	// symlinks, replaces wrong ones, removes stale entries cleanly.
+	if (existsSync(realDir)) {
+		for (const entry of OVERLAY_PASSTHROUGH) {
+			const realPath = join(realDir, entry);
+			const overlayPath = join(overlayDir, entry);
+
+			if (!existsSync(realPath)) {
+				try {
+					lstatSync(overlayPath);
+					rmSync(overlayPath, { recursive: true, force: true });
+				} catch {
+					// Doesn't exist — fine.
+				}
+				continue;
+			}
+
+			try {
+				const existing = lstatSync(overlayPath);
+				if (existing.isSymbolicLink()) {
+					if (readlinkSync(overlayPath) === realPath) continue;
+					unlinkSync(overlayPath);
+				} else {
+					rmSync(overlayPath, { recursive: true, force: true });
+				}
+			} catch {
+				// Doesn't exist — fall through to symlink.
+			}
+
+			try {
+				symlinkSync(realPath, overlayPath);
+			} catch (error) {
+				console.error(
+					`[pi-shell-acp:claude-overlay] symlink failed for ${entry}: ${error instanceof Error ? error.message : String(error)}`,
+				);
+			}
+		}
+	}
+
+	// Stale entry cleanup — remove anything that's not on the current
+	// allowlist. Handles migration from earlier overlay code that
+	// blindly symlinked every ~/.claude/ entry, and keeps the overlay
+	// surface tight if the whitelist shrinks in a future release.
+	for (const entry of readdirSync(overlayDir)) {
+		if (OVERLAY_PASSTHROUGH.has(entry)) continue;
+		if (OVERLAY_EMPTY_DIRS.has(entry)) continue;
+		if (OVERLAY_BINARY_OWNED.has(entry)) continue;
+		const overlayPath = join(overlayDir, entry);
 		try {
-			symlinkSync(realPath, overlayPath);
-		} catch (error) {
-			// Best-effort: a symlink failure should not block the session bootstrap.
-			// Operator can inspect the overlay manually if a flow breaks.
-			console.error(
-				`[pi-shell-acp:claude-overlay] symlink failed for ${entry}: ${error instanceof Error ? error.message : String(error)}`,
-			);
+			rmSync(overlayPath, { recursive: true, force: true });
+		} catch {
+			// Best-effort cleanup; a stuck stale entry is annoying but not fatal.
 		}
 	}
 }
