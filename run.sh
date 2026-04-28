@@ -1107,8 +1107,8 @@ EOF
 check_backends() {
   (cd "$REPO_DIR" && node --input-type=module <<'EOF'
 import { strict as assert } from 'node:assert';
-import { buildSessionMetaForBackend, CLAUDE_CONFIG_OVERLAY_DIR, CODEX_CONFIG_OVERLAY_DIR, ensureClaudeConfigOverlay, ensureCodexConfigOverlay, resolveAcpBackendLaunch } from './acp-bridge.ts';
-import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSync, rmSync, writeFileSync } from 'node:fs';
+import { buildSessionMetaForBackend, CLAUDE_CONFIG_OVERLAY_DIR, CODEX_CONFIG_OVERLAY_DIR, ensureClaudeConfigOverlay, ensureCodexConfigOverlay, resolveAcpBackendLaunch, resolveBridgeEnvDefaults } from './acp-bridge.ts';
+import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -1642,11 +1642,82 @@ try {
       'second-call idempotence must preserve empty memories/');
     assert.equal(existsSync(join(codexOverlayDir, 'rules')), false,
       'second-call idempotence must not let operator rules/ leak back in');
+
+    // Migration regression test: an overlay built by the previous
+    // blacklist-style code would have *symlinked* the operator's
+    // state_5.sqlite* and logs_2.sqlite* through. The new cleanup must
+    // strip those stale symlinks on first run with the new code, or
+    // the operator's persistent thread/memory state DB would still be
+    // reachable through the overlay even after this commit ships. We
+    // simulate that pre-migration state and verify cleanup tears the
+    // symlinks down.
+    for (const dbName of ['state_5.sqlite', 'state_5.sqlite-shm', 'state_5.sqlite-wal',
+                          'logs_2.sqlite', 'logs_2.sqlite-shm', 'logs_2.sqlite-wal']) {
+      const overlayDbPath = join(codexOverlayDir, dbName);
+      const realDbPath = join(codexRealDir, dbName);
+      // Make sure the operator-side file exists so the symlink resolves.
+      if (!existsSync(realDbPath)) {
+        writeFileSync(realDbPath, `OPERATOR-${dbName}-CANARY`, 'utf8');
+      }
+      // Replace whatever the previous call left with a stale symlink to
+      // the operator's real file (the pre-migration overlay shape).
+      try { rmSync(overlayDbPath, { force: true }); } catch {}
+      symlinkSync(realDbPath, overlayDbPath);
+      assert.equal(lstatSync(overlayDbPath).isSymbolicLink(), true,
+        `seed precondition: ${dbName} must be a symlink before migration`);
+    }
+    ensureCodexConfigOverlay(codexRealDir, codexOverlayDir);
+    for (const dbName of ['state_5.sqlite', 'state_5.sqlite-shm', 'state_5.sqlite-wal',
+                          'logs_2.sqlite', 'logs_2.sqlite-shm', 'logs_2.sqlite-wal']) {
+      const overlayDbPath = join(codexOverlayDir, dbName);
+      if (existsSync(overlayDbPath)) {
+        assert.equal(lstatSync(overlayDbPath).isSymbolicLink(), false,
+          `migration must strip stale operator symlink at ${dbName}`);
+      }
+      // A non-symlink (regular file authored by the binary) or absent
+      // entry are both acceptable post-migration shapes.
+    }
   } finally {
     rmSync(codexOverlayTestRoot, { recursive: true, force: true });
   }
 
-  console.log('[check-backends] 86 assertions ok');
+  // resolveBridgeEnvDefaults — compaction toggle vs identity isolation.
+  // PI_SHELL_ACP_ALLOW_COMPACTION=1 must drop only the compaction-guard
+  // keys (DISABLE_AUTO_COMPACT, DISABLE_COMPACT). Identity-isolation
+  // pins (CLAUDE_CONFIG_DIR, CODEX_HOME, CODEX_SQLITE_HOME) must stay
+  // regardless. Conflating the two would silently leak the operator's
+  // ~/.codex or ~/.claude into the bridge child process the moment
+  // compaction is allowed — exactly the regression this guards against.
+  //
+  // Claude defaults — full set (compaction guards on).
+  const claudeEnvFull = resolveBridgeEnvDefaults('claude');
+  assert.equal(claudeEnvFull?.CLAUDE_CONFIG_DIR, CLAUDE_CONFIG_OVERLAY_DIR,
+    'claude bridge env must pin CLAUDE_CONFIG_DIR to the overlay');
+  assert.equal(claudeEnvFull?.DISABLE_AUTO_COMPACT, '1');
+  assert.equal(claudeEnvFull?.DISABLE_COMPACT, '1');
+  // Claude defaults — compaction allowed: compaction keys gone, isolation stays.
+  const claudeEnvAllowCompaction = resolveBridgeEnvDefaults('claude', { allowCompaction: true });
+  assert.equal(claudeEnvAllowCompaction?.CLAUDE_CONFIG_DIR, CLAUDE_CONFIG_OVERLAY_DIR,
+    'claude bridge env must keep CLAUDE_CONFIG_DIR even when compaction is allowed');
+  assert.equal(claudeEnvAllowCompaction?.DISABLE_AUTO_COMPACT, undefined,
+    'claude bridge env must drop DISABLE_AUTO_COMPACT when compaction is allowed');
+  assert.equal(claudeEnvAllowCompaction?.DISABLE_COMPACT, undefined,
+    'claude bridge env must drop DISABLE_COMPACT when compaction is allowed');
+  // Codex defaults — both passes must keep the isolation pins. Codex's
+  // compaction guard is a launch-arg threshold (model_auto_compact_token_limit),
+  // not an env var, so the compaction toggle does not affect codex env.
+  const codexEnvFull = resolveBridgeEnvDefaults('codex');
+  assert.equal(codexEnvFull?.CODEX_HOME, CODEX_CONFIG_OVERLAY_DIR,
+    'codex bridge env must pin CODEX_HOME to the overlay');
+  assert.equal(codexEnvFull?.CODEX_SQLITE_HOME, CODEX_CONFIG_OVERLAY_DIR,
+    'codex bridge env must pin CODEX_SQLITE_HOME to the overlay (state_5.sqlite isolation)');
+  const codexEnvAllowCompaction = resolveBridgeEnvDefaults('codex', { allowCompaction: true });
+  assert.equal(codexEnvAllowCompaction?.CODEX_HOME, CODEX_CONFIG_OVERLAY_DIR,
+    'codex bridge env must keep CODEX_HOME even when compaction is allowed');
+  assert.equal(codexEnvAllowCompaction?.CODEX_SQLITE_HOME, CODEX_CONFIG_OVERLAY_DIR,
+    'codex bridge env must keep CODEX_SQLITE_HOME even when compaction is allowed');
+
+  console.log('[check-backends] 110 assertions ok');
 } finally {
   if (prevClaude === undefined) delete process.env.CLAUDE_AGENT_ACP_COMMAND;
   else process.env.CLAUDE_AGENT_ACP_COMMAND = prevClaude;

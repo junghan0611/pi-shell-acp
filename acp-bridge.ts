@@ -733,6 +733,43 @@ const CODEX_MODE_ARGS: Record<CodexMode, readonly string[]> = {
 	"full-access": ["-c", "approval_policy=never", "-c", "sandbox_mode=danger-full-access"],
 };
 
+// Env-var keys used to disable backend-side auto-compaction (Claude only;
+// codex's compaction guard is a launch-arg threshold, not an env var).
+// `PI_SHELL_ACP_ALLOW_COMPACTION=1` strips these from the spawned child's
+// env so the operator can opt out of pi-side compaction guards. Other
+// keys in adapter.bridgeEnvDefaults — most importantly the CODEX_HOME /
+// CODEX_SQLITE_HOME / CLAUDE_CONFIG_DIR isolation pins — are *not*
+// affected by the compaction toggle. Those keys are identity-isolation
+// invariants that must hold regardless of how compaction is configured.
+const COMPACTION_GUARD_ENV_KEYS: ReadonlySet<string> = new Set(["DISABLE_AUTO_COMPACT", "DISABLE_COMPACT"]);
+
+/**
+ * Materialize the spawned child's env defaults for a backend, taking the
+ * operator's PI_SHELL_ACP_ALLOW_COMPACTION knob into account.
+ *
+ * - allowCompaction === true: strip the compaction-guard keys
+ *   (DISABLE_AUTO_COMPACT, DISABLE_COMPACT) so claude can fall back to
+ *   its native auto-compaction. Identity-isolation keys
+ *   (CLAUDE_CONFIG_DIR, CODEX_HOME, CODEX_SQLITE_HOME) stay.
+ * - allowCompaction === false / unset: return the adapter's full set
+ *   verbatim.
+ *
+ * Exported for check-backends so the contract is verified at unit-test
+ * time, not just at production startup. Conflating the compaction
+ * toggle with isolation env was a previous regression — the test
+ * surface keeps it from drifting back.
+ */
+export function resolveBridgeEnvDefaults(
+	backend: AcpBackend,
+	options?: { allowCompaction?: boolean },
+): Record<string, string> | undefined {
+	const adapter = ACP_BACKEND_ADAPTERS[backend];
+	const adapterEnv = adapter?.bridgeEnvDefaults;
+	if (!adapterEnv) return undefined;
+	if (!options?.allowCompaction) return adapterEnv;
+	return Object.fromEntries(Object.entries(adapterEnv).filter(([key]) => !COMPACTION_GUARD_ENV_KEYS.has(key)));
+}
+
 function isCompactionAllowedByOperator(): boolean {
 	const allow = process.env.PI_SHELL_ACP_ALLOW_COMPACTION?.trim().toLowerCase();
 	return allow === "1" || allow === "true" || allow === "yes";
@@ -1191,11 +1228,34 @@ export function ensureClaudeConfigOverlay(
 	// allowlist. Handles migration from earlier overlay code that
 	// blindly symlinked every ~/.claude/ entry, and keeps the overlay
 	// surface tight if the whitelist shrinks in a future release.
+	//
+	// Binary-owned entries get a separate pass: preserve them only if
+	// they are real files/dirs (claude authored them inside the
+	// overlay). Stale symlinks pointing at operator data are torn
+	// down so claude re-initializes fresh state inside the overlay.
+	// Mirrors the codex overlay cleanup contract — Claude's
+	// binary-owned set (`.claude.json`, `backups/`, `settings.json`)
+	// has no operator-side counterparts in the current claude binary
+	// so this branch is mostly defensive, but the symmetry guards
+	// against any future binary version that creates corresponding
+	// entries operator-side.
 	for (const entry of readdirSync(overlayDir)) {
 		if (OVERLAY_PASSTHROUGH.has(entry)) continue;
 		if (OVERLAY_EMPTY_DIRS.has(entry)) continue;
-		if (OVERLAY_BINARY_OWNED.has(entry)) continue;
 		const overlayPath = join(overlayDir, entry);
+
+		if (OVERLAY_BINARY_OWNED.has(entry)) {
+			try {
+				const stat = lstatSync(overlayPath);
+				if (stat.isSymbolicLink()) {
+					rmSync(overlayPath, { force: true });
+				}
+			} catch {
+				// Doesn't exist — fine; binary will create it on first launch.
+			}
+			continue;
+		}
+
 		try {
 			rmSync(overlayPath, { recursive: true, force: true });
 		} catch {
@@ -1298,21 +1358,33 @@ const OVERLAY_PASSTHROUGH_CODEX = new Set([
 //   into the overlay without inheriting any operator-side payload.
 const OVERLAY_EMPTY_DIRS_CODEX = new Set(["log", "memories", "sessions", "shell_snapshots"]);
 
-// Files the codex binary self-manages inside the overlay. We never
-// delete these on rebuild — they are not operator data and the binary
-// will recreate them anyway. Crucially this list contains the codex
-// state DB (`state_5.sqlite` + its WAL/SHM siblings) and the telemetry
-// DB (`logs_2.sqlite`). Both are *not* in OVERLAY_PASSTHROUGH_CODEX
-// above; codex initializes fresh copies inside the overlay on first
-// launch (CODEX_HOME + CODEX_SQLITE_HOME both pointed at the overlay
-// in bridgeEnvDefaults). Symlinking the operator's real DBs through
-// here would expose persistent thread/memory state — the deepest
-// leak channel on the codex backend, deeper than per-cwd MEMORY.md is
-// on Claude. `config.toml` is overlay-authored (overlayCodexConfigToml
-// above) but listed here so the cleanup loop never wipes it.
+// Files the codex binary self-manages inside the overlay. The cleanup
+// loop preserves these *if they are real files/dirs* (binary already
+// initialized them inside the overlay). However, an overlay built by
+// an earlier blacklist-style version of pi-shell-acp would have
+// *symlinked* these to the operator's real `~/.codex/` — those stale
+// symlinks must be torn down on first run with the new code, or the
+// migration silently leaves the operator's persistent thread/memory
+// state DB reachable through the overlay. The cleanup pass strips
+// symlinks pointing into operator data while leaving binary-authored
+// regular files untouched.
+//
+// Crucially this list contains the codex state DB (`state_5.sqlite`
+// + WAL/SHM siblings) and the telemetry DB (`logs_2.sqlite` + WAL/SHM
+// siblings — sqlite WAL mode creates -shm/-wal files alongside the
+// main DB and they must travel together; missing one of them would
+// either let an operator-side -wal slip through or corrupt the
+// overlay-side DB on next open). Both DBs are *not* in
+// OVERLAY_PASSTHROUGH_CODEX above; codex initializes fresh copies
+// inside the overlay on first launch (CODEX_HOME + CODEX_SQLITE_HOME
+// both pointed at the overlay in bridgeEnvDefaults). `config.toml` is
+// overlay-authored (overlayCodexConfigToml above) but listed here so
+// the cleanup loop never wipes it.
 const OVERLAY_BINARY_OWNED_CODEX = new Set([
 	"config.toml",
 	"logs_2.sqlite",
+	"logs_2.sqlite-shm",
+	"logs_2.sqlite-wal",
 	"state_5.sqlite",
 	"state_5.sqlite-shm",
 	"state_5.sqlite-wal",
@@ -1383,16 +1455,39 @@ export function ensureCodexConfigOverlay(
 	}
 
 	// Stale entry cleanup — remove anything that's not on the current
-	// allowlist. Handles migration from earlier overlay code that blindly
-	// symlinked every ~/.codex/ entry (including history.jsonl with
-	// operator command history, memories/ with operator memory, rules/
-	// with operator policy, ...) and keeps the overlay surface tight if
-	// the whitelist shrinks in a future release.
+	// allowlist. Handles migration from earlier overlay code that
+	// blindly symlinked every ~/.codex/ entry (including history.jsonl
+	// with operator command history, memories/ with operator memory,
+	// rules/ with operator policy, AGENTS.md auto-loaded as user
+	// instructions, ...) and keeps the overlay surface tight if the
+	// whitelist shrinks in a future release.
+	//
+	// Binary-owned entries get a separate pass: we preserve them only
+	// if they are real files/directories (codex authored them inside
+	// the overlay on a prior run). A pre-migration overlay built by
+	// the blacklist version would have *symlinked* them to operator
+	// state — those stale symlinks must be removed so codex
+	// re-initializes fresh state inside the overlay on next launch.
+	// Otherwise the migration would leave operator thread/memory state
+	// (state_5.sqlite*) and telemetry (logs_2.sqlite*) reachable
+	// through the overlay even after this commit ships.
 	for (const entry of readdirSync(overlayDir)) {
 		if (OVERLAY_PASSTHROUGH_CODEX.has(entry)) continue;
 		if (OVERLAY_EMPTY_DIRS_CODEX.has(entry)) continue;
-		if (OVERLAY_BINARY_OWNED_CODEX.has(entry)) continue;
 		const overlayPath = join(overlayDir, entry);
+
+		if (OVERLAY_BINARY_OWNED_CODEX.has(entry)) {
+			try {
+				const stat = lstatSync(overlayPath);
+				if (stat.isSymbolicLink()) {
+					rmSync(overlayPath, { force: true });
+				}
+			} catch {
+				// Doesn't exist — fine; codex will create it on first launch.
+			}
+			continue;
+		}
+
 		try {
 			rmSync(overlayPath, { recursive: true, force: true });
 		} catch {
@@ -1939,7 +2034,18 @@ async function createBridgeProcess(params: EnsureBridgeSessionParams): Promise<A
 	// Adapter defaults first, process.env last → operator's shell always wins.
 	// PI_SHELL_ACP_ALLOW_COMPACTION=1 disables both pi-side and backend-side
 	// compaction guards for this process.
-	const bridgeEnvDefaults = isCompactionAllowedByOperator() ? undefined : adapter.bridgeEnvDefaults;
+	// Resolve the spawned child's env defaults. PI_SHELL_ACP_ALLOW_COMPACTION=1
+	// removes only the compaction-guard keys (Claude's
+	// DISABLE_AUTO_COMPACT / DISABLE_COMPACT). Identity-isolation keys
+	// (CODEX_HOME, CODEX_SQLITE_HOME, CLAUDE_CONFIG_DIR) stay regardless —
+	// they are invariants required by the operator-config-isolation
+	// design, not policy choices an operator can opt out of via the
+	// compaction toggle. Conflating the two would silently leak the
+	// operator's ~/.codex or ~/.claude into the bridge child process the
+	// moment compaction is allowed.
+	const bridgeEnvDefaults = resolveBridgeEnvDefaults(params.backend, {
+		allowCompaction: isCompactionAllowedByOperator(),
+	});
 	// Refresh the claude config overlay before every claude session bootstrap.
 	// Idempotent — picks up any new entries that appeared in ~/.claude/ since
 	// the last run (e.g. a freshly created project) without manual intervention.
