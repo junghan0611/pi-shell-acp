@@ -417,6 +417,30 @@ function parseStringArray(settings: Record<string, unknown>, key: string, filePa
 	return value as string[];
 }
 
+// Once-per-process flag so the warning fires on first bootstrap but does not
+// repeat on every prompt or model switch.
+let codexFeatureGatingWarningEmitted = false;
+
+// Detect the explicit-empty-array case (`"codexDisabledFeatures": []`) and
+// warn the operator. The semantics differ from "absent" in a way that has
+// already caused one regression downstream (agent-config 0.2.1-era workaround
+// that survived the 0.2.2 nullish-guard fix and silently flipped the codex
+// tool surface from fail-closed to fail-open). Absent → DEFAULT applies →
+// 5 features disabled. Explicit `[]` → operator opt-out → all gating off,
+// codex native multi_agent / apps / image_generation / tool_suggest /
+// tool_search become callable. The warning lets operators who set `[]` by
+// accident see the divergence at session start instead of discovering it
+// turns later via a tool-availability surprise.
+function warnIfCodexFeatureGatingDisabled(rawValue: readonly string[] | undefined): void {
+	if (codexFeatureGatingWarningEmitted) return;
+	if (rawValue === undefined) return;
+	if (rawValue.length !== 0) return;
+	codexFeatureGatingWarningEmitted = true;
+	console.error(
+		`[pi-shell-acp:warn] codexDisabledFeatures=[] in settings.json explicitly opts out of bridge feature gating; codex native multi_agent (spawn_agent et al.), apps (mcp__codex_apps__*), image_generation, tool_suggest, and tool_search are enabled. To restore the fail-closed default (${DEFAULT_CODEX_DISABLED_FEATURES.join(", ")}), remove the codexDisabledFeatures key. To gate a subset, list only the keys you want disabled.`,
+	);
+}
+
 function inferBackendFromModel(model: Model<any>): AcpBackend {
 	// Curated-first: the allowlist determines routing deterministically.
 	if (SUPPORTED_CODEX_SET.has(model.id)) return "codex";
@@ -473,7 +497,12 @@ function loadProviderSettings(cwd: string, model: Model<any>): ResolvedProviderS
 	const permissionAllow =
 		skillPlugins.length > 0 && !baseAllow.includes("Skill(*)") ? [...baseAllow, "Skill(*)"] : baseAllow;
 	const disallowedTools = merged.disallowedTools ?? [...DEFAULT_CLAUDE_DISALLOWED_TOOLS];
+	// Distinguish absent (apply default fail-closed gating) from explicit `[]`
+	// (operator opts fully out of bridge feature gating). The `??` collapses
+	// both to a value, so we read the pre-merge field directly to detect the
+	// explicit-empty case and warn — see warnIfCodexFeatureGatingDisabled().
 	const codexDisabledFeatures = merged.codexDisabledFeatures ?? [...DEFAULT_CODEX_DISABLED_FEATURES];
+	warnIfCodexFeatureGatingDisabled(merged.codexDisabledFeatures);
 	const mergedMcpServersRaw: McpServerInputMap = {
 		...(globalSettings.mcpServers ?? {}),
 		...(projectSettings.mcpServers ?? {}),
