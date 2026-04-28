@@ -1141,7 +1141,7 @@ try {
   assert.equal(codexLaunch.command, 'bash');
   assert.deepEqual(codexLaunch.args, [
     '-lc',
-    `${codexOverride} '-c' 'approval_policy=never' '-c' 'sandbox_mode=danger-full-access' '-c' 'model_auto_compact_token_limit=9223372036854775807' '-c' 'web_search="disabled"' '-c' 'tools.view_image=false' '-c' 'features.image_generation=false' '-c' 'features.tool_suggest=false' '-c' 'features.tool_search=false' '-c' 'features.multi_agent=false' '-c' 'features.apps=false'`,
+    `${codexOverride} '-c' 'approval_policy=never' '-c' 'sandbox_mode=danger-full-access' '-c' 'model_auto_compact_token_limit=9223372036854775807' '-c' 'web_search="disabled"' '-c' 'tools.view_image=false' '-c' 'memories.generate_memories=false' '-c' 'memories.use_memories=false' '-c' 'history.persistence="none"' '-c' 'features.image_generation=false' '-c' 'features.tool_suggest=false' '-c' 'features.tool_search=false' '-c' 'features.multi_agent=false' '-c' 'features.apps=false' '-c' 'features.memories=false'`,
   ]);
   assert.equal(codexLaunch.source, 'env:CODEX_ACP_COMMAND');
   // Defense-in-depth: pin web_search=disabled, tools.view_image=false, and
@@ -1193,7 +1193,7 @@ try {
     const codexLaunchAutoMode = resolveAcpBackendLaunch('codex');
     assert.deepEqual(codexLaunchAutoMode.args, [
       '-lc',
-      `${codexOverride} '-c' 'approval_policy=on-request' '-c' 'sandbox_mode=workspace-write' '-c' 'model_auto_compact_token_limit=9223372036854775807' '-c' 'web_search="disabled"' '-c' 'tools.view_image=false' '-c' 'features.image_generation=false' '-c' 'features.tool_suggest=false' '-c' 'features.tool_search=false' '-c' 'features.multi_agent=false' '-c' 'features.apps=false'`,
+      `${codexOverride} '-c' 'approval_policy=on-request' '-c' 'sandbox_mode=workspace-write' '-c' 'model_auto_compact_token_limit=9223372036854775807' '-c' 'web_search="disabled"' '-c' 'tools.view_image=false' '-c' 'memories.generate_memories=false' '-c' 'memories.use_memories=false' '-c' 'history.persistence="none"' '-c' 'features.image_generation=false' '-c' 'features.tool_suggest=false' '-c' 'features.tool_search=false' '-c' 'features.multi_agent=false' '-c' 'features.apps=false' '-c' 'features.memories=false'`,
     ]);
   } finally {
     if (prevMode === undefined) delete process.env.PI_SHELL_ACP_CODEX_MODE;
@@ -1224,7 +1224,7 @@ try {
     const codexLaunchOptOut = resolveAcpBackendLaunch('codex');
     assert.deepEqual(codexLaunchOptOut.args, [
       '-lc',
-      `${codexOverride} '-c' 'approval_policy=never' '-c' 'sandbox_mode=danger-full-access' '-c' 'web_search="disabled"' '-c' 'tools.view_image=false' '-c' 'features.image_generation=false' '-c' 'features.tool_suggest=false' '-c' 'features.tool_search=false' '-c' 'features.multi_agent=false' '-c' 'features.apps=false'`,
+      `${codexOverride} '-c' 'approval_policy=never' '-c' 'sandbox_mode=danger-full-access' '-c' 'web_search="disabled"' '-c' 'tools.view_image=false' '-c' 'memories.generate_memories=false' '-c' 'memories.use_memories=false' '-c' 'history.persistence="none"' '-c' 'features.image_generation=false' '-c' 'features.tool_suggest=false' '-c' 'features.tool_search=false' '-c' 'features.multi_agent=false' '-c' 'features.apps=false' '-c' 'features.memories=false'`,
     ]);
   } finally {
     if (prevAllow === undefined) delete process.env.PI_SHELL_ACP_ALLOW_COMPACTION;
@@ -1239,7 +1239,7 @@ try {
   const codexLaunchEmptyFeatures = resolveAcpBackendLaunch('codex', { codexDisabledFeatures: [] });
   assert.deepEqual(codexLaunchEmptyFeatures.args, [
     '-lc',
-    `${codexOverride} '-c' 'approval_policy=never' '-c' 'sandbox_mode=danger-full-access' '-c' 'model_auto_compact_token_limit=9223372036854775807' '-c' 'web_search="disabled"' '-c' 'tools.view_image=false'`,
+    `${codexOverride} '-c' 'approval_policy=never' '-c' 'sandbox_mode=danger-full-access' '-c' 'model_auto_compact_token_limit=9223372036854775807' '-c' 'web_search="disabled"' '-c' 'tools.view_image=false' '-c' 'memories.generate_memories=false' '-c' 'memories.use_memories=false' '-c' 'history.persistence="none"'`,
   ]);
   assert.ok(
     !codexLaunchEmptyFeatures.args.some((arg) => arg.includes('features.')),
@@ -1255,11 +1255,50 @@ try {
   const codexLaunchPartialFeatures = resolveAcpBackendLaunch('codex', { codexDisabledFeatures: ['apps', 'multi_agent'] });
   assert.deepEqual(codexLaunchPartialFeatures.args, [
     '-lc',
-    `${codexOverride} '-c' 'approval_policy=never' '-c' 'sandbox_mode=danger-full-access' '-c' 'model_auto_compact_token_limit=9223372036854775807' '-c' 'web_search="disabled"' '-c' 'tools.view_image=false' '-c' 'features.apps=false' '-c' 'features.multi_agent=false'`,
+    `${codexOverride} '-c' 'approval_policy=never' '-c' 'sandbox_mode=danger-full-access' '-c' 'model_auto_compact_token_limit=9223372036854775807' '-c' 'web_search="disabled"' '-c' 'tools.view_image=false' '-c' 'memories.generate_memories=false' '-c' 'memories.use_memories=false' '-c' 'history.persistence="none"' '-c' 'features.apps=false' '-c' 'features.multi_agent=false'`,
   ]);
   assert.ok(
     !codexLaunchPartialFeatures.args.some((arg) => arg.includes('features.image_generation')),
     'codex launch with codexDisabledFeatures=["apps","multi_agent"] must NOT emit features.image_generation',
+  );
+
+  // codexDeveloperInstructions launch param — pi-shell-acp's identity carrier
+  // on the codex backend. Codex ACP does not honor `_meta.systemPrompt`, so
+  // the codex `developer` role config slot is the highest stable identity
+  // layer available to us. The rendered engraving must reach the spawned
+  // codex-acp child as `-c developer_instructions="<TOML-escaped>"`,
+  // appended after the static surface + feature-gate args. tomlBasicString
+  // (= JSON.stringify) is the production escape path; the test re-runs it
+  // to derive the expected fragment so the contract stays in lockstep.
+  const codexDevInstrSample = 'line1\nline2 with "quote" and \\backslash';
+  const codexLaunchWithDevInstr = resolveAcpBackendLaunch('codex', {
+    codexDisabledFeatures: ['apps'],
+    codexDeveloperInstructions: codexDevInstrSample,
+  });
+  const expectedDevInstrPair = `'-c' 'developer_instructions=${JSON.stringify(codexDevInstrSample)}'`;
+  assert.ok(
+    codexLaunchWithDevInstr.args[1].endsWith(expectedDevInstrPair),
+    `codex launch must end with TOML-escaped developer_instructions pair; expected suffix=${expectedDevInstrPair} got=${codexLaunchWithDevInstr.args[1]}`,
+  );
+  assert.ok(
+    JSON.stringify(codexDevInstrSample).includes('\\n'),
+    'tomlBasicString contract: literal newline must be escaped as \\n',
+  );
+  assert.ok(
+    JSON.stringify(codexDevInstrSample).includes('\\"'),
+    'tomlBasicString contract: embedded double-quote must be escaped as \\"',
+  );
+
+  // Empty / undefined / whitespace-only codexDeveloperInstructions emits no
+  // `-c developer_instructions=` flag — codex defaults apply (no
+  // pi-authored developer instruction present).
+  const codexLaunchNoDevInstr = resolveAcpBackendLaunch('codex', {
+    codexDisabledFeatures: ['apps'],
+    codexDeveloperInstructions: '   ',
+  });
+  assert.ok(
+    !codexLaunchNoDevInstr.args[1].includes('developer_instructions'),
+    'whitespace-only codexDeveloperInstructions must not emit a -c flag',
   );
 
   // Skill listing in the system prompt is gated by the SDK on
@@ -1459,16 +1498,52 @@ try {
   const codexOverlayDir = join(codexOverlayTestRoot, 'overlay');
   try {
     mkdirSync(codexRealDir, { recursive: true });
-    // Seed with the operator-style content the overlay must reject:
+    // Seed the synthetic real dir with shapes the production overlay must
+    // mirror or reject:
     //   - config.toml that, if inherited, would leak `model` and `personality`
-    //     through to pi-shell-acp sessions
-    //   - auth.json that the overlay MUST keep reachable via symlink (codex
-    //     can't authenticate without it)
-    //   - sessions/ and skills/ directories the overlay symlinks through
+    //     through to pi-shell-acp sessions (overlay authors its own minimal
+    //     replacement instead)
+    //   - auth.json + skills/ — whitelist passthrough (codex can't run
+    //     without auth; skills is the deliberately-shared registry holding
+    //     both binary built-ins and operator agent-config symlinks)
+    //   - memories/, sessions/ carrying operator-side payload — must NOT
+    //     pass through; overlay creates its own empty trees so codex's
+    //     per-cwd memory/session lookups find nothing leakable.
+    //   - history.jsonl + rules/ — non-whitelisted entries (operator command
+    //     history + operator policy/execution rules); must be wiped by the
+    //     stale-cleanup loop, not symlinked through.
     writeFileSync(join(codexRealDir, 'config.toml'), 'model = "leak-me"\npersonality = "leak"\n', 'utf8');
     writeFileSync(join(codexRealDir, 'auth.json'), '{"token":"test"}', 'utf8');
-    mkdirSync(join(codexRealDir, 'sessions'), { recursive: true });
     mkdirSync(join(codexRealDir, 'skills'), { recursive: true });
+    mkdirSync(join(codexRealDir, 'memories'), { recursive: true });
+    writeFileSync(join(codexRealDir, 'memories', 'operator-notes.md'), 'OPERATOR-MEMORY-CANARY', 'utf8');
+    mkdirSync(join(codexRealDir, 'sessions'), { recursive: true });
+    writeFileSync(join(codexRealDir, 'sessions', 'old-session.json'), '{"sessionId":"OPERATOR-SESSION-CANARY"}', 'utf8');
+    writeFileSync(join(codexRealDir, 'history.jsonl'), '{"cmd":"OPERATOR-HISTORY-CANARY"}\n', 'utf8');
+    mkdirSync(join(codexRealDir, 'rules'), { recursive: true });
+    writeFileSync(join(codexRealDir, 'rules', 'policy.md'), 'OPERATOR-RULE-CANARY', 'utf8');
+    // codex auto-loads ~/.codex/AGENTS.md as global user instructions
+    // (codex-rs/agents_md.rs); the overlay must NOT expose the operator's
+    // file. The cleanup loop wipes anything not on the allowlist, so this
+    // canary verifies AGENTS.md is treated as an operator-personal entry.
+    writeFileSync(join(codexRealDir, 'AGENTS.md'), '# OPERATOR-AGENTS-MD-CANARY\n', 'utf8');
+    // state_5.sqlite is codex's thread/memory state DB
+    // (codex-rs/state/runtime.rs). Symlinking it through would leak the
+    // operator's persistent thread + memory store into pi-shell-acp
+    // sessions — the deepest leak channel on the codex backend. logs_2.sqlite
+    // is a similar telemetry DB with operator activity. Both must NOT
+    // pass through; they belong to OVERLAY_BINARY_OWNED_CODEX so codex
+    // initializes fresh copies inside the overlay.
+    writeFileSync(join(codexRealDir, 'state_5.sqlite'), 'OPERATOR-STATE-CANARY', 'utf8');
+    writeFileSync(join(codexRealDir, 'state_5.sqlite-shm'), 'OPERATOR-STATE-SHM-CANARY', 'utf8');
+    writeFileSync(join(codexRealDir, 'state_5.sqlite-wal'), 'OPERATOR-STATE-WAL-CANARY', 'utf8');
+    writeFileSync(join(codexRealDir, 'logs_2.sqlite'), 'OPERATOR-LOGS-CANARY', 'utf8');
+    // log/ and shell_snapshots/ carry per-cwd operator activity. Belong
+    // to OVERLAY_EMPTY_DIRS_CODEX (overlay-private empty trees).
+    mkdirSync(join(codexRealDir, 'log'), { recursive: true });
+    writeFileSync(join(codexRealDir, 'log', 'session.log'), 'OPERATOR-LOG-CANARY', 'utf8');
+    mkdirSync(join(codexRealDir, 'shell_snapshots'), { recursive: true });
+    writeFileSync(join(codexRealDir, 'shell_snapshots', 'snap.json'), 'OPERATOR-SHELL-CANARY', 'utf8');
 
     ensureCodexConfigOverlay(codexRealDir, codexOverlayDir);
 
@@ -1482,7 +1557,7 @@ try {
     assert.ok(!overlayContent.includes('personality'),
       'overlay config.toml must not inherit operator personality setting');
 
-    // Other entries: symlinks back to real dir.
+    // Whitelisted entries pass through as symlinks to the operator's real dir.
     const codexAuthStat = lstatSync(join(codexOverlayDir, 'auth.json'));
     assert.equal(codexAuthStat.isSymbolicLink(), true);
     assert.equal(readlinkSync(join(codexOverlayDir, 'auth.json')), join(codexRealDir, 'auth.json'));
@@ -1490,14 +1565,88 @@ try {
     assert.equal(codexSkillsStat.isSymbolicLink(), true);
     assert.equal(readlinkSync(join(codexOverlayDir, 'skills')), join(codexRealDir, 'skills'));
 
-    // Idempotence.
+    // memories/ and sessions/ are overlay-private — empty directories, NOT
+    // symlinks to the operator's tree. Closes the per-cwd memory and session
+    // leak channels: codex's lookups through CODEX_HOME find empty trees.
+    const memStat = lstatSync(join(codexOverlayDir, 'memories'));
+    assert.equal(memStat.isSymbolicLink(), false,
+      'overlay memories/ must be an overlay-private directory, not a symlink to operator data');
+    assert.equal(memStat.isDirectory(), true);
+    assert.deepEqual(readdirSync(join(codexOverlayDir, 'memories')), [],
+      'overlay memories/ must start empty — operator memory must not leak through');
+    assert.equal(existsSync(join(codexOverlayDir, 'memories', 'operator-notes.md')), false,
+      'operator-side memory file must not be reachable through the overlay');
+
+    const sessStat = lstatSync(join(codexOverlayDir, 'sessions'));
+    assert.equal(sessStat.isSymbolicLink(), false,
+      'overlay sessions/ must be an overlay-private directory, not a symlink to operator data');
+    assert.equal(sessStat.isDirectory(), true);
+    assert.deepEqual(readdirSync(join(codexOverlayDir, 'sessions')), [],
+      'overlay sessions/ must start empty — operator session data must not leak through');
+    assert.equal(existsSync(join(codexOverlayDir, 'sessions', 'old-session.json')), false,
+      'operator-side session file must not be reachable through the overlay');
+
+    // Non-whitelisted entries must NOT appear in the overlay. The stale-
+    // cleanup loop guarantees this each bootstrap. rules/ is especially
+    // important: it would leak operator policy / execution rules, not just
+    // narrative memory. AGENTS.md would auto-load as user instructions
+    // via codex-rs/agents_md.rs.
+    assert.equal(existsSync(join(codexOverlayDir, 'history.jsonl')), false,
+      'overlay must not expose operator history.jsonl — command-history leak');
+    assert.equal(existsSync(join(codexOverlayDir, 'rules')), false,
+      'overlay must not expose operator rules/ — execution-policy leak');
+    assert.equal(existsSync(join(codexOverlayDir, 'AGENTS.md')), false,
+      'overlay must not expose operator AGENTS.md — auto-loaded user-instruction leak');
+
+    // log/ and shell_snapshots/: overlay-private empty directories.
+    // operator-side payloads must not be reachable through the overlay.
+    const logStat = lstatSync(join(codexOverlayDir, 'log'));
+    assert.equal(logStat.isSymbolicLink(), false,
+      'overlay log/ must be an overlay-private directory, not a symlink to operator data');
+    assert.equal(logStat.isDirectory(), true);
+    assert.equal(existsSync(join(codexOverlayDir, 'log', 'session.log')), false,
+      'operator-side log payload must not be reachable through the overlay');
+    const shellStat = lstatSync(join(codexOverlayDir, 'shell_snapshots'));
+    assert.equal(shellStat.isSymbolicLink(), false,
+      'overlay shell_snapshots/ must be an overlay-private directory, not a symlink to operator data');
+    assert.equal(shellStat.isDirectory(), true);
+    assert.equal(existsSync(join(codexOverlayDir, 'shell_snapshots', 'snap.json')), false,
+      'operator-side shell snapshot must not be reachable through the overlay');
+
+    // state_5.sqlite* and logs_2.sqlite — codex thread/memory state DB +
+    // telemetry DB. NOT in passthrough; codex initializes fresh copies
+    // inside the overlay. Verify no symlink reaches the operator's real
+    // file (the canary content must not be readable through the overlay
+    // path). After ensureCodexConfigOverlay there should be either no
+    // entry at all (codex will create on first launch) or an
+    // overlay-owned regular file the cleanup loop preserves — in either
+    // case the operator canary content must NOT be present.
+    for (const dbName of ['state_5.sqlite', 'state_5.sqlite-shm', 'state_5.sqlite-wal', 'logs_2.sqlite']) {
+      const overlayDbPath = join(codexOverlayDir, dbName);
+      if (existsSync(overlayDbPath)) {
+        const overlayDbStat = lstatSync(overlayDbPath);
+        assert.equal(overlayDbStat.isSymbolicLink(), false,
+          `overlay ${dbName} must not be a symlink to operator data`);
+        const content = readFileSync(overlayDbPath, 'utf8');
+        assert.ok(!content.includes('OPERATOR-'),
+          `overlay ${dbName} must not carry operator canary content`);
+      }
+    }
+
+    // Idempotence: a second call must succeed without throwing and preserve
+    // the same isolation shape (still no operator data, still empty
+    // memories/sessions trees).
     ensureCodexConfigOverlay(codexRealDir, codexOverlayDir);
     assert.equal(readlinkSync(join(codexOverlayDir, 'auth.json')), join(codexRealDir, 'auth.json'));
+    assert.deepEqual(readdirSync(join(codexOverlayDir, 'memories')), [],
+      'second-call idempotence must preserve empty memories/');
+    assert.equal(existsSync(join(codexOverlayDir, 'rules')), false,
+      'second-call idempotence must not let operator rules/ leak back in');
   } finally {
     rmSync(codexOverlayTestRoot, { recursive: true, force: true });
   }
 
-  console.log('[check-backends] 52 assertions ok');
+  console.log('[check-backends] 86 assertions ok');
 } finally {
   if (prevClaude === undefined) delete process.env.CLAUDE_AGENT_ACP_COMMAND;
   else process.env.CLAUDE_AGENT_ACP_COMMAND = prevClaude;

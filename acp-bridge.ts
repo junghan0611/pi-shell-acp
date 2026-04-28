@@ -229,16 +229,44 @@ type AcpLaunchSpec = {
 };
 
 /**
- * Inputs to backend launch resolution. Currently only consumed by the codex
- * adapter (`resolveCodexAcpLaunch`) to materialize `-c features.<key>=false`
- * flags from the resolved `codexDisabledFeatures` settings.json field. The
- * claude adapter ignores it. Defined here (not in EnsureBridgeSessionParams)
- * because it is also passed at test time by check-backends, which doesn't
- * construct full session params.
+ * Inputs to backend launch resolution. Consumed by the codex adapter
+ * (`resolveCodexAcpLaunch`) to:
+ *   - materialize `-c features.<key>=false` flags from the resolved
+ *     `codexDisabledFeatures` settings.json field
+ *   - inject `-c developer_instructions="<...>"` from
+ *     `codexDeveloperInstructions` so pi-shell-acp can deliver its identity
+ *     carrier (rendered engraving) at the highest stable config layer the
+ *     codex stack exposes. Codex ACP does not honor `_meta.systemPrompt`,
+ *     so the `developer_instructions` config slot — which lands inside the
+ *     codex `developer` role between the binary's `permissions` /
+ *     `apps` / `skills` instructions — is the equivalent of Claude's
+ *     `_meta.systemPrompt` string-form preset replacement.
+ *
+ * The claude adapter ignores both fields. Defined here (not in
+ * `EnsureBridgeSessionParams`) because the launch surface is also exercised
+ * at test time by check-backends, which doesn't construct full session
+ * params.
  */
 export type AcpBackendLaunchParams = {
 	codexDisabledFeatures: readonly string[];
+	codexDeveloperInstructions?: string;
 };
+
+/**
+ * Escape a string into a TOML basic-string quoted literal so it can be
+ * embedded as the value half of a `-c key="<...>"` codex CLI argument.
+ * JSON's escape rules are a strict subset of TOML's basic-string escapes
+ * (\\, \", \n, \r, \t, \uXXXX), so JSON.stringify produces a TOML-valid
+ * quoted form. The returned string includes the surrounding double quotes.
+ *
+ *   tomlBasicString("a\nb")  →  `"a\\nb"`  (suitable as `-c=key="a\\nb"`)
+ *
+ * Used by both the spawn-array path (resolveCodexAcpLaunch return) and the
+ * CODEX_ACP_COMMAND shell-override path (which adds shellQuote on top).
+ */
+function tomlBasicString(value: string): string {
+	return JSON.stringify(value);
+}
 
 type BackendSessionMetaParams = Pick<
 	EnsureBridgeSessionParams,
@@ -279,6 +307,7 @@ type PersistedBridgeSessionRecord = {
 	cwd: string;
 	systemPromptAppend?: string | null;
 	bootstrapPromptAugment?: string | null;
+	codexDeveloperInstructions?: string | null;
 	bridgeConfigSignature: string;
 	contextMessageSignatures: string[];
 	updatedAt: string;
@@ -310,6 +339,8 @@ export type AcpBridgeSession = {
 	bootstrapPromptAugment?: string;
 	/** ContentBlocks to prepend to the NEXT sendPrompt call, then cleared. Populated on new-session bootstrap for backends whose adapter implements buildBootstrapPromptAugment. */
 	bootstrapPromptAugmentPending?: PromptContentBlock[];
+	/** Codex identity carrier — rendered engraving delivered as `-c developer_instructions="<...>"` at codex-acp child spawn time. Codex ACP exposes no `_meta.systemPrompt` surface; the codex `developer` role is the highest stable config layer pi-shell-acp can populate. Pinned on the session because changing it requires respawning the codex-acp child (launch-time arg). Compatibility checks include this field — see `isSessionCompatible`. The claude adapter ignores it. */
+	codexDeveloperInstructions?: string;
 	settingSources: ClaudeSettingSource[];
 	strictMcpConfig: boolean;
 	mcpServers: McpServer[];
@@ -333,8 +364,10 @@ export type EnsureBridgeSessionParams = {
 	backend: AcpBackend;
 	modelId?: string;
 	systemPromptAppend?: string;
-	/** Augmentation text delivered to the backend on the first prompt of a new session via adapter.buildBootstrapPromptAugment — typically the rendered engraving for backends without a systemPromptAppend extension (e.g. Codex). */
+	/** Augmentation text delivered to the backend on the first prompt of a new session via adapter.buildBootstrapPromptAugment. Retained as an interface point for future backends that lack a higher-authority carrier; both currently shipped backends use carrier-specific paths instead (Claude: systemPromptAppend; Codex: codexDeveloperInstructions). */
 	bootstrapPromptAugment?: string;
+	/** Codex identity carrier — see AcpBridgeSession.codexDeveloperInstructions. Required-for-codex when an engraving is configured; ignored by the claude adapter. */
+	codexDeveloperInstructions?: string;
 	settingSources: ClaudeSettingSource[];
 	strictMcpConfig: boolean;
 	mcpServers: McpServer[];
@@ -607,6 +640,34 @@ const CODEX_DISABLE_AUTO_COMPACT_ARGS = ["-c", "model_auto_compact_token_limit=9
 // — see codexFeatureGateArgs() below.
 const CODEX_STATIC_TOOL_SURFACE_ARGS = ["-c", 'web_search="disabled"', "-c", "tools.view_image=false"] as const;
 
+// Operator-isolation args for the codex backend. These complement the
+// CODEX_HOME / CODEX_SQLITE_HOME overlay and the `memories` feature-gate
+// entry: even if a future codex build flips the auto-load path or honors
+// a different feature key, these `-c` overrides keep operator memory and
+// command history out of pi-shell-acp's identity surface.
+//
+// - `memories.generate_memories=false`: never write a new memory entry
+//   from inside a pi-shell-acp session.
+// - `memories.use_memories=false`: never read existing memory entries
+//   into the codex `developer` prompt.
+// - `history.persistence="none"`: never append the operator's
+//   `history.jsonl` from a pi-shell-acp session (also stops the codex
+//   binary from materializing a leaky history file inside the overlay).
+//
+// Defense-in-depth alongside `features.memories=false` (which already
+// rides on DEFAULT_CODEX_DISABLED_FEATURES). If codex ever drops the
+// feature gate or renames the feature, these explicit `-c` flags still
+// pin the desired isolation behavior at the config layer codex actually
+// reads.
+const CODEX_OPERATOR_ISOLATION_ARGS = [
+	"-c",
+	"memories.generate_memories=false",
+	"-c",
+	"memories.use_memories=false",
+	"-c",
+	'history.persistence="none"',
+] as const;
+
 // Default set of codex-rs feature flags pi-shell-acp disables at launch to
 // align the codex tool surface with pi's advertised baseline. The Claude
 // side mirror is `DEFAULT_CLAUDE_DISALLOWED_TOOLS` in index.ts; both lists
@@ -628,6 +689,13 @@ export const DEFAULT_CODEX_DISABLED_FEATURES: readonly string[] = [
 	"tool_search",
 	"multi_agent",
 	"apps",
+	// `memories` toggles the codex memory subsystem (codex-rs/core/src/memories).
+	// When the feature is on, codex loads operator memory entries into the
+	// `developer` role context and writes new entries during sessions —
+	// exactly the channel pi-shell-acp must keep operator-private from. The
+	// overlay's empty `memories/` directory + this feature gate +
+	// CODEX_OPERATOR_ISOLATION_ARGS form three layers of the same defense.
+	"memories",
 ] as const;
 
 // Build the dynamic `-c features.<key>=false` arg sequence from a resolved
@@ -714,7 +782,9 @@ function resolveCodexAcpLaunch(launchParams: AcpBackendLaunchParams): AcpLaunchS
 		...codexModeArgs(),
 		...codexAutoCompactArgs(),
 		...CODEX_STATIC_TOOL_SURFACE_ARGS,
+		...CODEX_OPERATOR_ISOLATION_ARGS,
 		...codexFeatureGateArgs(launchParams.codexDisabledFeatures),
+		...codexDeveloperInstructionsArgs(launchParams.codexDeveloperInstructions),
 	];
 	if (override) {
 		const command = allArgs.length > 0 ? `${override} ${allArgs.map(shellQuote).join(" ")}` : override;
@@ -730,6 +800,25 @@ function resolveCodexAcpLaunch(launchParams: AcpBackendLaunchParams): AcpLaunchS
 		args: allArgs,
 		source: "PATH:codex-acp",
 	};
+}
+
+/**
+ * Render the codex `-c developer_instructions="<...>"` argument pair from
+ * the rendered engraving. Codex ACP does not honor `_meta.systemPrompt`,
+ * so this is the highest stable config-layer carrier available to
+ * pi-shell-acp on the codex backend. The instruction lands inside the
+ * codex `developer` role between the binary's `permissions` / `apps` /
+ * `skills` instruction blocks — high authority, but a layer below the
+ * Claude `system_prompt` replacement we use on the other backend
+ * (codex-acp simply does not expose that layer).
+ *
+ * Empty / undefined → no flag emitted, codex defaults apply (no
+ * pi-authored developer instruction present).
+ */
+function codexDeveloperInstructionsArgs(value: string | undefined): string[] {
+	const trimmed = value?.trim();
+	if (!trimmed) return [];
+	return ["-c", `developer_instructions=${tomlBasicString(trimmed)}`];
 }
 
 // Cached so we run ldd at most once per process — libc never changes mid-run.
@@ -1157,6 +1246,78 @@ function overlayCodexConfigToml(): string {
 	return "# pi-shell-acp managed overlay — do not edit manually.\n# Operator config at ~/.codex/config.toml is intentionally NOT inherited.\n";
 }
 
+// Whitelist of operator's ~/.codex/ entries we expose to pi-shell-acp
+// sessions via symlink. Anything not in here is intentionally hidden:
+// operator personal config (history.jsonl, memories/, rules/, sessions/
+// data, AGENTS.md auto-loaded by codex-rs/agents_md.rs as user
+// instructions, ...) does not leak into the codex `developer` role
+// context, the agent's prior-conversation recall, or the bridge's
+// spawned codex-acp child process state.
+//
+// The whitelist is deliberately narrow. Entries that look "harmless" at
+// the filesystem layer can hide deep leak channels — most notably
+// `state_5.sqlite*`, which is codex's thread/memory state DB
+// (codex-rs/state/runtime.rs); passing that through would expose the
+// operator's persistent thread + memory store to any pi-shell-acp
+// session resumed in the same cwd. Such files belong in
+// OVERLAY_BINARY_OWNED_CODEX instead, so the codex binary materializes
+// fresh state inside the overlay rather than reading the operator's.
+//
+// Entries here are limited to:
+//   - what backend authentication needs (`auth.json`)
+//   - codex install/version metadata (installation_id, version.json,
+//     .personality_migration)
+//   - non-data runtime caches whose contents are not operator-keyed
+//     (cache, models_cache.json, .tmp, tmp)
+//   - skill content (skills) — this is intentional. Codex's skill
+//     registry under ~/.codex/skills holds both the binary's built-in
+//     `.system/*` skills and the operator's chosen agent-config skill
+//     symlinks; both are surfaces pi-shell-acp deliberately wants the
+//     agent to see, not "operator personal config" in the leak-surface
+//     sense.
+const OVERLAY_PASSTHROUGH_CODEX = new Set([
+	"auth.json",
+	"cache",
+	"installation_id",
+	"models_cache.json",
+	".personality_migration",
+	"skills",
+	".tmp",
+	"tmp",
+	"version.json",
+]);
+
+// Empty directories owned by the overlay itself. The codex binary
+// auto-creates and writes per-cwd state under these paths; we give it
+// empty trees scoped to the overlay so:
+// - operator's existing data at ~/.codex/{memories,sessions,log,
+//   shell_snapshots}/ is never read or written from pi-shell-acp.
+// - the binary's missing-path-graceful behavior closes the per-cwd
+//   memory / session / log / shell-history leak channels: a fresh
+//   codex bootstrap finds empty trees and silently writes new state
+//   into the overlay without inheriting any operator-side payload.
+const OVERLAY_EMPTY_DIRS_CODEX = new Set(["log", "memories", "sessions", "shell_snapshots"]);
+
+// Files the codex binary self-manages inside the overlay. We never
+// delete these on rebuild — they are not operator data and the binary
+// will recreate them anyway. Crucially this list contains the codex
+// state DB (`state_5.sqlite` + its WAL/SHM siblings) and the telemetry
+// DB (`logs_2.sqlite`). Both are *not* in OVERLAY_PASSTHROUGH_CODEX
+// above; codex initializes fresh copies inside the overlay on first
+// launch (CODEX_HOME + CODEX_SQLITE_HOME both pointed at the overlay
+// in bridgeEnvDefaults). Symlinking the operator's real DBs through
+// here would expose persistent thread/memory state — the deepest
+// leak channel on the codex backend, deeper than per-cwd MEMORY.md is
+// on Claude. `config.toml` is overlay-authored (overlayCodexConfigToml
+// above) but listed here so the cleanup loop never wipes it.
+const OVERLAY_BINARY_OWNED_CODEX = new Set([
+	"config.toml",
+	"logs_2.sqlite",
+	"state_5.sqlite",
+	"state_5.sqlite-shm",
+	"state_5.sqlite-wal",
+]);
+
 export function ensureCodexConfigOverlay(
 	realDir: string = CODEX_REAL_CONFIG_DIR,
 	overlayDir: string = CODEX_CONFIG_OVERLAY_DIR,
@@ -1167,45 +1328,77 @@ export function ensureCodexConfigOverlay(
 	// override is in place even if a prior process or operator edited it.
 	writeFileSync(join(overlayDir, "config.toml"), overlayCodexConfigToml(), "utf8");
 
-	if (!existsSync(realDir)) return;
-
-	// Symlink every other entry from the real config dir into the overlay.
-	// Idempotent — preserves correct symlinks, replaces wrong ones.
-	for (const entry of readdirSync(realDir)) {
-		if (entry === "config.toml") continue;
-		const realPath = join(realDir, entry);
+	// Empty dirs — overlay-private, replace any prior symlink to operator data.
+	for (const entry of OVERLAY_EMPTY_DIRS_CODEX) {
 		const overlayPath = join(overlayDir, entry);
-
 		try {
 			const existing = lstatSync(overlayPath);
-			if (existing.isSymbolicLink()) {
-				if (readlinkSync(overlayPath) === realPath) continue;
-				unlinkSync(overlayPath);
-			} else {
+			if (existing.isSymbolicLink() || !existing.isDirectory()) {
 				rmSync(overlayPath, { recursive: true, force: true });
+				mkdirSync(overlayPath, { recursive: true });
 			}
 		} catch {
-			// Doesn't exist — fall through to create.
-		}
-
-		try {
-			symlinkSync(realPath, overlayPath);
-		} catch (error) {
-			console.error(
-				`[pi-shell-acp:codex-overlay] symlink failed for ${entry}: ${error instanceof Error ? error.message : String(error)}`,
-			);
+			mkdirSync(overlayPath, { recursive: true });
 		}
 	}
-}
 
-function buildCodexBootstrapPromptAugment(augmentText: string): PromptContentBlock[] | undefined {
-	const text = augmentText?.trim();
-	if (!text) return undefined;
-	// Codex ACP has no _meta.systemPrompt.append-style extension exposed to us;
-	// the spec-baseline identity-delivery carrier is a ContentBlock on the
-	// first prompt turn. We prepend one text block so the engraving lands in
-	// the turn context the model actually sees on session bootstrap.
-	return [{ type: "text", text }];
+	// Symlinked passthrough — only entries on the whitelist, only if they
+	// exist in the operator's real ~/.codex/. Idempotent: keeps correct
+	// symlinks, replaces wrong ones, removes stale entries cleanly.
+	if (existsSync(realDir)) {
+		for (const entry of OVERLAY_PASSTHROUGH_CODEX) {
+			const realPath = join(realDir, entry);
+			const overlayPath = join(overlayDir, entry);
+
+			if (!existsSync(realPath)) {
+				try {
+					lstatSync(overlayPath);
+					rmSync(overlayPath, { recursive: true, force: true });
+				} catch {
+					// Doesn't exist — fine.
+				}
+				continue;
+			}
+
+			try {
+				const existing = lstatSync(overlayPath);
+				if (existing.isSymbolicLink()) {
+					if (readlinkSync(overlayPath) === realPath) continue;
+					unlinkSync(overlayPath);
+				} else {
+					rmSync(overlayPath, { recursive: true, force: true });
+				}
+			} catch {
+				// Doesn't exist — fall through to symlink.
+			}
+
+			try {
+				symlinkSync(realPath, overlayPath);
+			} catch (error) {
+				console.error(
+					`[pi-shell-acp:codex-overlay] symlink failed for ${entry}: ${error instanceof Error ? error.message : String(error)}`,
+				);
+			}
+		}
+	}
+
+	// Stale entry cleanup — remove anything that's not on the current
+	// allowlist. Handles migration from earlier overlay code that blindly
+	// symlinked every ~/.codex/ entry (including history.jsonl with
+	// operator command history, memories/ with operator memory, rules/
+	// with operator policy, ...) and keeps the overlay surface tight if
+	// the whitelist shrinks in a future release.
+	for (const entry of readdirSync(overlayDir)) {
+		if (OVERLAY_PASSTHROUGH_CODEX.has(entry)) continue;
+		if (OVERLAY_EMPTY_DIRS_CODEX.has(entry)) continue;
+		if (OVERLAY_BINARY_OWNED_CODEX.has(entry)) continue;
+		const overlayPath = join(overlayDir, entry);
+		try {
+			rmSync(overlayPath, { recursive: true, force: true });
+		} catch {
+			// Best-effort cleanup; a stuck stale entry is annoying but not fatal.
+		}
+	}
 }
 
 const ACP_BACKEND_ADAPTERS: Record<AcpBackend, AcpBackendAdapter> = {
@@ -1238,7 +1431,17 @@ const ACP_BACKEND_ADAPTERS: Record<AcpBackend, AcpBackendAdapter> = {
 		stderrLabel: "codex-acp stderr",
 		resolveLaunch: resolveCodexAcpLaunch,
 		buildSessionMeta: () => undefined,
-		buildBootstrapPromptAugment: buildCodexBootstrapPromptAugment,
+		// Engraving rides on `-c developer_instructions=...` at codex-acp child
+		// spawn time (see codexDeveloperInstructionsArgs in resolveCodexAcpLaunch).
+		// codex-acp does not honor `_meta.systemPrompt`, but its underlying codex
+		// `Config` exposes `developer_instructions`, which lands inside the codex
+		// `developer` role between the binary's `permissions` / `apps` / `skills`
+		// instruction blocks. That is the highest stable identity carrier
+		// available to pi-shell-acp on the codex backend — equivalent in
+		// authority intent to the Claude `_meta.systemPrompt = string` form, even
+		// if structurally one config layer deeper. No first-prompt ContentBlock
+		// augmentation is needed: launch-time injection delivers the engraving
+		// to every prompt of the spawned child without per-turn relay.
 		bridgeEnvDefaults: {
 			// Redirect codex-rs's Config loader away from ~/.codex/config.toml so
 			// the operator's personal model/personality/reasoning_effort etc. do
@@ -1247,6 +1450,14 @@ const ACP_BACKEND_ADAPTERS: Record<AcpBackend, AcpBackendAdapter> = {
 			// process.env wins, so an operator who explicitly exports CODEX_HOME
 			// keeps full control.
 			CODEX_HOME: CODEX_CONFIG_OVERLAY_DIR,
+			// Pin the codex sqlite home (thread/memory state DB) to the same
+			// overlay so future codex builds — or any code path that lets
+			// `state_5.sqlite` drift to a separate location — cannot reach
+			// the operator's real `~/.codex/state_5.sqlite*` from a
+			// pi-shell-acp session. Without this, the operator's persistent
+			// thread/memory state would be the deepest leak channel on the
+			// codex backend (codex-rs/state/runtime.rs).
+			CODEX_SQLITE_HOME: CODEX_CONFIG_OVERLAY_DIR,
 		},
 		// codex-rs does not expose a boolean/env auto-compaction toggle like
 		// Claude Code. It does expose the same behavior as a config threshold:
@@ -1327,12 +1538,15 @@ function parsePersistedSessionRecord(raw: unknown, sessionKey: string): Persiste
 	if (!(systemPromptAppend == null || typeof systemPromptAppend === "string")) return undefined;
 	const bootstrapPromptAugment = record["bootstrapPromptAugment"];
 	if (!(bootstrapPromptAugment == null || typeof bootstrapPromptAugment === "string")) return undefined;
+	const codexDeveloperInstructions = record["codexDeveloperInstructions"];
+	if (!(codexDeveloperInstructions == null || typeof codexDeveloperInstructions === "string")) return undefined;
 	return {
 		sessionKey,
 		acpSessionId: record["acpSessionId"] as string,
 		cwd: record["cwd"] as string,
 		systemPromptAppend: (systemPromptAppend ?? null) as string | null,
 		bootstrapPromptAugment: (bootstrapPromptAugment ?? null) as string | null,
+		codexDeveloperInstructions: (codexDeveloperInstructions ?? null) as string | null,
 		bridgeConfigSignature: record["bridgeConfigSignature"] as string,
 		contextMessageSignatures: [...(record["contextMessageSignatures"] as string[])],
 		updatedAt: record["updatedAt"] as string,
@@ -1368,6 +1582,7 @@ function persistBridgeSessionRecord(session: AcpBridgeSession): void {
 		cwd: session.cwd,
 		systemPromptAppend: session.systemPromptAppend ?? null,
 		bootstrapPromptAugment: session.bootstrapPromptAugment ?? null,
+		codexDeveloperInstructions: session.codexDeveloperInstructions ?? null,
 		bridgeConfigSignature: session.bridgeConfigSignature,
 		contextMessageSignatures: [...session.contextMessageSignatures],
 		updatedAt: new Date().toISOString(),
@@ -1411,10 +1626,23 @@ function detectSessionCapabilities(initializeResult: InitializeResponse): Bridge
 // turns would force a fresh session for any caller that chose to vary the
 // augment over time. Excluding it keeps the bridge prompt cache alive across
 // reuse turns while preserving the fire-and-forget delivery contract.
+//
+// codexDeveloperInstructions IS part of compatibility checks. Unlike the
+// per-turn augment, it is materialized as a child-process launch arg
+// (`-c developer_instructions=...`) at codex-acp spawn time and is therefore
+// fixed for the lifetime of the spawned child. Reusing an existing child
+// against a changed engraving would surface the *previous* identity carrier
+// to the model — exactly the leak we are closing. Including the field here
+// forces a fresh codex-acp spawn whenever the engraving changes.
 function isSessionCompatible(
 	session: Pick<
 		AcpBridgeSession,
-		"cwd" | "backend" | "systemPromptAppend" | "bridgeConfigSignature" | "contextMessageSignatures"
+		| "cwd"
+		| "backend"
+		| "systemPromptAppend"
+		| "codexDeveloperInstructions"
+		| "bridgeConfigSignature"
+		| "contextMessageSignatures"
 	>,
 	params: EnsureBridgeSessionParams,
 	normalizedSystemPrompt: string | undefined,
@@ -1423,6 +1651,7 @@ function isSessionCompatible(
 		session.cwd === params.cwd &&
 		session.backend === params.backend &&
 		session.systemPromptAppend === normalizedSystemPrompt &&
+		normalizeText(session.codexDeveloperInstructions) === normalizeText(params.codexDeveloperInstructions) &&
 		session.bridgeConfigSignature === params.bridgeConfigSignature &&
 		hasPrefix(session.contextMessageSignatures, params.contextMessageSignatures)
 	);
@@ -1436,6 +1665,7 @@ function isPersistedSessionCompatible(
 	return (
 		record.cwd === params.cwd &&
 		normalizeText(record.systemPromptAppend) === normalizedSystemPrompt &&
+		normalizeText(record.codexDeveloperInstructions) === normalizeText(params.codexDeveloperInstructions) &&
 		record.bridgeConfigSignature === params.bridgeConfigSignature &&
 		hasPrefix(record.contextMessageSignatures, params.contextMessageSignatures)
 	);
@@ -1702,7 +1932,10 @@ async function createBridgeProcess(params: EnsureBridgeSessionParams): Promise<A
 	// the claude adapter ignores this field, so the default is harmless even
 	// for claude smoke runs.
 	const codexDisabledFeatures = params.codexDisabledFeatures ?? [...DEFAULT_CODEX_DISABLED_FEATURES];
-	const launch = adapter.resolveLaunch({ codexDisabledFeatures });
+	const launch = adapter.resolveLaunch({
+		codexDisabledFeatures,
+		codexDeveloperInstructions: normalizeText(params.codexDeveloperInstructions),
+	});
 	// Adapter defaults first, process.env last → operator's shell always wins.
 	// PI_SHELL_ACP_ALLOW_COMPACTION=1 disables both pi-side and backend-side
 	// compaction guards for this process.
@@ -1804,6 +2037,7 @@ async function createBridgeProcess(params: EnsureBridgeSessionParams): Promise<A
 		modelId: params.modelId,
 		systemPromptAppend: normalizeText(params.systemPromptAppend),
 		bootstrapPromptAugment: normalizeText(params.bootstrapPromptAugment),
+		codexDeveloperInstructions: normalizeText(params.codexDeveloperInstructions),
 		settingSources: [...params.settingSources],
 		strictMcpConfig: params.strictMcpConfig,
 		mcpServers: [...params.mcpServers],

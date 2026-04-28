@@ -699,16 +699,29 @@ function streamShellAcp(
 			const baseSystemPrompt = providerSettings.appendSystemPrompt ? context.systemPrompt : undefined;
 
 			// Engraving — self-recognition prompt from prompts/engraving.md,
-			// rendered once here and delivered per-backend:
-			// - Claude: concatenated into systemPromptAppend alongside
-			//   baseSystemPrompt, routed through pi's _meta.systemPrompt.append path.
-			// - Codex: passed as bootstrapPromptAugment; the Codex backend
-			//   adapter turns it into a ContentBlock::Text prepended to the
-			//   first prompt of a new session, since codex-acp has no
-			//   equivalent _meta extension we can rely on.
+			// rendered once here and delivered per-backend at the highest
+			// stable identity-carrier surface each backend exposes:
+			//
+			// - Claude: sent as `_meta.systemPrompt = <string>` so
+			//   claude-agent-acp performs full preset replacement against the
+			//   string-form Options.systemPrompt union (sdk.d.ts:1695). The
+			//   claude_code preset disappears from the system prompt; the
+			//   engraving sits directly above the SDK's hard-wired minimum
+			//   identity prefix.
+			// - Codex: sent as `-c developer_instructions="<...>"` at
+			//   codex-acp child spawn time, landing inside the codex
+			//   `developer` role between the binary's `permissions` /
+			//   `apps` / `skills` instruction blocks. codex-acp does not
+			//   honor `_meta.systemPrompt`, so this is the highest stable
+			//   carrier the codex stack exposes.
+			//
 			// The rendered engraving is stable across turns (pure function of
-			// template × backend × mcpServerNames), so it never drives session
-			// invalidation by itself.
+			// template × backend × mcpServerNames). On Claude it travels in
+			// `systemPromptAppend`; on Codex it travels in
+			// `codexDeveloperInstructions`. Both fields are part of session
+			// compatibility checks — changing either forces a fresh bridge
+			// session so the new engraving is actually delivered to the
+			// model.
 			const engraving = loadEngraving({
 				backend: providerSettings.backend,
 				mcpServerNames: providerSettings.mcpServers.map((s) => s.name),
@@ -720,7 +733,7 @@ function streamShellAcp(
 				(part): part is string => typeof part === "string" && part.length > 0,
 			);
 			const mergedSystemPromptAppend = systemPromptParts.length > 0 ? systemPromptParts.join("\n\n") : undefined;
-			const bootstrapPromptAugment = codexEngraving && codexEngraving.length > 0 ? codexEngraving : undefined;
+			const codexDeveloperInstructions = codexEngraving && codexEngraving.length > 0 ? codexEngraving : undefined;
 
 			bridgeSession = await ensureBridgeSession({
 				sessionKey,
@@ -728,7 +741,7 @@ function streamShellAcp(
 				backend: providerSettings.backend,
 				modelId: model.id,
 				systemPromptAppend: mergedSystemPromptAppend,
-				bootstrapPromptAugment,
+				codexDeveloperInstructions,
 				settingSources: providerSettings.settingSources,
 				strictMcpConfig: providerSettings.strictMcpConfig,
 				mcpServers: providerSettings.mcpServers,
