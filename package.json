@@ -1,6 +1,6 @@
 {
 	"name": "pi-shell-acp",
-	"version": "0.3.1",
+	"version": "0.4.0",
 	"description": "ACP bridge providing Claude Code and Codex backends to pi-coding-agent, with the entwurf orchestration surface for cross-session delegation.",
 	"license": "MIT",
 	"author": "Junghan Kim",
