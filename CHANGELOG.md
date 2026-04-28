@@ -4,6 +4,44 @@ All notable changes to this project will be documented here. Format follows [Kee
 
 ## Unreleased
 
+## 0.4.0 — 2026-04-28
+
+PI-native identity carriers for both ACP backends — Claude via system-prompt replacement, Codex via codex `Config` `developer_instructions` — with whitelist overlays isolating operator config, memory, sessions, rules, history, and (codex-specific) the SQLite thread/memory state DB. The model API itself is unchanged on each side; pi-shell-acp now owns everything above the model's minimum identity prefix and below the backend authentication.
+
+### Changed
+
+- **Engraving carrier — Claude.** Previously delivered via `_meta.systemPrompt.append`, additive on top of the claude_code preset. Now delivered via `_meta.systemPrompt = <engraving string>` (claude-agent-acp `acp-agent.ts:1685`, sdk.d.ts:1695), which makes claude-agent-acp pass the string directly into the SDK's `Options.systemPrompt` slot — full preset replacement. The claude_code preset's `# auto memory` guidance, per-cwd MEMORY.md path advertisement, working-directory section, git-status section, and todo-handling guidance all drop out of the system prompt. The engraving sits directly above the SDK's hard-wired minimum identity prefix (_"You are a Claude agent, built on Anthropic's Claude Agent SDK."_), which is the boundary pi-shell-acp deliberately respects. Verified by interview against the Claude backend (BASELINE.md, first run): the agent correctly identifies as a PI-native operating surface on top of the Claude API, refuses to claim auto-memory it does not have, and asks before running side-effecting capability checks.
+- **Engraving carrier — Codex.** Previously delivered as a first-prompt `ContentBlock` prepend, which lands at user-message authority. Now delivered as `-c developer_instructions="<engraving>"` at codex-acp child spawn time, which materializes inside the codex `developer` role between the binary's `permissions` / `apps` / `skills` instruction blocks. codex-acp does not honor `_meta.systemPrompt` (verified against the Rust source — `codex-acp/src/thread.rs` `meta.get(...)` call sites all target MCP tool approval keys, none target prompt-level surfaces); `developer_instructions` is the highest stable identity carrier the codex stack offers. Structurally one config layer below the Claude side's preset replacement, but equivalent in authority intent. The new carrier participates in `bridgeConfigSignature` / session compatibility, so changing the engraving forces a fresh codex-acp spawn — reusing an existing child against a stale carrier would surface the previous identity to the model.
+- **Compaction toggle no longer affects identity isolation.** Previously, `PI_SHELL_ACP_ALLOW_COMPACTION=1` set the entire `bridgeEnvDefaults` block to `undefined`, which dropped `CLAUDE_CONFIG_DIR` / `CODEX_HOME` / `CODEX_SQLITE_HOME` along with the Claude compaction-guard pair. That silently turned operator config inheritance back on the moment compaction was allowed. The toggle now strips only the compaction-guard env keys (`DISABLE_AUTO_COMPACT`, `DISABLE_COMPACT`); identity-isolation env stays regardless. Identity isolation is an invariant; the compaction knob is policy.
+
+### Added
+
+- **Whitelist overlay — Claude.** `~/.pi/agent/claude-config-overlay/` is now built from a fixed allowlist instead of mirroring `~/.claude/` minus `settings.json`. Author-controlled `settings.json` (`permissions.defaultMode = "default"`, `autoMemoryEnabled: false`); passthrough symlinks for `auth.json`, `cache`, `debug`, `session-bridge`, `session-env`, `shell-snapshots`, `skills`, `stats-cache.json`, `statsig`, `telemetry`; overlay-private empty `projects/` and `sessions/`; binary-managed `.claude.json` and `backups/`. Anything else (`CLAUDE.md`, `hooks/`, `agents/`, `todos/`, `tasks/`, `history.jsonl`, `settings.local.json` carrying personal env / GitHub PAT, `plugins/` operator enablement, ...) is intentionally not in the overlay. Stale entries from earlier blacklist-style overlays are wiped on first bootstrap with this code.
+- **Whitelist overlay — Codex.** Narrower than Claude because codex's leak surfaces run deeper. `CODEX_HOME` *and* the new `CODEX_SQLITE_HOME` env both pinned to `~/.pi/agent/codex-config-overlay/` so the codex thread/memory state DB cannot drift outside the overlay through env or future code paths. Author-controlled `config.toml`; passthrough symlinks for nine entries (`auth.json`, install metadata, non-data caches, `skills`); overlay-private empty `memories/`, `sessions/`, `log/`, `shell_snapshots/`; binary-managed `state_5.sqlite{,-shm,-wal}` + `logs_2.sqlite{,-shm,-wal}` (both DB groups). Operator entries hidden by the whitelist: `history.jsonl`, `rules/` (codex execution policy, not narrative memory), `AGENTS.md` (auto-loaded by `codex-rs/agents_md.rs` as user instructions), the operator's personal `config.toml` fields. Pre-migration overlays carrying stale operator-side symlinks for the binary-managed entries get those symlinks stripped on first bootstrap with this code, so codex re-initializes fresh state.
+- **Three-layer codex memory isolation.** `codexDisabledFeatures` default gains `memories` so codex stops loading operator memory entries into the developer-role context. Two more layers pinned at launch via the new `CODEX_OPERATOR_ISOLATION_ARGS` group: `memories.generate_memories=false`, `memories.use_memories=false`, `history.persistence="none"`. Plus the overlay's empty `memories/` directory itself. Defense in depth against a future codex build flipping the feature gate or renaming the keys.
+- **`resolveBridgeEnvDefaults(backend, { allowCompaction })` exported helper.** Single source of truth for how the spawned child's env defaults compose with the compaction toggle. Routed through `createBridgeProcess` and exercised directly by `check-backends` so the compaction-vs-isolation separation is pinned at unit-test time, not just at production startup.
+- **`tomlBasicString(value)` helper** for the Codex carrier. JSON's escape rules are a strict subset of TOML basic-string escapes (`\\`, `\"`, `\n`, `\r`, `\t`, `\uXXXX`), so `JSON.stringify(value)` produces a TOML-valid quoted form usable directly as the value half of `-c developer_instructions=<...>`. Used by both the spawn-array path and the `CODEX_ACP_COMMAND` shell-override path.
+- **`BASELINE.md`** — paired-language identity-check interview (Korean + English) any human operator can run against a fresh pi-shell-acp session, plus history entries for the first PI-native baseline runs on both backends.
+
+### Removed
+
+- `buildCodexBootstrapPromptAugment` and the codex adapter's `buildBootstrapPromptAugment` handler. The first-prompt `ContentBlock` prepend was the previous codex carrier; `developer_instructions` replaces it. The interface point on `AcpBackendAdapter` remains for future backends that lack a higher-authority carrier.
+
+### Verification
+
+`check-backends` grew from 52 → 110 assertions across the two PI-native commits and the migration / compaction-isolation fix that followed. The new invariants:
+
+- TOML escape contract for `developer_instructions` (presence/absence based on input, multi-line + embedded-quote escaping).
+- Claude overlay leak canaries — operator-side `MEMORY.md` and `hooks/` must not be reachable through the overlay.
+- Codex overlay leak canaries — operator-side memory, sessions data, `history.jsonl`, `rules/`, `AGENTS.md`, `log/`, `shell_snapshots/`, and the four state/logs DB files (state_5.sqlite + WAL/SHM, logs_2.sqlite + WAL/SHM) must not be reachable through the overlay.
+- Migration regression — pre-migration overlays carrying stale operator-side symlinks for binary-managed entries get those symlinks stripped on first run with the new code.
+- `resolveBridgeEnvDefaults` — Claude with compaction allowed strips compaction-guard env but keeps `CLAUDE_CONFIG_DIR`; Codex with compaction allowed keeps both `CODEX_HOME` and `CODEX_SQLITE_HOME` (codex's compaction guard is a launch-arg threshold, not env).
+- Idempotence on second call.
+
+### Notes for upgraders
+
+The first session bootstrap after upgrading from 0.3.x will silently migrate the existing overlay shape. Stale symlinks carrying operator data — including, on the codex side, symlinks pointing at the operator's real `state_5.sqlite*` thread/memory state DB — are wiped automatically. The upgrade path needs no manual intervention. After the first session, `~/.pi/agent/{claude,codex}-config-overlay/` should match the whitelist shape described above; if it doesn't, the migration ran in a different process and the overlay rebuild on the next bootstrap will converge.
+
 ## 0.3.1 — 2026-04-28
 
 ### Added
