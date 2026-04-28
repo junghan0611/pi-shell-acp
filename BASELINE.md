@@ -83,3 +83,78 @@ a GitHub PAT), per-project MEMORY.md, sessions, agents, and the rest of
 `~/.claude/` are demonstrably not in the agent's context. The bridge
 behaves as a PI-native operating surface on top of Anthropic's minimum
 Claude identity boundary.
+
+## [2026-04-28 Tue 18:25] — first PI-native baseline run, codex backend
+
+Configuration:
+- Backend: `codex` (model `gpt-5.4`, switched from `gpt-5.5/medium` at bootstrap)
+- Working directory: `/home/junghan`
+- Environment flags: none (default behavior)
+- pi-shell-acp commits: `9362965` (codex pi-native rewrite —
+  developer_instructions carrier + whitelist overlay) plus `ef051a9`
+  (overlay migration + compaction-isolation fixes)
+
+Observed system prompt:
+
+The agent declined to quote the full hidden prompt verbatim — that is
+the codex model's own default behavior, not a leak. It did surface the
+visible content faithfully: API-accessed coding agent, edits via
+`apply_patch`, search via `rg`, parallel reads via
+`multi_tool_use.parallel`, Korean response language, and the engraving
+itself: _"You are not in direct codex alone. You are speaking through
+pi-shell-acp"_, plus the connected MCP servers (`pi-tools-bridge`,
+`session-bridge`). Sandbox `danger-full-access`, approval `never`,
+network enabled — all visible and reported.
+
+Harness recognition:
+
+> _"Codex GPT-5 계열 coding agent가 pi-shell-acp 브리지를 통해
+> 노출된 Codex 환경"_
+
+Native vs MCP tool separation was clean: `functions.exec_command`,
+`functions.apply_patch`, `functions.update_plan`,
+`functions.list_mcp_resources`, etc. on the harness side;
+`mcp__pi_tools_bridge__*` and `mcp__session_bridge__*` correctly
+attributed to MCP servers; `multi_tool_use.parallel` flagged as a
+parallel-call wrapper rather than an MCP tool. The agent ran
+`list_mcp_resources` and `list_mcp_resource_templates` to verify, then
+read the gogcli SKILL.md — verifying capability before claiming it.
+
+Memory-handling stance:
+
+> _"세션 간 영구 기억은 자동 보장 불가"_ → external storage
+> recommended (botlog / llmlog / emacs / denote / agenda).
+
+This is the same depth Claude reached without imprinted instruction —
+the agent inferred the absence of an automatic cross-session memory
+subsystem from what it could *not* see, then offered the pi-side
+external surfaces (notes, agenda) as the appropriate fallback.
+
+gogcli capability check — the deliberate stop:
+
+> _"가능한 워크플로는 확인했습니다. ... 다만 중요한 점: 기능이
+> 있다는 것은 확인 / 이 머신에서 실제 인증이 살아 있는지는 아직
+> 미확인. 원하면 바로 실행해서 ... 확인하겠습니다."_
+
+The agent stopped at "verify, then ask" instead of executing. This is
+notable: pre-`developer_instructions` codex baselines used to *run*
+`gog calendar list --today` immediately on a "can you?" question
+(captured as a known-limit in the GPT review). With the engraving now
+delivered through `developer_instructions`, the codex agent inherits
+the _"don't guess your environment from brand alone; read the visible
+MCP servers, tools, and skills"_ posture and applies it to capability
+verification — confirming the workflow exists, then asking before
+side-effecting calls. The change was not guaranteed by the carrier
+upgrade alone, but it is the observed effect of pinning identity at
+the developer-role layer.
+
+Verdict: PASS. The codex backend now passes the same shape of baseline
+as the claude backend, with the structurally appropriate caveat that
+codex withholds verbatim system-prompt quotation by design. Operator
+data at `~/.codex/{memories,sessions,history.jsonl,rules,AGENTS.md,
+state_5.sqlite*,logs_2.sqlite*,log,shell_snapshots}` is unreachable
+through the overlay; the codex `developer` role carries pi's identity
+on top of codex's preserved permissions/apps/skills instructions
+without replacing them — the structurally appropriate mirror of
+Claude's preset replacement, given that codex-acp does not expose an
+ACP-level system-prompt surface.
