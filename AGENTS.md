@@ -31,14 +31,12 @@ When an agent sees a warning, it interprets it as "I did something wrong" and st
 6. **Shutdown → preserve mapping**: ordinary process exit keeps persisted mapping intact.
 7. **Dual-backend claim → dual-backend verification**: if the repo claims Claude + Codex support, both must pass runtime smoke.
 8. **This bridge is not a second harness**: no prompt reconstruction, no transcript hydration, no tool result ledger, no Claude Code emulation.
-9. **PI-native identity carriers + whitelist overlays** (both backends): pi-shell-acp borrows each backend's *model API behavior and tool implementations*, but pi owns the *operating identity carrier* and the *operating surface*. The model is still Claude or codex GPT-5 (the SDK's minimum identity prefix is the boundary we respect); the system-prompt-level identity, the visible operating context, and the operator-config isolation belong to pi-shell-acp.
-   - **Claude carrier**: `_meta.systemPrompt = <string>` — string-form preset replacement (claude-agent-acp `acp-agent.ts:1685`, sdk.d.ts:1695). The claude_code preset's auto-memory / cwd / git-status / todo-handling sections drop out; the engraving sits directly above the SDK's hard-wired minimum identity prefix.
-   - **Codex carrier**: `-c developer_instructions="<...>"` at codex-acp child spawn time — lands inside the codex `developer` role between the binary's `permissions` / `apps` / `skills` instruction blocks. codex-acp exposes no `_meta.systemPrompt` surface (verified against the Rust source); `developer_instructions` is the highest stable identity carrier the codex stack offers, structurally one config layer below the Claude side but equivalent in authority intent.
-   - **Whitelist overlays — Claude**: `CLAUDE_CONFIG_DIR=~/.pi/agent/claude-config-overlay/`. Author-controlled `settings.json` (`permissions.defaultMode = "default"`, `autoMemoryEnabled: false`); fixed passthrough symlinks for what backend auth and runtime need (`auth.json`, `cache`, `debug`, `session-bridge`, `session-env`, `shell-snapshots`, `skills`, `stats-cache.json`, `statsig`, `telemetry`); overlay-private empty `projects/` and `sessions/`; binary-managed `.claude.json` + `backups/`; everything else (`CLAUDE.md`, `hooks/`, `agents/`, `todos/`, `tasks/`, `history.jsonl`, `settings.local.json` carrying personal env / GitHub PAT, `plugins/` operator enablement, ...) intentionally hidden.
-   - **Whitelist overlays — Codex**: `CODEX_HOME=~/.pi/agent/codex-config-overlay/` *and* `CODEX_SQLITE_HOME=~/.pi/agent/codex-config-overlay/` (the second pin keeps `state_5.sqlite*` from drifting outside the overlay through env or future code paths). Author-controlled `config.toml`; passthrough symlinks for codex auth + non-data caches + install metadata + `skills`; overlay-private empty `memories/`, `sessions/`, `log/`, `shell_snapshots/`; binary-managed `state_5.sqlite*` + `logs_2.sqlite*` (codex thread/memory state DB + telemetry DB — pre-migration symlinks pointing at operator data are torn down on first run with this code so codex re-initializes fresh state); everything else (`history.jsonl`, `rules/` execution policy, `AGENTS.md` auto-loaded as user instructions by `codex-rs/agents_md.rs`, operator's personal `config.toml`, ...) intentionally hidden.
-   - **Claude tool surface**: `tools` = `[Read, Bash, Edit, Write]` (+ `Skill` when `skillPlugins` non-empty). `disallowedTools` blocks the SDK's deferred-tool advertisement (`AskUserQuestion`, `Cron*`, `Task*`, `Worktree*`, `EnterPlanMode`/`ExitPlanMode`, `Monitor`, `NotebookEdit`, `PushNotification`, `RemoteTrigger`, `WebFetch`, `WebSearch`). MCP via `mcpServers` only (`strictMcpConfig: true`, `settingSources: []`). Skills via `skillPlugins` paths only. Permissions via `permissionAllow` wildcards.
-   - **Codex tool surface**: `approval_policy=never` + `sandbox_mode=danger-full-access` + `model_auto_compact_token_limit=i64::MAX` pinned via `-c` flags. `web_search="disabled"` + `tools.view_image=false` pinned. `codexDisabledFeatures` (mirror of Claude's `disallowedTools`) defaults to `image_generation`/`tool_suggest`/`tool_search`/`multi_agent`/`apps`/`memories`. Three-layer memory isolation: `features.memories=false`, plus pinned `-c memories.generate_memories=false` / `-c memories.use_memories=false` / `-c history.persistence="none"`, plus the empty `memories/` directory in the overlay.
-   - **Env knobs**: `PI_SHELL_ACP_CODEX_MODE=auto|read-only` for Codex mode opt-in. `PI_SHELL_ACP_ALLOW_COMPACTION=1` strips only the compaction-guard env vars (`DISABLE_AUTO_COMPACT`, `DISABLE_COMPACT`); identity-isolation env (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `CODEX_SQLITE_HOME`) stays regardless — those are invariants required by the operator-config-isolation design, not policy the compaction toggle controls.
+9. **Identity carrier + whitelist overlay design** (both backends): pi-shell-acp borrows each backend's *model API behavior and tool implementations*, but shapes the pi-facing operating surface explicitly. The model remains Claude or codex GPT-5; pi-shell-acp owns the bridge carrier, MCP/tool exposure, and operator-config overlay design.
+   - **Carrier**: Claude gets `_meta.systemPrompt = <engraving>` (preset replacement). Codex gets `-c developer_instructions=<engraving>` (highest stable codex-acp carrier). Do not append hidden identity copy elsewhere.
+   - **Overlay**: Claude uses `CLAUDE_CONFIG_DIR=~/.pi/agent/claude-config-overlay/`; Codex uses `CODEX_HOME` and `CODEX_SQLITE_HOME` under `~/.pi/agent/codex-config-overlay/`. Whitelist only auth/runtime state; hide operator memory, history, rules, hooks, agents, sessions, and personal config by default.
+   - **Tool surface**: Claude tools are explicit (`Read`, `Bash`, `Edit`, `Write`, plus `Skill` when configured) with deferred Claude tools disallowed by default. Codex mode/feature gates are pinned via `-c` flags and `codexDisabledFeatures`; MCP still enters only through `piShellAcpProvider.mcpServers`.
+   - **Compaction vs isolation**: `PI_SHELL_ACP_ALLOW_COMPACTION=1` may relax compaction guards, but must not drop identity-isolation env (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `CODEX_SQLITE_HOME`).
+   - **Evidence discipline**: README/AGENTS claims must not outrun [VERIFY.md](./VERIFY.md)'s Evidence Levels and Claims Ledger. If a statement is design intent rather than verified behaviour, say so.
 
 ## Verification
 
@@ -56,9 +54,9 @@ pnpm typecheck && ./run.sh check-backends && ./run.sh check-models && ./run.sh c
 ./run.sh session-messaging /path/to/project # 4-case cross-session messaging
 ```
 
-**Agent interview** ([VERIFY.md](./VERIFY.md), Layer 0–4): self-recognition / native tool use / pi MCP awareness / focus retention / quality vs direct Claude Code.
+**Agent-driven verification** ([VERIFY.md](./VERIFY.md), Evidence Levels L0–L5): self-recognition and transcript agreement are usually L1; objective MCP calls are L2; on-disk/process corroboration is L3; direct-native comparison is L4; long-haul soak is L5.
 
-If any gate fails or the interview drops a layer, do not commit. Pipes can be connected and the water can still taste wrong.
+If any gate fails, or a claim drops below the evidence level it needs, do not commit. Pipes can be connected and the water can still taste wrong.
 
 ## Engraving
 
@@ -121,11 +119,13 @@ Versions follow the pins in `package.json` / `run.sh`. Mismatches are caught by 
 
 - Surgical changes. One thing at a time.
 - Ask: does this belong in pi? In Claude Code? Or here?
+- Keep docs calibrated: strong language is fine; unbacked language is not.
 - Resist the urge to make the bridge more magical than necessary.
 
 ## References
 
-- [VERIFY.md](./VERIFY.md) — manual verification guide + Layer 0–4 interview
+- [VERIFY.md](./VERIFY.md) — agent-driven verification guide. Carries two distinct frameworks: **Evidence Levels L0–L5** (cross-doc rung ladder for any claim — narrative / transcript / MCP call / on-disk / direct-native / soak) and the **§1A Layer 0–4 interview** (main-agent evaluation: self-awareness / native-tool use / MCP boundary / focus / direct-Claude comparison). Do not conflate them — a claim's evidence-level rung and a §1A layer are independent axes.
+- [BASELINE.md](./BASELINE.md) — operator-driven verification record (Junghan runs the interview directly; results recorded). Companion to VERIFY.md, not a replacement.
 - [agent-shell](https://github.com/xenodium/agent-shell) — Emacs ACP client, origin of `resume > load > new`
 - [claude-agent-acp](https://github.com/agentclientprotocol/claude-agent-acp) — ACP server
 - [agent-config](https://github.com/junghan0611/agent-config) — real consumer repo
