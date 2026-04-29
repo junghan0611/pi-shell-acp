@@ -68,7 +68,9 @@
 	},
 	"pi": {
 		"extensions": [
-			"./index.ts"
+			"./index.ts",
+			"./pi-extensions/entwurf-control.ts",
+			"./pi-extensions/entwurf.ts"
 		]
 	}
 }
