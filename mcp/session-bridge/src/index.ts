@@ -14,6 +14,35 @@
  * Wire protocol (same as PI control.ts):
  *   Client → Server: { type: "send", message: "...", sender?: "..." }
  *   Server → Client: { type: "response", command: "send", success: true }
+ *
+ * ──────────────────────────────────────────────────────────────────────────
+ * Surface boundary — this is NOT the entwurf-control surface.
+ *
+ * pi-extensions/entwurf-control.ts declared its addressing sessionId-only
+ * since 0.5.0 and removed its alias surface. That decision was scoped to
+ * the entwurf surface (~/.pi/entwurf-control/), which is AI-to-AI peer
+ * messaging and pulled identity from `entwurf_peers` (UUIDs are fine).
+ *
+ * session-bridge is a different surface: ~/.claude/session-bridge/, intended
+ * for *humans* operating Claude Code who want to send messages between
+ * named instances ("garden", "cos", "entwurf") rather than UUIDs. So the
+ * `<name>.alias` symlink + sessionName resolution are kept here on purpose.
+ *
+ * Differences from the entwurf-control surface that justify the divergence:
+ *   - No 1-second polling timer here. The alias is written once at startup
+ *     (createAlias) and unlinked at shutdown (removeAlias). The pre-0.5.0
+ *     entwurf timer mirrored a mutable session name into the symlink every
+ *     second; that race surface does not exist here.
+ *   - createAlias is atomic (symlink-into-tmp + rename) instead of the
+ *     unlink-then-symlink window the old entwurf surface had. Two sessions
+ *     racing to claim the same SESSION_NAME still resolve to one winner.
+ *   - resolveTarget falls back from alias readlink to a live-session scan
+ *     by name, so a stale or missing alias does not strand a peer.
+ *
+ * If you ever bridge this surface back into entwurf addressing (e.g. let
+ * pi sessions message Claude Code sessions through here), DO NOT promote
+ * sessionName to a primary address there; pass the sessionId you got from
+ * list_sessions and keep names as a display-only field.
  */
 
 import * as crypto from "node:crypto";
@@ -153,11 +182,23 @@ async function createAlias(name: string, sessionId: string): Promise<void> {
 	if (!name) return;
 	const aliasPath = getAliasPath(name);
 	const targetSocket = getSocketPath(sessionId);
+	// Atomic alias claim: write the new symlink under a unique tmp name,
+	// then rename(2) it onto aliasPath. POSIX rename is atomic for the
+	// destination — replaces any existing alias in a single inode swap,
+	// closing the unlink-then-symlink window where two concurrent starts
+	// could both observe "no alias" and then both write one.
+	const tmpPath = `${aliasPath}.${crypto.randomUUID()}.tmp`;
 	try {
-		await fs.unlink(aliasPath).catch(() => {});
-		await fs.symlink(targetSocket, aliasPath);
+		await fs.symlink(targetSocket, tmpPath);
+		try {
+			await fs.rename(tmpPath, aliasPath);
+		} catch {
+			await fs.unlink(tmpPath).catch(() => {});
+		}
 	} catch {
-		// Best effort
+		// Best effort — symlink creation can fail on filesystems that don't
+		// support symlinks (rare). We don't escalate; sessionName resolution
+		// has a fallback scan path in resolveTarget().
 	}
 }
 

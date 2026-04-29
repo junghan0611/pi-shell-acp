@@ -60,7 +60,7 @@
 		"check-registration": "./run.sh check-registration",
 		"check-dep-versions": "./run.sh check-dep-versions",
 		"check-claude-sessions": "./run.sh check-claude-sessions",
-		"typecheck": "tsc --noEmit",
+		"typecheck": "tsc --noEmit && tsc -p mcp/tsconfig.json",
 		"lint": "biome check .",
 		"format": "biome check --write .",
 		"check": "pnpm lint && pnpm typecheck && ./run.sh check-mcp && ./run.sh check-models && ./run.sh check-backends && ./run.sh check-registration && ./run.sh check-dep-versions",

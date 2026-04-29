@@ -1,0 +1,29 @@
+{
+	// Sub-config for the MCP bridges. They share the root's settings but
+	// add two strip-types-runtime concessions:
+	//
+	//   1. allowImportingTsExtensions — pi-tools-bridge imports
+	//      ../../pi-extensions/lib/entwurf-core.ts with an explicit .ts
+	//      suffix because mcp/* is launched via Node's
+	//      `--experimental-strip-types` resolver, which requires the
+	//      extension on the wire. The root tsconfig stays emit-capable so
+	//      `./run.sh check-models` can still tsc the project entry into
+	//      .tmp-verify-models/index.js for runtime introspection.
+	//
+	//   2. noEmit — TypeScript pairs allowImportingTsExtensions with
+	//      noEmit on principle: emitting JS that references .ts paths
+	//      would be unloadable. Typecheck-only is the right mode here
+	//      anyway since these files are run, not built.
+	//
+	// Why split: keeping mcp inside the same fence as pi-extensions
+	// (single root config) breaks check-models. Keeping mcp outside
+	// (legacy "exclude: [mcp]") is the bypass we are closing. Two configs
+	// is the smallest expression that closes both.
+	"extends": "../tsconfig.json",
+	"compilerOptions": {
+		"allowImportingTsExtensions": true,
+		"noEmit": true,
+		"rootDir": ".."
+	},
+	"include": ["./pi-tools-bridge/src/**/*.ts", "./session-bridge/src/**/*.ts", "../pi-extensions/lib/**/*.ts"]
+}

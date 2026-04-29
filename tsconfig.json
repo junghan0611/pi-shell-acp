@@ -7,5 +7,7 @@
 		"strict": false,
 		"skipLibCheck": true
 	},
+	// mcp/* is type-checked under mcp/tsconfig.json (strip-types-friendly
+	// options). See pnpm typecheck for the two-config invocation.
 	"exclude": ["node_modules", "mcp"]
 }
