@@ -94,25 +94,19 @@ interface RpcResponse {
 	data?: unknown;
 }
 
-async function resolveControlSocket(target: string): Promise<string> {
+async function resolveControlSocket(sessionId: string): Promise<string> {
 	try {
 		await fs.access(ENTWURF_DIR);
 	} catch {
 		throw new Error(`pi control dir not found at ${ENTWURF_DIR}. Target pi needs --entwurf-control.`);
 	}
 
-	const direct = target.endsWith(SOCKET_SUFFIX)
-		? path.join(ENTWURF_DIR, target)
-		: path.join(ENTWURF_DIR, `${target}${SOCKET_SUFFIX}`);
-	if (existsSync(direct)) return direct;
-
-	const entries = await fs.readdir(ENTWURF_DIR).catch(() => [] as string[]);
-	for (const name of entries) {
-		if (name === target || name === `${target}${SOCKET_SUFFIX}`) {
-			return path.join(ENTWURF_DIR, name);
-		}
+	if (!sessionId || sessionId.includes("/") || sessionId.includes("..")) {
+		throw new Error(`Invalid sessionId: ${sessionId}`);
 	}
-	throw new Error(`No pi control socket for "${target}" under ${ENTWURF_DIR}`);
+	const socketPath = path.join(ENTWURF_DIR, `${sessionId}${SOCKET_SUFFIX}`);
+	if (existsSync(socketPath)) return socketPath;
+	throw new Error(`No pi control socket for sessionId "${sessionId}" under ${ENTWURF_DIR}`);
 }
 
 function rpcCall(socketPath: string, payload: Record<string, unknown>): Promise<RpcResponse> {
@@ -159,8 +153,6 @@ function rpcCall(socketPath: string, payload: Record<string, unknown>): Promise<
 
 interface LiveSessionInfo {
 	sessionId: string;
-	name?: string;
-	aliases: string[];
 	socketPath: string;
 }
 
@@ -185,28 +177,6 @@ async function isSocketAlive(socketPath: string): Promise<boolean> {
 	});
 }
 
-async function readAliasMap(): Promise<Map<string, string[]>> {
-	const aliasMap = new Map<string, string[]>();
-	const entries = await fs.readdir(ENTWURF_DIR, { withFileTypes: true }).catch(() => []);
-	for (const entry of entries) {
-		if (!entry.isSymbolicLink()) continue;
-		if (!entry.name.endsWith(".alias")) continue;
-		const aliasPath = path.join(ENTWURF_DIR, entry.name);
-		let target: string;
-		try {
-			target = await fs.readlink(aliasPath);
-		} catch {
-			continue;
-		}
-		const resolvedTarget = path.resolve(ENTWURF_DIR, target);
-		const aliasName = entry.name.slice(0, -".alias".length);
-		const list = aliasMap.get(resolvedTarget);
-		if (list) list.push(aliasName);
-		else aliasMap.set(resolvedTarget, [aliasName]);
-	}
-	return aliasMap;
-}
-
 async function getLiveSessions(): Promise<LiveSessionInfo[]> {
 	try {
 		await fs.access(ENTWURF_DIR);
@@ -214,7 +184,6 @@ async function getLiveSessions(): Promise<LiveSessionInfo[]> {
 		return [];
 	}
 	const entries = await fs.readdir(ENTWURF_DIR, { withFileTypes: true }).catch(() => []);
-	const aliasMap = await readAliasMap();
 	const sessions: LiveSessionInfo[] = [];
 
 	for (const entry of entries) {
@@ -224,11 +193,10 @@ async function getLiveSessions(): Promise<LiveSessionInfo[]> {
 		if (!(await isSocketAlive(socketPath))) continue;
 		const sessionId = entry.name.slice(0, -SOCKET_SUFFIX.length);
 		if (!sessionId || sessionId.includes("/")) continue;
-		const aliases = aliasMap.get(socketPath) ?? [];
-		sessions.push({ sessionId, name: aliases[0], aliases, socketPath });
+		sessions.push({ sessionId, socketPath });
 	}
 
-	sessions.sort((a, b) => (a.name ?? a.sessionId).localeCompare(b.name ?? b.sessionId));
+	sessions.sort((a, b) => a.sessionId.localeCompare(b.sessionId));
 	return sessions;
 }
 
@@ -253,23 +221,24 @@ const server = new McpServer({ name: "pi-tools-bridge", version: "0.1.0" });
 server.tool(
 	"entwurf_send",
 	"Send a message to another running pi session via its control socket. " +
-		"Target by sessionId or alias name. The target must be running with --entwurf-control. " +
+		"Target by sessionId. The target must be running with --entwurf-control. " +
+		"Use entwurf_peers to discover live sessionIds. " +
 		"This MCP surface is fire-and-forget: delivery is confirmed, a turn result is not. " +
 		"If you need a reply, let the target answer with its own entwurf_send. " +
 		"If the caller needs a result it owns, use entwurf(mode=async) + entwurf_resume instead.",
 	{
-		target: z.string().min(1).describe("Session id or alias registered under pi control dir"),
+		sessionId: z.string().min(1).describe("Target session id (UUID)"),
 		message: z.string().min(1).describe("Message text to deliver"),
 		mode: z.enum(["steer", "follow_up"]).optional().describe("Default follow_up"),
 	},
-	async ({ target, message, mode }) => {
+	async ({ sessionId, message, mode }) => {
 		try {
-			const sock = await resolveControlSocket(target);
+			const sock = await resolveControlSocket(sessionId);
 			const resp = await rpcCall(sock, { type: "send", message, mode: mode ?? "follow_up" });
 			if (!resp.success) {
 				return textErr(`entwurf_send failed: ${resp.error ?? "unknown"}`);
 			}
-			return textOk(`delivered to ${target}`);
+			return textOk(`delivered to ${sessionId}`);
 		} catch (err) {
 			return textErr(`entwurf_send error: ${err instanceof Error ? err.message : String(err)}`);
 		}
@@ -279,8 +248,8 @@ server.tool(
 server.tool(
 	"entwurf_peers",
 	"List active pi sessions that currently expose a control socket (i.e. were launched with " +
-		"--entwurf-control). Returns sessionId + optional alias name + socket path for each live " +
-		"session. Pair with entwurf_send to address a specific peer. " +
+		"--entwurf-control). Returns sessionId + socket path for each live session. " +
+		"Pair with entwurf_send to address a specific peer. " +
 		"Note: this is the *active* session world. It is NOT the way to discover saved entwurf " +
 		"sessions — those live as JSONL files under ~/.pi/agent/sessions and are addressed by " +
 		"taskId via entwurf_resume; their original processes may already have exited.",
@@ -289,18 +258,13 @@ server.tool(
 		try {
 			const sessions = await getLiveSessions();
 			const lines = sessions.length
-				? sessions.map((s) => {
-						const name = s.name ? ` (${s.name})` : "";
-						return `- ${s.sessionId}${name}`;
-					})
+				? sessions.map((s) => `- ${s.sessionId}`)
 				: ["(no live pi sessions with --entwurf-control found)"];
 			const payload = {
 				controlDir: ENTWURF_DIR,
 				count: sessions.length,
 				sessions: sessions.map((s) => ({
 					sessionId: s.sessionId,
-					name: s.name,
-					aliases: s.aliases,
 					socketPath: s.socketPath,
 				})),
 			};

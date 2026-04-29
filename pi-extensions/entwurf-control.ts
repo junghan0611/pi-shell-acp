@@ -34,10 +34,21 @@
  *   pi --entwurf-control
  *
  * One-shot startup send:
- *   pi -p --entwurf-control --entwurf-session <session-name|session-id> --entwurf-send-message <text>
+ *   pi -p --entwurf-control --entwurf-session <session-id> --entwurf-send-message <text>
  *     [--entwurf-send-mode steer|follow_up] [--entwurf-send-wait turn_end|message_processed]
  *     [--entwurf-send-include-sender-info]
  *   (startup send is one-way by default; use --entwurf-send-wait turn_end to capture response on stdout)
+ *
+ * Addressing is sessionId-only since 0.5.0. The previous alias surface
+ * (`<sessionName>.alias` symlinks under ~/.pi/entwurf-control/, plus a 1s
+ * polling timer that mirrored pi's SessionManager.sessionName into those
+ * symlinks) was removed: it added per-process polling overhead and a Race
+ * surface around concurrent symlink updates, while the only stable identity
+ * a peer needs is the UUIDv7 sessionId. Use entwurf_peers (or
+ * /entwurf-sessions) to discover live sessions; pass the sessionId to
+ * entwurf_send. Note that this is independent of agent-config's
+ * --session-control extension, which lives under ~/.pi/session-control/
+ * and may keep its own alias surface.
  *
  * Environment:
  *   Sets PI_SESSION_ID when enabled, allowing child processes to discover
@@ -47,6 +58,7 @@
  *   Commands are newline-delimited JSON objects with a `type` field:
  *   - { type: "send", message: "...", mode?: "steer"|"follow_up" }
  *   - { type: "get_message" }
+ *   - { type: "get_info" }
  *   - { type: "clear", summarize?: boolean }
  *   - { type: "abort" }
  *   - { type: "subscribe", event: "turn_end" }
@@ -158,8 +170,6 @@ interface SocketState {
 	server: net.Server | null;
 	socketPath: string | null;
 	context: ExtensionContext | null;
-	alias: string | null;
-	aliasTimer: ReturnType<typeof setInterval> | null;
 	turnEndSubscriptions: TurnEndSubscription[];
 	// Monotonic turnIndex of the most recent turn_end fired while this extension
 	// was loaded. Used as a baseline so that a `wait_until=turn_end` subscriber
@@ -186,21 +196,6 @@ function isSafeSessionId(sessionId: string): boolean {
 	return !sessionId.includes("/") && !sessionId.includes("\\") && !sessionId.includes("..") && sessionId.length > 0;
 }
 
-function isSafeAlias(alias: string): boolean {
-	return !alias.includes("/") && !alias.includes("\\") && !alias.includes("..") && alias.length > 0;
-}
-
-function getAliasPath(alias: string): string {
-	return path.join(ENTWURF_DIR, `${alias}.alias`);
-}
-
-function getSessionAlias(ctx: ExtensionContext): string | null {
-	const sessionName = ctx.sessionManager.getSessionName();
-	const alias = sessionName ? sessionName.trim() : "";
-	if (!alias || !isSafeAlias(alias)) return null;
-	return alias;
-}
-
 async function ensureControlDir(): Promise<void> {
 	await fs.mkdir(ENTWURF_DIR, { recursive: true });
 }
@@ -216,90 +211,30 @@ async function removeSocket(socketPath: string | null): Promise<void> {
 	}
 }
 
-// TODO: add GC for stale sockets/aliases older than 7 days.
-async function removeAliasesForSocket(socketPath: string | null): Promise<void> {
-	if (!socketPath) return;
+// Sweep stale `.sock` entries left behind by hard-killed sessions or stale
+// alias-era artifacts. Runs once per startControlServer call. We only touch
+// entries that are demonstrably dead — a live peer's socket survives.
+async function gcStaleSockets(): Promise<void> {
+	let entries: import("node:fs").Dirent[];
 	try {
-		const entries = await fs.readdir(ENTWURF_DIR, { withFileTypes: true });
-		for (const entry of entries) {
-			if (!entry.isSymbolicLink()) continue;
-			const aliasPath = path.join(ENTWURF_DIR, entry.name);
-			let target: string;
-			try {
-				target = await fs.readlink(aliasPath);
-			} catch {
-				continue;
-			}
-			const resolvedTarget = path.resolve(ENTWURF_DIR, target);
-			if (resolvedTarget === socketPath) {
-				await fs.unlink(aliasPath);
-			}
-		}
+		entries = await fs.readdir(ENTWURF_DIR, { withFileTypes: true });
 	} catch (error) {
 		if (isErrnoException(error) && error.code === "ENOENT") return;
 		throw error;
 	}
-}
-
-async function createAliasSymlink(sessionId: string, alias: string): Promise<void> {
-	if (!alias || !isSafeAlias(alias)) return;
-	const aliasPath = getAliasPath(alias);
-	const target = `${sessionId}${SOCKET_SUFFIX}`;
-	try {
-		await fs.unlink(aliasPath);
-	} catch (error) {
-		if (isErrnoException(error) && error.code !== "ENOENT") {
-			throw error;
-		}
-	}
-	try {
-		await fs.symlink(target, aliasPath);
-	} catch (error) {
-		if (isErrnoException(error) && error.code !== "EEXIST") {
-			throw error;
-		}
-	}
-}
-
-async function resolveSessionIdFromAlias(alias: string): Promise<string | null> {
-	if (!alias || !isSafeAlias(alias)) return null;
-	const aliasPath = getAliasPath(alias);
-	try {
-		const target = await fs.readlink(aliasPath);
-		const resolvedTarget = path.resolve(ENTWURF_DIR, target);
-		const base = path.basename(resolvedTarget);
-		if (!base.endsWith(SOCKET_SUFFIX)) return null;
-		const sessionId = base.slice(0, -SOCKET_SUFFIX.length);
-		return isSafeSessionId(sessionId) ? sessionId : null;
-	} catch (error) {
-		if (isErrnoException(error) && error.code === "ENOENT") return null;
-		return null;
-	}
-}
-
-async function getAliasMap(): Promise<Map<string, string[]>> {
-	const aliasMap = new Map<string, string[]>();
-	const entries = await fs.readdir(ENTWURF_DIR, { withFileTypes: true });
 	for (const entry of entries) {
-		if (!entry.isSymbolicLink()) continue;
-		if (!entry.name.endsWith(".alias")) continue;
-		const aliasPath = path.join(ENTWURF_DIR, entry.name);
-		let target: string;
-		try {
-			target = await fs.readlink(aliasPath);
-		} catch {
+		if (entry.isSymbolicLink()) {
+			// Pre-0.5 alias symlinks (`<name>.alias`) are no longer used.
+			// Drop them on encounter so the directory stays clean.
+			await fs.unlink(path.join(ENTWURF_DIR, entry.name)).catch(() => {});
 			continue;
 		}
-		const resolvedTarget = path.resolve(ENTWURF_DIR, target);
-		const aliases = aliasMap.get(resolvedTarget);
-		const aliasName = entry.name.slice(0, -".alias".length);
-		if (aliases) {
-			aliases.push(aliasName);
-		} else {
-			aliasMap.set(resolvedTarget, [aliasName]);
-		}
+		if (!entry.name.endsWith(SOCKET_SUFFIX)) continue;
+		const fullPath = path.join(ENTWURF_DIR, entry.name);
+		const alive = await isSocketAlive(fullPath);
+		if (alive) continue;
+		await fs.unlink(fullPath).catch(() => {});
 	}
-	return aliasMap;
 }
 
 async function isSocketAlive(socketPath: string): Promise<boolean> {
@@ -328,8 +263,6 @@ async function isSocketAlive(socketPath: string): Promise<boolean> {
 
 type LiveSessionInfo = {
 	sessionId: string;
-	name?: string;
-	aliases: string[];
 	socketPath: string;
 };
 
@@ -352,7 +285,6 @@ function abbreviateHome(cwd: string | undefined): string {
 async function getLiveSessions(): Promise<LiveSessionInfo[]> {
 	await ensureControlDir();
 	const entries = await fs.readdir(ENTWURF_DIR, { withFileTypes: true });
-	const aliasMap = await getAliasMap();
 	const sessions: LiveSessionInfo[] = [];
 
 	for (const entry of entries) {
@@ -362,12 +294,10 @@ async function getLiveSessions(): Promise<LiveSessionInfo[]> {
 		if (!alive) continue;
 		const sessionId = entry.name.slice(0, -SOCKET_SUFFIX.length);
 		if (!isSafeSessionId(sessionId)) continue;
-		const aliases = aliasMap.get(socketPath) ?? [];
-		const name = aliases[0];
-		sessions.push({ sessionId, name, aliases, socketPath });
+		sessions.push({ sessionId, socketPath });
 	}
 
-	sessions.sort((a, b) => (a.name ?? a.sessionId).localeCompare(b.name ?? b.sessionId));
+	sessions.sort((a, b) => a.sessionId.localeCompare(b.sessionId));
 	return sessions;
 }
 
@@ -413,21 +343,6 @@ async function getLiveSessionsWithInfo(): Promise<EnrichedSession[]> {
 		}
 	}
 	return enriched;
-}
-
-async function syncAlias(state: SocketState, ctx: ExtensionContext): Promise<void> {
-	if (!state.server || !state.socketPath) return;
-	const alias = getSessionAlias(ctx);
-	if (alias && alias !== state.alias) {
-		await removeAliasesForSocket(state.socketPath);
-		await createAliasSymlink(ctx.sessionManager.getSessionId(), alias);
-		state.alias = alias;
-		return;
-	}
-	if (!alias && state.alias) {
-		await removeAliasesForSocket(state.socketPath);
-		state.alias = null;
-	}
 }
 
 function writeResponse(socket: net.Socket, response: RpcResponse): void {
@@ -634,9 +549,6 @@ async function handleCommand(
 ): Promise<void> {
 	const id = "id" in command && typeof command.id === "string" ? command.id : undefined;
 	const respond = (success: boolean, commandName: string, data?: unknown, error?: string) => {
-		if (state.context) {
-			void syncAlias(state, state.context);
-		}
 		writeResponse(socket, { type: "response", command: commandName, success, data, error, id });
 	};
 
@@ -645,8 +557,6 @@ async function handleCommand(
 		respond(false, command.type, undefined, "Session not ready");
 		return;
 	}
-
-	void syncAlias(state, ctx);
 
 	// Abort
 	if (command.type === "abort") {
@@ -799,9 +709,6 @@ async function createServer(pi: ExtensionAPI, state: SocketState, socketPath: st
 
 				const parsed = parseCommand(line);
 				if (parsed.error) {
-					if (state.context) {
-						void syncAlias(state, state.context);
-					}
 					writeResponse(socket, {
 						type: "response",
 						command: "parse",
@@ -951,12 +858,12 @@ async function sendRpcCommand(
 
 async function startControlServer(pi: ExtensionAPI, state: SocketState, ctx: ExtensionContext): Promise<void> {
 	await ensureControlDir();
+	await gcStaleSockets();
 	const sessionId = ctx.sessionManager.getSessionId();
 	const socketPath = getSocketPath(sessionId);
 
 	if (state.socketPath === socketPath && state.server) {
 		state.context = ctx;
-		await syncAlias(state, ctx);
 		return;
 	}
 
@@ -966,16 +873,12 @@ async function startControlServer(pi: ExtensionAPI, state: SocketState, ctx: Ext
 	state.context = ctx;
 	state.socketPath = socketPath;
 	state.server = await createServer(pi, state, socketPath);
-	state.alias = null;
-	await syncAlias(state, ctx);
 }
 
 async function stopControlServer(state: SocketState): Promise<void> {
 	if (!state.server) {
-		await removeAliasesForSocket(state.socketPath);
 		await removeSocket(state.socketPath);
 		state.socketPath = null;
-		state.alias = null;
 		return;
 	}
 
@@ -984,9 +887,7 @@ async function stopControlServer(state: SocketState): Promise<void> {
 	state.turnEndSubscriptions = [];
 	await new Promise<void>((resolve) => state.server?.close(() => resolve()));
 	state.server = null;
-	await removeAliasesForSocket(socketPath);
 	await removeSocket(socketPath);
-	state.alias = null;
 }
 
 function updateStatus(ctx: ExtensionContext | null, enabled: boolean): void {
@@ -1029,7 +930,7 @@ export default function (pi: ExtensionAPI) {
 		type: "boolean",
 	});
 	pi.registerFlag(ENTWURF_SESSION_FLAG, {
-		description: "Target session name or session id for startup control send",
+		description: "Target session id (UUID) for startup control send",
 		type: "string",
 	});
 	pi.registerFlag(ENTWURF_SEND_MESSAGE_FLAG, {
@@ -1056,8 +957,6 @@ export default function (pi: ExtensionAPI) {
 		server: null,
 		socketPath: null,
 		context: null,
-		alias: null,
-		aliasTimer: null,
 		turnEndSubscriptions: [],
 	};
 
@@ -1079,22 +978,12 @@ export default function (pi: ExtensionAPI) {
 	const refreshServer = async (ctx: ExtensionContext) => {
 		const enabled = pi.getFlag(ENTWURF_FLAG) === true;
 		if (!enabled) {
-			if (state.aliasTimer) {
-				clearInterval(state.aliasTimer);
-				state.aliasTimer = null;
-			}
 			await stopControlServer(state);
 			updateStatus(ctx, false);
 			updateSessionEnv(ctx, false);
 			return;
 		}
 		await startControlServer(pi, state, ctx);
-		if (!state.aliasTimer) {
-			state.aliasTimer = setInterval(() => {
-				if (!state.context) return;
-				void syncAlias(state, state.context);
-			}, 1000);
-		}
 		updateStatus(ctx, true);
 		updateSessionEnv(ctx, true);
 	};
@@ -1116,10 +1005,6 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.on("session_shutdown", async () => {
-		if (state.aliasTimer) {
-			clearInterval(state.aliasTimer);
-			state.aliasTimer = null;
-		}
 		updateStatus(state.context, false);
 		updateSessionEnv(state.context, false);
 		await stopControlServer(state);
@@ -1133,7 +1018,6 @@ export default function (pi: ExtensionAPI) {
 
 		if (state.turnEndSubscriptions.length === 0) return;
 
-		void syncAlias(state, ctx);
 		const lastMessage = getLastAssistantMessage(ctx);
 		const eventData = { message: lastMessage, turnIndex: event.turnIndex };
 
@@ -1168,8 +1052,7 @@ Actions:
 - clear: Rewind the target session.
 
 Target:
-- sessionId: UUID of the session.
-- sessionName: session name (alias from /name).
+- sessionId: UUID of the session (required). Use entwurf_peers to discover live sessions.
 
 For action=send:
 - mode: steer (immediate) or follow_up (after task).
@@ -1181,8 +1064,7 @@ prefer entwurf(mode=async) + entwurf_resume instead.
 
 Messages include sender session info for replies.`,
 		parameters: Type.Object({
-			sessionId: Type.Optional(Type.String({ description: "Target session id (UUID)" })),
-			sessionName: Type.Optional(Type.String({ description: "Target session name (alias)" })),
+			sessionId: Type.String({ description: "Target session id (UUID)" }),
 			action: Type.Optional(
 				StringEnum(["send", "get_message", "clear"] as const, {
 					description: "Action to perform (default: send)",
@@ -1206,48 +1088,25 @@ Messages include sender session info for replies.`,
 		}),
 		async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
 			const action = params.action ?? "send";
-			const sessionName = params.sessionName?.trim();
 			const sessionId = params.sessionId?.trim();
-			let targetSessionId: string | null = null;
-			const displayTarget = sessionName || sessionId || "";
 
-			if (sessionName) {
-				targetSessionId = await resolveSessionIdFromAlias(sessionName);
-				if (!targetSessionId) {
-					return {
-						content: [{ type: "text", text: "Unknown session name" }],
-						isError: true,
-						details: { error: "Unknown session name" },
-					};
-				}
-			}
-
-			if (sessionId) {
-				if (!isSafeSessionId(sessionId)) {
-					return {
-						content: [{ type: "text", text: "Invalid session id" }],
-						isError: true,
-						details: { error: "Invalid session id" },
-					};
-				}
-				if (targetSessionId && targetSessionId !== sessionId) {
-					return {
-						content: [{ type: "text", text: "Session name does not match session id" }],
-						isError: true,
-						details: { error: "Session name does not match session id" },
-					};
-				}
-				targetSessionId = sessionId;
-			}
-
-			if (!targetSessionId) {
+			if (!sessionId) {
 				return {
-					content: [{ type: "text", text: "Missing session id or session name" }],
+					content: [{ type: "text", text: "Missing session id" }],
 					isError: true,
-					details: { error: "Missing session id or session name" },
+					details: { error: "Missing session id" },
+				};
+			}
+			if (!isSafeSessionId(sessionId)) {
+				return {
+					content: [{ type: "text", text: "Invalid session id" }],
+					isError: true,
+					details: { error: "Invalid session id" },
 				};
 			}
 
+			const targetSessionId = sessionId;
+			const displayTarget = sessionId;
 			const socketPath = getSocketPath(targetSessionId);
 			const senderSessionId = state.context?.sessionManager.getSessionId();
 
@@ -1623,15 +1482,15 @@ async function maybeHandleStartupControlSend(pi: ExtensionAPI, ctx: ExtensionCon
 	}
 
 	const { target, message, mode, waitUntil, includeSenderInfo } = parsed.options;
-	let targetSessionId = await resolveSessionIdFromAlias(target);
-	if (!targetSessionId && isSafeSessionId(target)) {
-		targetSessionId = target;
-	}
-
-	if (!targetSessionId) {
-		reportStartupControlSend(ctx, `Unknown target session: ${target}`, "error");
+	if (!isSafeSessionId(target)) {
+		reportStartupControlSend(
+			ctx,
+			`Invalid target session id: ${target} (sessionId-only since 0.5.0)`,
+			"error",
+		);
 		return;
 	}
+	const targetSessionId = target;
 
 	const socketPath = getSocketPath(targetSessionId);
 	const alive = await isSocketAlive(socketPath);
@@ -1736,10 +1595,9 @@ function registerControlSessionsCommand(
 
 			const lines: string[] = ["Controllable sessions:", ""];
 			sessions.forEach((s, idx) => {
-				const aliasLabel = s.name ? ` (${s.name})` : "";
 				const current = s.sessionId === currentSessionId ? "  (current)" : "";
 				const idShort = `${s.sessionId.slice(0, 8)}…${s.sessionId.slice(-4)}`;
-				lines.push(`[${idx + 1}] ${idShort}${aliasLabel}${current}`);
+				lines.push(`[${idx + 1}] ${idShort}${current}`);
 				if (s.infoError) {
 					lines.push(`    error: ${s.infoError}`);
 				} else {
@@ -1769,12 +1627,11 @@ function registerControlSessionsCommand(
 }
 
 // Resolve a `/entwurf-send` target into the concrete socket.
-// Accepts: numeric index ("1", "[1]"), alias, or sessionId.
-// Aliases not present in the cached list still resolve via on-disk symlinks.
-async function resolveSendTarget(
+// Accepts: numeric index ("1", "[1]") or sessionId.
+function resolveSendTarget(
 	raw: string,
 	cached: EnrichedSession[],
-): Promise<{ sessionId: string; socketPath: string; label: string } | { error: string }> {
+): { sessionId: string; socketPath: string; label: string } | { error: string } {
 	const trimmed = raw.trim();
 	if (!trimmed) return { error: "Missing target" };
 
@@ -1793,24 +1650,8 @@ async function resolveSendTarget(
 		return {
 			sessionId: s.sessionId,
 			socketPath: s.socketPath,
-			label: s.name ?? `${s.sessionId.slice(0, 8)}…`,
+			label: `${s.sessionId.slice(0, 8)}…`,
 		};
-	}
-
-	const cachedHit = cached.find((s) => s.aliases.includes(trimmed));
-	if (cachedHit) {
-		return {
-			sessionId: cachedHit.sessionId,
-			socketPath: cachedHit.socketPath,
-			label: trimmed,
-		};
-	}
-
-	if (isSafeAlias(trimmed)) {
-		const sessionId = await resolveSessionIdFromAlias(trimmed);
-		if (sessionId) {
-			return { sessionId, socketPath: getSocketPath(sessionId), label: trimmed };
-		}
 	}
 
 	if (isSafeSessionId(trimmed)) {
@@ -1831,7 +1672,7 @@ function registerEntwurfSendCommand(
 ): void {
 	pi.registerCommand("entwurf-send", {
 		description:
-			"Send a message to another entwurf session — /entwurf-send <index|alias|sessionId> <message>",
+			"Send a message to another entwurf session — /entwurf-send <index|sessionId> <message>",
 		handler: async (args, ctx) => {
 			if (pi.getFlag(ENTWURF_FLAG) !== true) {
 				if (ctx.hasUI) {
@@ -1844,7 +1685,7 @@ function registerEntwurfSendCommand(
 			if (!trimmed) {
 				if (ctx.hasUI) {
 					ctx.ui.notify(
-						"Usage: /entwurf-send <index|alias|sessionId> <message>",
+						"Usage: /entwurf-send <index|sessionId> <message>",
 						"warning",
 					);
 				}
@@ -1867,7 +1708,7 @@ function registerEntwurfSendCommand(
 				return;
 			}
 
-			const resolved = await resolveSendTarget(rawTarget, getSessions());
+			const resolved = resolveSendTarget(rawTarget, getSessions());
 			if ("error" in resolved) {
 				if (ctx.hasUI) {
 					ctx.ui.notify(resolved.error, "error");
