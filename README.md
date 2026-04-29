@@ -283,7 +283,7 @@ The two backends are intentionally not perfectly symmetric. Claude Code is the p
 | `event-mapper.ts` | ACP updates → pi events |
 | `engraving.ts` + `prompts/engraving.md` | optional operator personal engraving carrier |
 | `pi-context-augment.ts` | one-shot first-user pi context augment (`~/AGENTS.md`, cwd AGENTS, bridge narrative, date/cwd) |
-| `protocol.js` | dependency-free shared wire constants (`<project-context` marker) |
+| `protocol.ts` / `protocol.js` | dependency-free shared wire constants (`<project-context` marker); `.ts` for tsc emit, `.js` for strip-types source runtime |
 | `run.sh` | install, smoke, verify, sentinel |
 | `pi-extensions/` | entwurf spawn + control plane + shared core |
 | `pi/entwurf-targets.json` | default entwurf target allowlist |
@@ -305,7 +305,7 @@ The maintainer uses pi-shell-acp for most pi work unless a task needs a differen
 
 ## Roadmap
 
-- **0.4.x / 0.4.2 — Documentation calibration.** Align README and AGENTS.md with VERIFY.md's Evidence Levels and Claims Ledger. Keep strong claims, but label what is design intent, what is verified, and what still needs L3–L5 evidence. Long-term: publish session-level verification data (see [pi-share-hf](https://github.com/badlogic/pi-share-hf) as a reference pipeline) so ACP-bridge behaviour can be reviewed at the session-record level, not only as narrative.
+- **0.4.x — Documentation / evidence calibration.** Keep README, AGENTS.md, CHANGELOG.md, BASELINE.md, and VERIFY.md aligned with the current carrier design and Evidence Levels / Claims Ledger. Long-term: publish session-level verification data (see [pi-share-hf](https://github.com/badlogic/pi-share-hf) as a reference pipeline) so ACP-bridge behaviour can be reviewed at the session-record level, not only as narrative.
 - **0.5.0 — Visible recap-as-new-question.** Replace silent compaction with explicit recap as the long-session strategy. Long sessions should end with a structured, operator-visible recap that seeds a fresh session, rather than a silently rewritten transcript. The design must specify who generates the recap, where it is stored, how the old ACP mapping is closed, and how VERIFY.md proves no hidden transcript hydration occurred.
 - **0.6.0 — OpenClaw native provider.** Drop-in like ACPx — built-in provider, no extra ACP command surface, no entwurf needed (OpenClaw uses pi natively, so the bridge only has to wire the provider; the rest is pi's existing tool model).
 

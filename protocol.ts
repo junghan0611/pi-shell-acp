@@ -2,9 +2,9 @@
  * Shared wire-format constants for pi-shell-acp surfaces that must agree
  * across the root bridge and pi-extension / MCP helper code.
  *
- * Keep this file dependency-free. It is imported by both emit-built root
- * modules (`tsc --outDir .tmp-verify-models`) and strip-types MCP paths, so
- * adding runtime dependencies here can break one of the two execution models.
+ * Keep this file dependency-free. It is imported by tsc-emitted root modules.
+ * A matching protocol.js exists for Node strip-types runtime paths that resolve
+ * explicit .js imports against source files.
  */
 
 /**

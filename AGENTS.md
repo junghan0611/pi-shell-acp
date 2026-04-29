@@ -102,7 +102,9 @@ Messages are thrown, not awaited.
 | `index.ts` | provider registration, settings, shutdown |
 | `acp-bridge.ts` | ACP lifecycle, cache, `resume > load > new` |
 | `event-mapper.ts` | ACP events → pi events |
-| `engraving.ts` + `prompts/engraving.md` | bridge engraving |
+| `engraving.ts` + `prompts/engraving.md` | optional operator personal engraving carrier |
+| `pi-context-augment.ts` | first-user pi context augment (`~/AGENTS.md`, cwd AGENTS, bridge narrative, date/cwd) |
+| `protocol.ts` / `protocol.js` | dependency-free shared wire constants (`<project-context` marker); `.ts` for tsc emit, `.js` for strip-types source runtime |
 | `run.sh` | install, smoke, verify, sentinel |
 | `pi-extensions/` | entwurf spawn + control plane + shared core |
 | `pi/entwurf-targets.json` | spawn target allowlist |
