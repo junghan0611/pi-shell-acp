@@ -30,6 +30,7 @@ import {
 } from "./acp-bridge.js";
 import { loadEngraving } from "./engraving.js";
 import { type AcpPiStreamState, applyBridgePromptEvent, finalizeAcpStreamState } from "./event-mapper.js";
+import { buildPiContextAugment } from "./pi-context-augment.js";
 
 const PROVIDER_ID = "pi-shell-acp";
 const REGISTERED_SYMBOL = Symbol.for("pi-shell-acp:registered");
@@ -735,12 +736,28 @@ function streamShellAcp(
 			const mergedSystemPromptAppend = systemPromptParts.length > 0 ? systemPromptParts.join("\n\n") : undefined;
 			const codexDeveloperInstructions = codexEngraving && codexEngraving.length > 0 ? codexEngraving : undefined;
 
+			// pi-context augment — bridge identity narrative + pi base intro +
+			// ~/AGENTS.md + cwd/AGENTS.md + date/cwd. Delivered as a
+			// ContentBlock prepend on the first user message of a new bridge
+			// session, NOT in the system-prompt carrier — keeps the
+			// `_meta.systemPrompt` payload small enough to stay inside
+			// Anthropic subscription billing while still giving the agent
+			// project context. Entwurf-spawned sessions skip the prepend
+			// (de-dup check in `acp-bridge.ts:sendPrompt` against the
+			// caller-supplied `<project-context>` block).
+			const bootstrapPromptAugment = buildPiContextAugment({
+				backend: providerSettings.backend,
+				cwd,
+				mcpServerNames: providerSettings.mcpServers.map((s) => s.name),
+			});
+
 			bridgeSession = await ensureBridgeSession({
 				sessionKey,
 				cwd,
 				backend: providerSettings.backend,
 				modelId: model.id,
 				systemPromptAppend: mergedSystemPromptAppend,
+				bootstrapPromptAugment,
 				codexDeveloperInstructions,
 				settingSources: providerSettings.settingSources,
 				strictMcpConfig: providerSettings.strictMcpConfig,

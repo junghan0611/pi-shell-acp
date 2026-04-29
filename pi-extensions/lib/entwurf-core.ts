@@ -34,6 +34,7 @@ import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { ENTWURF_PROJECT_CONTEXT_OPEN_TAG } from "../../protocol.js";
 
 // ============================================================================
 // Constants
@@ -666,7 +667,13 @@ export function enrichTaskWithProjectContext(task: string, cwd: string): string 
 		if (!fs.existsSync(agentsPath)) return task;
 		const content = fs.readFileSync(agentsPath, "utf-8");
 		if (!content.trim()) return task;
-		return [`<project-context path="${agentsPath}">`, content.trim(), `</project-context>`, "", task].join("\n");
+		return [
+			`${ENTWURF_PROJECT_CONTEXT_OPEN_TAG} path="${agentsPath}">`,
+			content.trim(),
+			`</project-context>`,
+			"",
+			task,
+		].join("\n");
 	} catch {
 		return task;
 	}

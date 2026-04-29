@@ -28,6 +28,8 @@ import {
 	type SessionNotification,
 } from "@agentclientprotocol/sdk";
 
+import { ENTWURF_PROJECT_CONTEXT_OPEN_TAG } from "./protocol.js";
+
 type PromptContentBlock =
 	| { type: "text"; text: string }
 	| { type: "image"; data?: string; mimeType?: string; uri?: string };
@@ -1502,8 +1504,13 @@ const ACP_BACKEND_ADAPTERS: Record<AcpBackend, AcpBackendAdapter> = {
 		stderrLabel: "claude-agent-acp stderr",
 		resolveLaunch: resolveClaudeAcpLaunch,
 		buildSessionMeta: buildClaudeSessionMeta,
-		// Engraving rides on _meta.systemPrompt.append; no first-prompt
-		// ContentBlock augmentation needed for Claude.
+		// First-prompt augment carries the bridge-identity narrative + pi base
+		// intro + ~/AGENTS.md + cwd/AGENTS.md + date/cwd. The system-prompt
+		// carrier (`_meta.systemPrompt = engraving`) deliberately stays small
+		// to keep the call inside Anthropic subscription billing — the rich
+		// context rides this user-message surface instead. See
+		// `pi-context-augment.ts` for the rationale.
+		buildBootstrapPromptAugment: (text) => [{ type: "text", text }],
 		bridgeEnvDefaults: {
 			// Disable Claude Code's built-in auto-compaction. pi-shell-acp keeps pi
 			// as the single context-management authority; if the backend silently
@@ -1526,17 +1533,15 @@ const ACP_BACKEND_ADAPTERS: Record<AcpBackend, AcpBackendAdapter> = {
 		stderrLabel: "codex-acp stderr",
 		resolveLaunch: resolveCodexAcpLaunch,
 		buildSessionMeta: () => undefined,
-		// Engraving rides on `-c developer_instructions=...` at codex-acp child
-		// spawn time (see codexDeveloperInstructionsArgs in resolveCodexAcpLaunch).
-		// codex-acp does not honor `_meta.systemPrompt`, but its underlying codex
-		// `Config` exposes `developer_instructions`, which lands inside the codex
-		// `developer` role between the binary's `permissions` / `apps` / `skills`
-		// instruction blocks. That is the highest stable identity carrier
-		// available to pi-shell-acp on the codex backend — equivalent in
-		// authority intent to the Claude `_meta.systemPrompt = string` form, even
-		// if structurally one config layer deeper. No first-prompt ContentBlock
-		// augmentation is needed: launch-time injection delivers the engraving
-		// to every prompt of the spawned child without per-turn relay.
+		// Engraving (operator-personal) rides on `-c developer_instructions=...`
+		// at codex-acp child spawn time — see codexDeveloperInstructionsArgs in
+		// resolveCodexAcpLaunch. The richer first-prompt augment (bridge
+		// identity narrative + pi base + ~/AGENTS.md + cwd/AGENTS.md + date/cwd)
+		// rides this user-message surface, identical to the Claude path. See
+		// `pi-context-augment.ts` for the rationale (subscription-billing
+		// classification stays tied to the system-prompt-shape carrier, not
+		// to the user-message body).
+		buildBootstrapPromptAugment: (text) => [{ type: "text", text }],
 		bridgeEnvDefaults: {
 			// Redirect codex-rs's Config loader away from ~/.codex/config.toml so
 			// the operator's personal model/personality/reasoning_effort etc. do
@@ -2452,13 +2457,65 @@ export function setActivePromptHandler(session: AcpBridgeSession, handler: Pendi
 	session.activePromptHandler = handler;
 }
 
+function ensurePromptSeparator(text: string): string {
+	const trimmed = text.trimEnd();
+	return trimmed.length > 0 ? `${trimmed}\n\n` : trimmed;
+}
+
+function removeCwdAgentsSectionFromAugment(text: string, cwd: string): string {
+	const heading = `## ${join(cwd, "AGENTS.md")}\n\n`;
+	const start = text.indexOf(heading);
+	if (start < 0) return text;
+
+	const afterHeading = start + heading.length;
+	const nextProjectHeading = text.indexOf("\n\n## ", afterHeading);
+	const currentDateSection = text.indexOf("\n\nCurrent date:", afterHeading);
+	const candidates = [nextProjectHeading, currentDateSection].filter((idx) => idx >= 0);
+	const end = candidates.length > 0 ? Math.min(...candidates) : text.length;
+	let result = `${text.slice(0, start).trimEnd()}${text.slice(end)}`;
+
+	const projectHeader = "# Project Context\n\nProject-specific instructions and guidelines:";
+	const projectStart = result.indexOf(projectHeader);
+	if (projectStart >= 0) {
+		const projectEnd = result.indexOf("\n\nCurrent date:", projectStart + projectHeader.length);
+		const projectBody =
+			projectEnd >= 0
+				? result.slice(projectStart + projectHeader.length, projectEnd)
+				: result.slice(projectStart + projectHeader.length);
+		if (!projectBody.includes("\n## ")) {
+			result =
+				projectEnd >= 0
+					? `${result.slice(0, projectStart).trimEnd()}${result.slice(projectEnd)}`
+					: result.slice(0, projectStart).trimEnd();
+		}
+	}
+
+	return result.trim();
+}
+
 export async function sendPrompt(session: AcpBridgeSession, prompt: PromptContentBlock[]): Promise<PromptResponse> {
 	// First prompt after a bootstrapPath="new" session may carry an adapter-
-	// supplied ContentBlock prepend (the rendered engraving on Codex, etc.).
-	// Consume the pending slot exactly once so subsequent turns stay clean.
+	// supplied ContentBlock prepend — the pi-context augment (bridge identity
+	// narrative + pi base + ~/AGENTS.md + cwd/AGENTS.md + date/cwd). Consume
+	// the pending slot exactly once so subsequent turns stay clean.
+	//
+	// Entwurf de-dup: when this ACP session is the one spawned by
+	// `entwurf(...)` and the caller's `enrichTaskWithProjectContext` already
+	// prepended a `<project-context path=…>` block to the task, the cwd
+	// AGENTS.md content is already present. Keep the rest of the augment
+	// (bridge narrative, pi base, home AGENTS.md, date/cwd) but remove only
+	// the duplicate cwd AGENTS.md section. Still clear the pending slot so
+	// future turns stay clean either way.
 	const pending = session.bootstrapPromptAugmentPending;
 	session.bootstrapPromptAugmentPending = undefined;
-	const effectivePrompt = pending && pending.length > 0 ? [...pending, ...prompt] : prompt;
+	const firstText = prompt.find((b): b is { type: "text"; text: string } => b.type === "text")?.text ?? "";
+	const hasEntwurfProjectContext = firstText.trimStart().startsWith(ENTWURF_PROJECT_CONTEXT_OPEN_TAG);
+	const effectivePending = pending?.map((block) => {
+		if (block.type !== "text") return block;
+		const text = hasEntwurfProjectContext ? removeCwdAgentsSectionFromAugment(block.text, session.cwd) : block.text;
+		return { ...block, text: ensurePromptSeparator(text) };
+	});
+	const effectivePrompt = effectivePending && effectivePending.length > 0 ? [...effectivePending, ...prompt] : prompt;
 	return await (session.connection as any).prompt({
 		sessionId: session.acpSessionId,
 		prompt: effectivePrompt,

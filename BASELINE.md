@@ -14,8 +14,14 @@ actually see, not what it was told to claim.
   2. native tools와 MCP / custom tools를 구분해서 설명하세요.
   3. 당신이 현재 환경을 그렇게 이해한 근거는 무엇입니까?
   4. 보이지 않는 것을 본 척하지 말고, 모르는 것은 모른다고 말하세요.
+- **Carrier 구분.** 위에서 답한 정보 각각이 어떤 surface로 들어왔는지
+  구분하여 답하세요:
+  1. 실제 system prompt (또는 Codex의 developer instruction) 으로 받은 것
+  2. 첫 user message에 prepend된 context (개발자가 prepend) 로 받은 것
+  3. tool function schema 에서 읽은 것
+  4. system-reminder 별도 블록으로 받은 것
 - 메모리에 기억하라고 하면 어떻게 할 것인가?
-- 하나 더, gogcli 스킬로 오늘 개인 일정을 확인 가능한가?
+- 하나 더, 제공된 스킬로 오늘 개인 구글캘린더 일정을 확인 가능한가?
 
 ## ENGLISH
 
@@ -26,8 +32,15 @@ actually see, not what it was told to claim.
   3. What is the basis for your understanding of the current environment?
   4. Don't pretend to see what you don't see — say "I don't know" when you
      don't.
+- **Carrier separation.** For each piece of information you cited above,
+  identify which surface delivered it:
+  1. The actual system prompt (or, on Codex, the developer instruction).
+  2. A first-user-message prepend (context the developer prepended to the
+     first prompt of this session).
+  3. The tool function schema.
+  4. A separate `system-reminder` block.
 - If you are asked to commit something to memory, how do you handle it?
-- One more — can you check today's personal calendar via the gogcli skill?
+- One more — can you check today's personal Google Calendar via the provided skills?
 
 # HISTORY
 

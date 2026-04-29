@@ -20,6 +20,26 @@ Both surfaces are now inside the fence and the invariants are reconciled:
 
 Why this is in the changelog and not folded into a feature release: the previous "typecheck green" state was green only because the broken files were outside the fence. Closing the fence forced every silent invariant violation to surface and be reconciled. The maintainer treats fence breaches as latent bugs, not as test-coverage choices, and the public log should reflect that.
 
+## 0.4.5 — 2026-04-29
+
+### Fixed
+
+- **Restored pi / AGENTS context for ACP backends without growing the system-prompt carrier.** `appendSystemPrompt: false` remains the safe default: Claude still receives only the short engraving through `_meta.systemPrompt`, and Codex still receives engraving through `developer_instructions`. The rich pi context now rides a one-shot first user-message augment so both backends actually receive the bridge identity narrative, pi operating context, `~/AGENTS.md`, `cwd/AGENTS.md`, and date/cwd.
+- **Avoided Claude Code OAuth "extra usage" failures from large custom system prompts.** The pi context no longer needs to be inserted into Claude's `_meta.systemPrompt = <string>` carrier, which had caused subscription sessions to be classified as metered usage when the carrier grew beyond the SDK-default shape.
+- **Made entwurf-spawned ACP sessions receive the home context without duplicating project AGENTS.** Entwurf tasks already carry `cwd/AGENTS.md` in `<project-context ...>` tags; the bridge now detects that marker, removes only the duplicate cwd AGENTS section from the first-user augment, and preserves `~/AGENTS.md`, bridge narrative, pi base context, and date/cwd.
+- **Failed loudly when configured AGENTS files cannot be read.** Missing AGENTS files are still allowed, but if `~/AGENTS.md` or `cwd/AGENTS.md` exists and cannot be read, bootstrap throws instead of silently starting a context-poor agent.
+- **Separated capability descriptions from concrete tool names.** The first-user augment now tells agents to treat the actual callable tool schema as source of truth. Native pi, Claude ACP, and Codex ACP expose different tool names for similar capabilities (`read/bash/edit/write`, `Read/Bash/Edit/Write/Skill`, `exec_command/apply_patch/...`), so agents must not claim a tool exists only because AGENTS.md or the augment mentions it.
+- **Fixed prompt hygiene around first-message prepends.** The augment is separated from the original user prompt with a blank line, preventing `Current working directory: ...<project-context ...>` concatenation in entwurf first prompts.
+
+### Changed
+
+- **Engraving is now an optional operator personal surface.** `prompts/engraving.md` ships as a minimal placeholder (`각인이라고 여기`); empty or missing engraving files are skipped. Bridge identity and operating context moved to the first-user augment.
+- **Shared the `<project-context` wire marker through `protocol.ts`.** Entwurf generation and ACP-side de-dup detection now import the same dependency-free constant, keeping the wire-format marker single-sourced across root emit and MCP strip-types execution paths.
+
+### Verification
+
+- Re-ran paired identity interviews against Claude ACP and Codex ACP. Both now recognize pi-shell-acp, receive home/project AGENTS context, and distinguish prompt/context claims from actual callable tool schemas. Entwurf resume against a Sonnet sibling confirmed both `~/AGENTS.md` and project AGENTS context were retained across resume.
+
 ## 0.4.1 — 2026-04-29
 
 Patch release closing a release blocker carried since 0.3.0 and adding the missing direct human-facing entwurf surface, plus removing the alias addressing layer the operating model has outgrown.

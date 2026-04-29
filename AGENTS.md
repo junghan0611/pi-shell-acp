@@ -58,15 +58,23 @@ pnpm typecheck && ./run.sh check-backends && ./run.sh check-models && ./run.sh c
 
 If any gate fails, or a claim drops below the evidence level it needs, do not commit. Pipes can be connected and the water can still taste wrong.
 
-## Engraving
+## Context Carriers
 
-Short text delivered to the agent at session bootstrap. Lives in [`prompts/engraving.md`](./prompts/engraving.md). Six lines. Do not grow it beyond that.
+### Engraving
+
+Optional operator-authored personal text delivered at session bootstrap. Lives in [`prompts/engraving.md`](./prompts/engraving.md). Keep it short; empty/missing files are skipped.
 
 - Claude: `_meta.systemPrompt = <engraving>` (string-form preset replacement)
 - Codex: `-c developer_instructions=<engraving>` at child spawn (developer-role injection — codex-acp has no `_meta.systemPrompt` surface)
-- Template variables: `{{backend}}`, `{{mcp_servers}}` — injected dynamically
+- Template variables: `{{backend}}`, `{{mcp_servers}}` — injected dynamically when present
 
-**This is not an operating contract. It is an invocation.** One instruction: "don't guess, read." One declaration: "not workers, siblings." The carrier moves with the SDK surface each backend exposes; the engraving body itself stays minimal so the agent's identity emerges from the visible MCP / tool / skills surface, not from imprinted copy.
+Do not put AGENTS.md, bridge identity narrative, tool catalogs, or long pi operating context here. Large Claude system-prompt carriers can route Claude Code OAuth sessions to metered "extra usage" billing.
+
+### First-user pi context augment
+
+Bridge identity, pi operating context, `~/AGENTS.md`, `cwd/AGENTS.md`, and date/cwd ride a one-shot first user-message prepend (`pi-context-augment.ts`), not the system/developer carrier. The actual callable tool schema exposed by the backend remains the source of truth; the augment describes capabilities and tells agents not to assume a tool exists merely because docs mention it.
+
+Entwurf-spawned first prompts already contain `cwd/AGENTS.md` in `<project-context ...>` tags. The bridge removes only that duplicate cwd AGENTS section from its augment while preserving home AGENTS, bridge narrative, pi base, and date/cwd.
 
 ## Entwurf
 

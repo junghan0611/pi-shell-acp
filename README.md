@@ -32,7 +32,7 @@ If you see words like *entwurf* or *engraving* and wonder why a coding tool has 
 
 **Why "entwurf" (not "delegate").** Pi's ecosystem already has users building their own delegation logic. To avoid naming collisions, this project uses *entwurf* — German for "draft" or "projection." When you invoke entwurf, you don't spawn a worker subprocess; you summon a sibling that holds the same tool. The difference matters: workers report to a master, siblings coordinate through messages.
 
-**Why "engraving."** When the agent starts through this bridge it sees the model's underlying API (Claude or the codex GPT-5 line) and recognises pi as the harness — pi's own system/developer message says so, and a direct (non-bridged) pi session would already make that visible. What the agent does **not** know without further help is which **bridge layer** sits between the model and pi: that the prompt arrived *through pi-shell-acp specifically*, with this MCP set, this tool boundary, this operator-config overlay, and not through some other path. The engraving (six lines in [`prompts/engraving.md`](./prompts/engraving.md)) names that bridge layer and tells the agent: "you are not alone — read your MCP servers to see what's connected." Each backend gets the engraving at the highest stable identity-carrier surface it exposes — for Claude that's the system prompt itself (string-form preset replacement), for Codex it's the codex `developer_instructions` config slot — and the operator's personal config under `~/.claude/` / `~/.codex/` stays out of the bridge's view via narrow whitelist overlays. Without the engraving, the agent has to guess at the bridge layer above pi. With it, the agent reads it.
+**Why "engraving."** Earlier releases used engraving as the bridge-identity carrier. In 0.4.5 that role moved to a one-shot first-user context augment so the subscription-sensitive system/developer carrier can stay small while still delivering pi context, `~/AGENTS.md`, and project `AGENTS.md` to both Claude ACP and Codex ACP. Engraving is now an optional operator-authored personal surface: a short note you may want in the backend's highest identity carrier, not the place for AGENTS.md, tool catalogs, or bridge narrative. Empty engraving files are valid and skipped.
 
 **Why this matters for daily use.** Every friction point compounds across many interactions over a working day. The verification depth in [VERIFY.md](./VERIFY.md) exists because the maintainer uses this bridge daily and keeps hitting edge cases worth recording.
 
@@ -120,11 +120,13 @@ Recommended reference shape for a pi-shell-acp development session lives in [`pi
 
 `mcpServers` is the **only** way to inject MCP servers into ACP sessions — explicit allowlist, no ambient config scanning. `./run.sh install` pre-populates the bundled `pi-tools-bridge` and `session-bridge` entries with the correct local paths. Invalid entries fail fast with `McpServerConfigError`.
 
+`appendSystemPrompt: false` is intentional. Do not use it to deliver pi / AGENTS context; that context is delivered through the first-user pi context augment. Setting it true can put a large custom string into Claude's `_meta.systemPrompt` carrier and may route Claude Code OAuth sessions to metered "extra usage" billing.
+
 Backend is inferred from the selected model. Set `backend` only when you intentionally want to pin one backend.
 
 #### Operating-surface contract — Claude backend
 
-Claude keeps its model/API identity, but pi-shell-acp replaces the Claude Code preset with the six-line engraving via `_meta.systemPrompt = <string>`. The hard-wired Claude Agent SDK identity prefix remains; pi-shell-acp controls only the operating surface above it.
+Claude keeps its model/API identity, but pi-shell-acp replaces the Claude Code preset with the optional, short engraving via `_meta.systemPrompt = <string>` when engraving is configured. The hard-wired Claude Agent SDK identity prefix remains. Rich pi context is not delivered here; it rides the first-user pi context augment.
 
 | Field | Default | Purpose |
 |-------|---------|---------|
@@ -139,7 +141,7 @@ Claude keeps its model/API identity, but pi-shell-acp replaces the Claude Code p
 
 #### Operating-surface contract — Codex backend
 
-Codex has no `_meta.systemPrompt` lane, so pi-shell-acp uses codex-rs `-c` flags. The engraving is delivered as `-c developer_instructions="<...>"`.
+Codex has no `_meta.systemPrompt` lane, so pi-shell-acp uses codex-rs `-c` flags. When engraving is configured, it is delivered as `-c developer_instructions="<...>"`. Rich pi context is delivered separately through the first-user pi context augment.
 
 | Flag / setting | Default | Purpose |
 |---|---|---|
@@ -196,14 +198,30 @@ The same surface is split between agent-callable MCP tools and operator-callable
 
 Full narrative and migration history: [`AGENTS.md` § Entwurf Orchestration](./AGENTS.md).
 
-## Engraving
+## Context carriers
 
-A short text surfaced to the ACP-side agent at session bootstrap. **Carrier-shaped, not appended** — pi-shell-acp delivers it at the highest stable identity-carrier surface each backend exposes so the agent's identity context matches what pi exposes, while the model API itself stays as the backend's own (Anthropic's Claude, OpenAI's codex GPT-5).
+pi-shell-acp intentionally separates **system/developer carriers** from **rich pi context**.
 
-- Source: [`prompts/engraving.md`](./prompts/engraving.md) — six lines, `{{backend}}` and `{{mcp_servers}}` substituted at bootstrap, edit at runtime, no rebuild
-- Claude carrier: `_meta.systemPrompt = <string>` → string-form preset replacement (claude_code preset's auto-memory / cwd / git-status sections drop out; engraving sits above the SDK's hard-wired minimum identity prefix)
-- Codex carrier: `-c developer_instructions="<...>"` at child spawn time → lands inside the codex `developer` role between the binary's `permissions` / `apps` / `skills` blocks (codex-acp does not expose a `_meta.systemPrompt` surface)
-- A/B: `PI_SHELL_ACP_ENGRAVING_PATH=/path/to/alt.md`
+### Engraving
+
+`prompts/engraving.md` is an optional operator-authored personal surface. Keep it short. Empty or missing engraving files are skipped.
+
+- Claude carrier: `_meta.systemPrompt = <string>` → string-form preset replacement. This carrier must stay small; large custom system prompts can route Claude Code OAuth sessions to metered "extra usage" billing.
+- Codex carrier: `-c developer_instructions="<...>"` at child spawn time → codex's developer-role config slot.
+- A/B: `PI_SHELL_ACP_ENGRAVING_PATH=/path/to/alt.md`.
+
+### First-user pi context augment
+
+Bridge identity, pi operating context, `~/AGENTS.md`, `cwd/AGENTS.md`, and date/cwd are delivered as a one-shot first user-message prepend, not through the system-prompt carrier. This keeps the Claude subscription-sensitive carrier small while making both Claude ACP and Codex ACP actually receive the operator/project instructions.
+
+The augment describes capabilities, not guaranteed function names. The **actual callable tool schema exposed in the session is the source of truth**:
+
+- Native pi may expose `read` / `bash` / `edit` / `write`.
+- Claude ACP may expose `Read` / `Bash` / `Edit` / `Write` / `Skill`.
+- Codex ACP may expose lower-level tools such as `exec_command`, `apply_patch`, `write_stdin`, and `update_plan`.
+- MCP/custom tools are usable only when they appear in the actual tool schema. Do not assume a tool exists only because AGENTS.md or this context mentions it.
+
+Entwurf-spawned first prompts already include `cwd/AGENTS.md` inside `<project-context ...>` tags. The bridge detects that marker and removes only the duplicate cwd AGENTS section from the augment, preserving the home AGENTS, bridge narrative, pi base, and date/cwd context.
 
 ## Design
 
@@ -263,9 +281,12 @@ The two backends are intentionally not perfectly symmetric. Claude Code is the p
 | `index.ts` | provider registration, settings, shutdown |
 | `acp-bridge.ts` | ACP lifecycle, cache, `resume > load > new` |
 | `event-mapper.ts` | ACP updates → pi events |
-| `engraving.ts` + `prompts/engraving.md` | bridge engraving |
+| `engraving.ts` + `prompts/engraving.md` | optional operator personal engraving carrier |
+| `pi-context-augment.ts` | one-shot first-user pi context augment (`~/AGENTS.md`, cwd AGENTS, bridge narrative, date/cwd) |
+| `protocol.js` | dependency-free shared wire constants (`<project-context` marker) |
 | `run.sh` | install, smoke, verify, sentinel |
 | `pi-extensions/` | entwurf spawn + control plane + shared core |
+| `pi/entwurf-targets.json` | default entwurf target allowlist |
 | `mcp/pi-tools-bridge/` | pi-side tools → ACP hosts |
 | `mcp/session-bridge/` | Claude Code ↔ pi session bridge |
 
