@@ -2094,6 +2094,33 @@ async function createBridgeProcess(params: EnsureBridgeSessionParams): Promise<A
 
 	const stdoutReadable = Readable.toWeb(child.stdout) as ReadableStream<Uint8Array>;
 	const stdinWritable = Writable.toWeb(child.stdin);
+	// TODO(acp-mitigation): wrap stdoutReadable to coerce ToolCallLocation.line.
+	//
+	// Tracked under README "Upstream Dependencies":
+	//   claude-agent-acp@0.31.0 — Read tool offset shape coercion (2026-04-29).
+	//
+	// Symptom: claude-agent-acp/src/tools.ts:165~181 maps Read tool input.offset
+	// into ACP locations[0].line without coercion to Number. When the model
+	// emits offset as a non-numeric shape (string range "1010, 1075", array,
+	// etc.), locations[0].line ends up non-numeric. ACP SDK 0.20.0
+	// zToolCallLocation requires line: z.number().int().gte(0); the
+	// notification fails zod.parse and is silently dropped after a stderr log
+	// "Error handling notification ... -32602 Invalid params". The session
+	// survives; only that one tool_call_update is lost. Operator follow-along
+	// breaks for that call.
+	//
+	// Local mitigation (when applied): TransformStream that, for each NDJSON
+	// frame matching method === "session/update" && update.locations: array,
+	// coerces each locations[i].line via Number() if string|array. If
+	// coercion yields NaN we omit the line field rather than passing junk
+	// downstream. Every coercion is logged to stderrTail — fail-loud, not
+	// fail-silent. Other frames pass through untouched.
+	//
+	// Trigger to apply: a second incident with the same shape-error
+	// signature, OR an explicit decision that silent-drop is unacceptable
+	// now. If upstream resolves it on its own first, drop this TODO without
+	// sending a PR — that is the intended outcome, not a regression of the
+	// plan.
 	const transport = createNdJsonMessageStream(stdinWritable, stdoutReadable);
 
 	let session: AcpBridgeSession;

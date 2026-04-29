@@ -297,6 +297,20 @@ Two complementary documents, not redundant:
 
 Use both. Either one alone leaves a blind spot the other closes.
 
+## Upstream Dependencies
+
+pi-shell-acp depends on a small upstream surface. Bugs are normal there as they are here — we run into them, defend locally, sometimes they resolve upstream on their own, sometimes we send a fixture-backed PR. Either is fine.
+
+We don't send anecdote PRs. Fixtures first.
+
+For agent-facing programs the rule is fail-loud, not warn-then-continue: silently-dropped errors get reframed by agents as "ok, moved on", which breaks operator visibility. Local mitigation follows the same rule — coerce + surface, or throw, never swallow.
+
+Tracked issues:
+
+| Date | Package | Issue | Status | Fixtures |
+|---|---|---|---|---|
+| 2026-04-29 | `@agentclientprotocol/claude-agent-acp@0.31.0` | `Read` tool maps `input.offset` into ACP `locations[].line` without coercion. When the model emits a non-numeric offset (e.g. string range `"1010, 1075"`), the notification fails ACP SDK 0.20.0 zod validation (`-32602 Invalid params`) and is silently dropped by the SDK. Session survives; operator follow-along on that tool call breaks. | observed; mitigation TODO marker in `acp-bridge.ts` at the transport creation site | 1 |
+
 ## Status
 
 Public, active development. The maintainer uses pi as his primary coding environment; this ACP bridge is working code, but it is still being proven through daily use.
