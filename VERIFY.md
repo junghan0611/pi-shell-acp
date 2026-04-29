@@ -256,8 +256,9 @@ Pass:
 
 - Axes 1 + 2: structurally identical reports.
 - Axis 3: harness + MCP server names + MCP tool function count match; backend-native tool surfaces are **backend-specific**, not normalized. If a Claude session reports `apply_patch` as native (or a Codex session reports `Bash` as native), the bridge has accidentally normalized the tool surface — that is a fail, not a feature.
+- Axis 3 reverse-direction evidence: a Codex verifier can call `entwurf` against a Claude target (or vice versa), the spawn succeeds, taskId is issued, and the verifier can parse the subject's self-report into a comparison table. Confirmed empirically 2026-04-29 — Codex on Oracle spawned Claude via entwurf, captured the self-report, and produced its own meta-analysis matching the §14 pass criterion 11 axis. This is bidirectional cross-vendor orchestration working through one bridge.
 
-This is the matrix described under "Diversifying the verifier matrix" near the end of this document. Until 2026-04-29 only axes 1 + 2 had been exercised; the first axis-3 sample (Codex on Oracle, Opus orchestrating from a separate session) is recorded in History.
+This is the matrix described under "Diversifying the verifier matrix" near the end of this document. Both axis-3 directions (Anthropic verifier × Codex subject and the reverse) are now closed; only intra-Codex remains, with marginal added value.
 
 ---
 
@@ -291,19 +292,22 @@ Fail:
 - Conflates pi custom tools and native tools in explanations
 - Hallucinates MCP visibility
 
-#### 1A.1.1 Codex objective check (when backend = codex)
+#### 1A.1.1 Codex objective wiring check (when backend = codex)
 
-When the subject is a Codex backend, the model carries `list_mcp_resources` and `read_mcp_resource` as **native tools**. That makes a stronger evidence layer available: instead of (or in addition to) self-report, ask the model to call `list_mcp_resources` and return the raw output. Compare the raw registry to the self-report — they must agree.
+The interesting evidence layer for Codex is **direct MCP tool calls** — calling the bridged tools and confirming they return real data, not just that the model claims they exist. Self-report can echo-chamber across instances; an actual tool invocation cannot.
 
-This is asymmetric on purpose: Claude Code does not expose an equivalent introspection tool natively, so Claude verification stays on self-report. The asymmetry is itself an operational fact worth noting — Codex sessions can produce objective MCP-registry evidence; Claude sessions cannot, and self-report epistemic humility is the only signal there.
+> **Calibration note (2026-04-29).** A previous version of this section suggested using `list_mcp_resources` as the objective channel. That tool reports MCP-server *resources* (data records), not the server / tool registry. `pi-tools-bridge` and `session-bridge` expose only tools, no resources, so `list_mcp_resources` returns `{"resources":[]}` — empty is the correct answer there, not an absence-of-bridge signal. Use the recipe below instead.
 
-Pass:
-- Raw `list_mcp_resources` output enumerates the same MCP servers (`pi-tools-bridge`, `session-bridge`) and tool functions the self-report claims
-- Discrepancies (e.g. self-report claims a server the registry does not list) are surfaced honestly by the model
+Codex objective wiring recipe (verified 2026-04-29):
 
-Fail:
-- Self-report disagrees with raw registry output
-- Model paraphrases the raw output instead of returning it
+1. Call `mcp__pi_tools_bridge__entwurf_peers` with no args.
+   - Pass: response includes `controlDir`, integer `count`, and a `sessions` array with real `sessionId` UUIDs and absolute `socketPath` values.
+2. Call `mcp__session_bridge__session_info` with no args.
+   - Pass: response includes `Session ID` (UUID), `Session Name` (`pi-shell-acp` for a bridged session), and an absolute socket path under `~/.claude/session-bridge/`.
+
+Both calls succeeding with real payloads is stronger evidence than any number of self-reports — the bridge is not just visible-in-prompt, it is wired and operational, and the data flowing back is consistent with on-disk state.
+
+Asymmetry note: Claude Code does not expose an equivalent native introspection tool through the same path. Claude verification stays on self-report + indirect evidence (`entwurf_peers` / `session_info` are still callable on the Claude side, but the agent must initiate the call rather than the verifier — pass criteria identical). The asymmetry is itself an operational fact: Codex sessions can produce objective wiring evidence directly; Claude sessions can only do so by being asked to call the same tools and return raw output.
 
 ### 1A.2 Layer 1 — Does It Use Native Tools Naturally on Basic Coding Tasks?
 
@@ -611,6 +615,29 @@ This boundary judgment applies equally to Codex, not just Claude. MCP tool name 
 
 Empirical confirmation: in self-report tests across both backends (2026-04-27, 2026-04-29 runs in History), `claude-sonnet-4-6` reports the hyphen form and `gpt-5.x` (Codex) reports the underscore form. Verifiers SHOULD check that the bridge prefix appears in the form expected for the active backend, not the other one — a Claude session reporting the underscore form (or a Codex session reporting the hyphen form) is a bridge / backend identification leak, not a typo. Set the verification criterion on whether **bridge name (`pi-tools-bridge` for Claude / `pi_tools_bridge` for Codex) + tool suffix** appear together with the right backend pairing.
 
+> **Two-layer naming — disambiguate before asking.** The bridge identifier has two distinct separator layers, and a sloppy prompt can match either:
+>
+> - **Outer separator** (between `mcp`, server, and tool name): `__` (double underscore) on **both** backends. Asking "is the separator hyphen or underscore" matches this layer and falsely concludes "match" across backends.
+> - **Inner server name** (the part between the outer `__`s): `pi-tools-bridge` on Claude vs `pi_tools_bridge` on Codex. This is the layer §8.4 actually cares about.
+>
+> Recommended prompt template — ask the agent to print the **literal callable identifier** for a known tool, no transformation:
+>
+> ```
+> Print the exact identifier you would use to call entwurf_peers,
+> verbatim, no quoting changes. Pick whichever of these forms is
+> actually present in your tool registry:
+>   mcp__pi-tools-bridge__entwurf_peers
+>   mcp__pi_tools_bridge__entwurf_peers
+> ```
+>
+> Do NOT use:
+>
+> ```
+> Is the namespace separator a hyphen or underscore?
+> ```
+>
+> The bad form is ambiguous between outer `__` and inner `-` / `_` — false-match risk on both sides.
+
 Meaning of this item:
 - The default is declared as "Claude-native only"
 - pi harness parity only occurs when a **separate MCP adapter** is created and injected via `piShellAcpProvider.mcpServers`
@@ -707,22 +734,25 @@ Note:
 
 ### 10.3 Expected `claude-agent-acp` count formula
 
-When checking process hygiene, `BEFORE_ACP` (captured in §1.5) sets the baseline. The expected count during verification is:
+When checking process hygiene, `BEFORE_ACP` (captured in §1.5) sets the baseline. The bound during verification is:
 
 ```
-expected_claude_agent_acp = BEFORE_ACP
-                          + (number of distinct alive
-                             (sessionKey, backend, modelId, bridgeConfigSignature) tuples
-                             that this verifier run is currently holding open)
+AFTER_ACP ≤ BEFORE_ACP
+          + (number of distinct alive
+             (sessionKey, backend, modelId, bridgeConfigSignature) tuples
+             that this verifier run is currently holding open)
 ```
 
-The reuse rule is in `acp-bridge.ts:2340` — `bridgeSessions.get(params.sessionKey)` plus `isSessionCompatible(...)`. Hits return the same child; misses spawn a new one. Practical consequences:
+This is an **upper bound**, not an equation. Two effects can push `AFTER_ACP` below the prediction:
 
-- A single `entwurf` + N `entwurf_resume` calls on the same `(provider, model)` reuse **one** child for the whole sequence. Delta=0 against `BEFORE_ACP` is the **expected** state when the verifier was already holding that bridge session at snapshot time.
-- A `(provider, model)` switch (or a settings change that mutates `bridgeConfigSignature` — `mcpServers`, `tools`, `skillPlugins`, `permissionAllow`, `disallowedTools`, `codexDisabledFeatures`, `appendSystemPrompt`, `settingSources`, `strictMcpConfig`) closes the existing child and spawns a new one. Delta of +1 per such switch is normal.
-- "+1 verifier own" is **not** a separate term. If `BEFORE_ACP` was captured **before** the verifier spawned its first bridge session, the verifier's own child is part of the alive-tuples count above. If `BEFORE_ACP` was captured **after**, the verifier's own child is already in the baseline and not added again. Whichever side it falls on, do not double-count.
+1. **Child reuse** (`acp-bridge.ts:2340` — `bridgeSessions.get(params.sessionKey)` plus `isSessionCompatible(...)`). A single `entwurf` + N `entwurf_resume` calls on the same `(provider, model)` reuse **one** child for the whole sequence. Delta=0 against `BEFORE_ACP` is the **expected** state when the verifier was already holding that bridge session at snapshot time.
+2. **Idle reaping.** Long-idle child processes that no caller is actively holding can exit between snapshots, so `AFTER_ACP` can be **less than** `BEFORE_ACP`. Confirmed empirically — the 2026-04-29 axis-3 reverse run observed `claude-agent-acp` 4 → 2 and `codex-acp` 4 → 3 across the verification window without any explicit close. Both deltas are consistent with reaping plus reuse, not regression.
 
-If the actual count exceeds this formula, walk the parent chain to identify the source:
+Settings changes that mutate `bridgeConfigSignature` (`mcpServers`, `tools`, `skillPlugins`, `permissionAllow`, `disallowedTools`, `codexDisabledFeatures`, `appendSystemPrompt`, `settingSources`, `strictMcpConfig`) — or a `(provider, model)` switch — close the existing child and spawn a new one, so they push `AFTER_ACP` up by 1 per switch.
+
+"+1 verifier own" is **not** a separate term. If `BEFORE_ACP` was captured **before** the verifier spawned its first bridge session, the verifier's own child is part of the alive-tuples count above. If `BEFORE_ACP` was captured **after**, the verifier's own child is already in the baseline and not added again. Whichever side it falls on, do not double-count.
+
+`AFTER_ACP > BEFORE_ACP + alive_tuples` is the actionable signal — that means an unexpected child appeared. If that happens, walk the parent chain to identify the source:
 
 ```bash
 for pid in $(pgrep claude-agent-acp); do
@@ -957,20 +987,21 @@ When these 11 pass, `pi-shell-acp` is considered not just an experiment but an *
 | Verifier | Subject | What it adds | Status |
 |---|---|---|---|
 | `pi-shell-acp/claude-opus-4-7` | `pi-shell-acp/claude-sonnet-4-6` | intra-Anthropic baseline | done (History 2026-04-27, 2026-04-29) |
-| `pi-shell-acp/claude-opus-4-7` (local) | `pi-shell-acp/gpt-5.x` (Oracle, Codex) | cross-vendor: Anthropic Opus analyzing Codex self-report through the same bridge, across hosts | **first sample done** (History 2026-04-29 axis-3) |
-| `pi-shell-acp/gpt-5.x` | `pi-shell-acp/claude-sonnet-4-6` | cross-vendor reverse: Codex orchestrating Claude | open |
-| `pi-shell-acp/gpt-5.4` | `pi-shell-acp/gpt-5.5` | intra-Codex baseline | open |
+| `pi-shell-acp/claude-opus-4-7` (local) | `pi-shell-acp/gpt-5.x` (Oracle, Codex) | cross-vendor: Anthropic verifier × Codex subject through the same bridge, across hosts | done (History 2026-04-29 axis-3) |
+| `pi-shell-acp/gpt-5.x` | `pi-shell-acp/claude-sonnet-4-6` | cross-vendor reverse: Codex verifier × Claude subject — closes the echo-chamber risk via objective MCP tool calls + reverse-direction orchestration | done (History 2026-04-29 axis-3 reverse) |
+| `pi-shell-acp/gpt-5.4` | `pi-shell-acp/gpt-5.5` | intra-Codex baseline | open (marginal value — both axis-3 directions closed) |
 
 Cross-vendor cells are the most informative: the bridge's `developer_instructions` carrier on the Codex side and `_meta.systemPrompt` carrier on the Claude side are structurally different, so a Codex verifier and a Claude subject (or vice versa) exercise both carriers in one run. If they agree on what they see — same MCP servers, same tool boundary, same operator-config isolation — the carrier divergence is invisible to the agents, which is the bridge's identity-isolation goal made empirically visible.
 
 The §1A.4 long-turn fact retention bar (8 turns / 3+ facts / verbatim) holds across vendors — both backends have backend auto-compaction disabled, so neither side has a different excuse for forgetting.
 
-What the first cross-vendor sample (Codex on Oracle, 2026-04-29) confirmed beyond intra-Anthropic runs:
+What the cross-vendor samples (Codex on Oracle 2026-04-29, plus the reverse-direction run later that day) confirmed beyond intra-Anthropic runs:
 
 - **Bridge identity is backend-invariant.** Both Claude and Codex self-report `pi-shell-acp` as the harness and enumerate the same two MCP servers (`pi-tools-bridge` + `session-bridge`) and the same eight MCP tool functions. Whatever distortion the bridge could introduce is empirically not introduced.
 - **Native tool surface is correctly backend-specific.** Claude reports `Bash/Read/Edit/Write/Skill`; Codex reports `exec_command/write_stdin/apply_patch/update_plan/request_user_input/list_mcp_resources/read_mcp_resource/multi_tool_use.parallel`. Neither side hallucinates the other's native tools — the bridge does not normalize the tool surface, which is the §0 thin-bridge invariant in operation.
-- **MCP namespace convention difference is the agent-visible boundary marker** (§8.4 verified property). A Claude session reporting underscore form, or a Codex session reporting hyphen form, would be a backend-identity leak.
-- **Codex is sharper at MCP introspection** because `list_mcp_resources` / `read_mcp_resource` are native there. Claude on this same bridge has no equivalent native introspection — this is backend asymmetry, not a bridge bug, and §1A.1.1 makes the asymmetry an explicit verification axis.
+- **MCP namespace convention difference is the agent-visible boundary marker** (§8.4 verified property). A Claude session reporting underscore form, or a Codex session reporting hyphen form, would be a backend-identity leak. The §8.4 "two-layer naming" note disambiguates the outer `__` separator (same on both backends) from the inner server name (`pi-tools-bridge` vs `pi_tools_bridge` — the actual marker).
+- **Echo-chamber gas closed by objective MCP tool calls.** A pile of self-reports could in principle agree on a hallucinated bridge if the bridge were transmitting its own hallucination uniformly. The 2026-04-29 reverse-direction run resolved this: Codex called `mcp__pi_tools_bridge__entwurf_peers` and `mcp__session_bridge__session_info` directly and got back real `controlDir` / `sessionId` / `socketPath` payloads matching on-disk state. The bridge is not just visible-in-prompt, it is wired and operational — §1A.1.1 records the exact recipe.
+- **Bidirectional cross-vendor orchestration works.** Codex spawned Claude via `entwurf` (axis-3 reverse) — taskId issued, Claude self-report returned, Codex parsed it into its own comparison table. The bridge's entwurf surface is symmetric across vendors, not just protocol-correct.
 
 ## History
 
@@ -980,4 +1011,5 @@ A log of who ran this document end-to-end and what they changed. Each entry reco
 |------|-------------------------|-------------------|-------|
 | 2026-04-27 | pi-shell-acp / claude-opus-4-7 | pi-shell-acp / claude-sonnet-4-6 (1 target × 14 turns) | First full pass by an ACP-routed Claude (previously native gpt-5.x territory). Applied A–H upgrades: §3 entwurf-uniqueness operational note, §1.5 pre-verification snapshot block, §1A.4 in-session continuation note, §8.4 mcpServers branching note, §10.3 expected `claude-agent-acp` count formula + parent-walk recipe, §11 entwurf session file path pattern + `.message.role` schema reminder, §12.1 `PI_ENTWURF_CHILD_STDERR_LOG` verifier one-liner, §13 taskId→session-file helper. §3 / §4 / §5 / §6 / §7 / §8.4 / §8.5 / §9 / §11 / §1A.1–1A.4 all PASS. §10 borderline (3 `claude-agent-acp` for 14 turns / 1 spawn — bounded but more than the formula predicts; flagged as observation). |
 | 2026-04-29 | pi-shell-acp / claude-opus-4-7 | pi-shell-acp / claude-sonnet-4-6 (1 target × 10 turns, post-0.4.1) | Replicant-testing-replicant run against post-0.4.1 entwurf surface. §3.1 / §3.2 / §4.1 / §5.1 / §8.5 / §1A.1 / §1A.4 / §11 ALL PASS. §1A.4 held 4 facts across 9 turns at glyph-level fidelity (Wed Apr 29 03:35:17 PM KST 2026 returned verbatim from turn 2). §10 process delta=0 against `BEFORE_ACP=4` — under previous formula's prediction of 6, which led to formula re-derivation: bridge reuses one child per `(sessionKey, backend, modelId, bridgeConfigSignature)` tuple, not per entwurf taskId (`acp-bridge.ts:2340`). Doc upgrades: top-of-document "Why this document exists / Strengthened verification rules" (replicant-pair semantics + 4 hardened rules), §1.6 turn map, §1A.4 8-turn / 3-fact / verbatim bar, §1A.5 dual-transport prerequisite, §10.3 formula re-derivation, §12.1 self-spawn limitation note, §1A.5 → "Diversifying the verifier matrix" section above pointing at next cross-vendor cells. Two ACP-routed identities (verifier opus, subject sonnet) describing the same harness in the same words — strongest cross-validation evidence the bridge has produced so far. |
-| 2026-04-29 (axis-3) | pi-shell-acp / claude-opus-4-7 (local) | pi-shell-acp / gpt-5.x (Oracle, Codex backend) | **First cross-vendor sample.** Operator installed 0.4.1 on Oracle, ran identity interview against the Codex backend, then a separate Opus session analyzed the Codex self-report. Result: bridge identity (`pi-shell-acp`) and MCP surface (`pi-tools-bridge` + `session-bridge`, 8 tool functions) reported identically across both backends and both hosts; native tool surfaces are correctly backend-specific (Claude `Bash/Read/Edit/Write/Skill` vs Codex `exec_command/apply_patch/update_plan/...`); MCP namespace convention `pi-tools-bridge` vs `pi_tools_bridge` is the agent-visible backend marker (§8.4 verified property). Codex side carries `list_mcp_resources` / `read_mcp_resource` natively — sharper introspection layer than Claude on this same bridge (§1A.1.1 adds an objective-check axis for Codex sessions). Doc upgrades: §1.7 cross-install / cross-backend parity (3 axes), §1A.1.1 Codex objective check via `list_mcp_resources`, §8.4 naming difference promoted from "may differ" to "verified property" with empirical confirmation, §14 pass criterion 11 — Identity boundary preservation across backends and machines. The matrix's cross-vendor cell (Anthropic verifier × Codex subject) is now closed; the reverse (Codex verifier × Claude/Codex subject) remains open. |
+| 2026-04-29 (axis-3) | pi-shell-acp / claude-opus-4-7 (local) | pi-shell-acp / gpt-5.x (Oracle, Codex backend) | **First cross-vendor sample.** Operator installed 0.4.1 on Oracle, ran identity interview against the Codex backend, then a separate Opus session analyzed the Codex self-report. Result: bridge identity (`pi-shell-acp`) and MCP surface (`pi-tools-bridge` + `session-bridge`, 8 tool functions) reported identically across both backends and both hosts; native tool surfaces are correctly backend-specific (Claude `Bash/Read/Edit/Write/Skill` vs Codex `exec_command/apply_patch/update_plan/...`); MCP namespace convention `pi-tools-bridge` vs `pi_tools_bridge` is the agent-visible backend marker (§8.4 verified property). Codex side carries `list_mcp_resources` / `read_mcp_resource` natively — sharper introspection layer than Claude on this same bridge (§1A.1.1 adds an objective-check axis for Codex sessions). Doc upgrades: §1.7 cross-install / cross-backend parity (3 axes), §1A.1.1 Codex objective check (initial draft, superseded same-day — see next row), §8.4 naming difference promoted from "may differ" to "verified property" with empirical confirmation, §14 pass criterion 11 — Identity boundary preservation across backends and machines. The matrix's cross-vendor cell (Anthropic verifier × Codex subject) is now closed; the reverse (Codex verifier × Claude/Codex subject) remains open. |
+| 2026-04-29 (axis-3 reverse) | pi-shell-acp / gpt-5.4 (Codex orchestrator) | pi-shell-acp / claude-sonnet-4-6 (Claude subject, spawned via entwurf) + direct MCP tool calls on `pi-tools-bridge` and `session-bridge` | **Echo-chamber risk closed.** The same Opus verifier from the previous row delegated the next step to a Codex orchestrator, which (a) called `mcp__pi_tools_bridge__entwurf_peers` and `mcp__session_bridge__session_info` directly and received real on-disk payloads (`controlDir`, `sessionId`, `socketPath`, `Session Name=pi-shell-acp`), (b) spawned a Claude sibling via `entwurf` and recovered its self-report, then (c) wrote its own cross-vendor comparison table satisfying §14 pass criterion 11. The previous §1A.1.1 draft assumed `list_mcp_resources` would return the MCP-server registry, but it actually reports MCP-server *resources* (data records); pi-tools-bridge and session-bridge expose tools only, not resources, so it returns `{"resources":[]}` correctly. §1A.1.1 was rewritten to use the working recipe (`entwurf_peers` + `session_info` direct calls). Process hygiene observation: `claude-agent-acp` 4 → 2 and `codex-acp` 4 → 3 across the run, no orphans, all entwurf children exited cleanly — §10.3 reformulated as an upper bound (`AFTER ≤ BEFORE + alive_tuples`) to admit child reuse and idle reaping. §8.4 gained a two-layer disambiguation note (outer `__` separator vs inner server-name string — earlier prompts could match either layer and false-conclude "match"). §1.7 axis-3 evidence note added that bidirectional orchestration works (Codex → Claude entwurf, taskId 857481de). Both axis-3 directions in the matrix are now done; intra-Codex baseline remains open with marginal added value. |
