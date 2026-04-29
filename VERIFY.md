@@ -1,6 +1,6 @@
 # VERIFY.md
 
-Manual verification guide for `pi-shell-acp`.
+Replicant-testing-replicant verification guide for `pi-shell-acp`.
 
 This document is a **working document, not a metrics document**.
 Even if scripts break, an agent that follows these steps and reads the results should be able to immediately determine:
@@ -12,6 +12,27 @@ Even if scripts break, an agent that follows these steps and reads the results s
 - Whether tool call / event mapping is visible
 - Whether processes/cache are not left behind as garbage
 - Whether pi session records are usable as a shared memory axis for andenken embedding
+
+## Why this document exists — Replicant testing replicant
+
+VERIFY.md is the **agent-driven** verification surface (BASELINE.md is the operator-driven one). One ACP-bridged model runs the script against another ACP-bridged model and writes down what it sees. Both pass through the same `pi-shell-acp` carrier; if the bridge is faithful, **two replicants looking at the same mirror produce the same description of the mirror**. Cross-validation between the two transcripts (verifier vs subject) becomes the strongest external evidence that the bridge transmits environment truth without distortion.
+
+A run is meaningful when it satisfies three conditions at once:
+
+1. **Same harness invariant**: the verifier and the subject agree on what they see — same MCP servers enumerated, same tool boundary, same operator-config isolation. Disagreement here means the bridge is leaking different views to different identities, which is a regression even when individual smoke gates pass.
+2. **Cross-process session reuse**: a single `(sessionKey, backend, modelId, bridgeConfigSignature)` tuple maps to one ACP child for the whole verification run. `pgrep -af claude-agent-acp` delta should be 0 for a verifier already holding a bridge session — see §10.3 for the formula.
+3. **Long-turn fact retention**: 8+ turns / 3+ early facts / verbatim recall, including a string injected before turn 5. This is `usage_update`-driven occupancy plus disabled compaction working as one — if either layer regresses, this gate breaks first.
+
+Anything weaker than this — single-turn smoke, individual-turn tool calls, or self-recognition without a peer to compare against — confirms wiring but not bridge faithfulness. The replicant pair is the smallest unit that exercises the bridge invariant end-to-end.
+
+## Strengthened verification rules (post-0.4.1)
+
+These supersede the per-section rules they touch — the original sections are kept for context, but the rules below are what must hold:
+
+- **§1A.4 Layer 3 pass criterion** is **8 turns / 3+ early facts / one verbatim string injected before turn 5**, not 5 turns. Real bridge runs at 9-turn / 4-fact / 100% recall with the current code; lowering the bar to 5 turns hides regressions.
+- **§10.3 process-count formula** counts **distinct alive `(sessionKey, backend, modelId, bridgeConfigSignature)` tuples**, not entwurf taskIds. A single `entwurf` + N `entwurf_resume` calls on the same target reuse one child (see `acp-bridge.ts:2340` — `bridgeSessions.get(sessionKey)` + `isSessionCompatible`). Delta=0 against a verifier that was already holding the bridge session is the **expected** state, not an under-count.
+- **§1A.5 Layer 4 prerequisite**: a verifier already running through `pi-shell-acp` cannot dispatch to direct Claude Code via standard MCP tools — it can only call its sibling via entwurf. Layer 4 requires either a human in the loop or a verifier that holds both transport handles. Attempting Layer 4 from inside a single bridged session produces meaningless symmetry, not comparison.
+- **§12.1 `PI_ENTWURF_CHILD_STDERR_LOG` self-spawn limit**: `export` from a shell that is already bound to a running bridge process does **not** propagate into that bridge — the env must be present at bridge-process spawn time. Either restart the parent session with the env exported, or run VERIFY.md from a plain shell that has not yet bound the bridge.
 
 ---
 
@@ -204,6 +225,25 @@ echo "before: cache=$BEFORE_CACHE claude-agent-acp=$BEFORE_ACP codex-acp=$BEFORE
 
 Preserve these three numbers in your verification log. §5.1 (cache delta), §10 (process delta) all reference them.
 
+### 1.6 Turn map (sequential run)
+
+When §3 → §4 → §8 → §1A.4 are run sequentially against a single target as one verifier session, the global turn index runs from 1 to 10. Each section's local index ("first turn") is relative to that section, not the global run.
+
+| Global turn | Section | Intent |
+|---|---|---|
+| 1 | §3.1 | SessionStart hook ack |
+| 2 | §3.2 | Basic tool call (date) |
+| 3 | §4.1 (1) | Inject fact |
+| 4 | §4.1 (2) | Retrieve fact |
+| 5 | §4.1 (3) | Update fact |
+| 6 | §4.1 (4) | Retrieve updated fact |
+| 7 | §8.5 | List visible MCPs |
+| 8 | §8.5 | List MCPs again — consistency check |
+| 9 | §1A.1 | Self-awareness |
+| 10 | §1A.4 | Multi-fact recall (uses turns 3–5 facts) |
+
+If the verifier strictly needs a fresh ACP session inside this sequence, switch to a different target (e.g. `claude-opus-4-7` or `gpt-5.2`) at the section boundary — see §3 operational note on the per-`(provider, model)` uniqueness gate.
+
 ---
 
 ## 1A. Main Agent Evaluation — Is `pi-shell-acp` Claude Strong Enough?
@@ -270,8 +310,8 @@ Intent: Not whether sessions continue, but **whether quality is maintained in a 
 
 > **Continuation note.** When this layer is run **after §3 + §4 on the same target**, a fresh `entwurf` is no longer available (the bridge enforces uniqueness per target — see §3 operational note). Equivalent procedure: inject the §1A.4 invariants on the **next available turn** (e.g., turn 11) of the same `taskId`, then perform 3–4 more resumes mixing repo exploration (§9) before the recall quiz. The pass criterion is identical — the early-turn injection must survive the intervening exploration.
 
-Pass:
-- Still holds onto the initial invariants and intermediate exploration results after 5 turns
+Pass (post-0.4.1, see strengthened rules above):
+- After **8 turns**, holds **3+ early-turn facts** including **one verbatim string injected before turn 5**
 - Does not repeat already-done exploration or contradict itself
 - Tool selection does not significantly drift as turns progress
 
@@ -279,6 +319,7 @@ Fail:
 - Forgets what was read early on immediately
 - Produces a tool strategy contradicting a previous turn
 - Unnecessarily repeats the same file exploration
+- Paraphrases an early-turn fact instead of returning the verbatim string
 
 Note: pi-shell-acp does not implement a post-compaction handoff path. The provider registers a `session_before_compact` handler that cancels every pi-side compaction trigger (silent overflow, threshold, explicit-error overflow, and manual `/compact`). Backend-side auto-compaction is also disabled at launch — Claude Code via `DISABLE_AUTO_COMPACT=1` + `DISABLE_COMPACT=1`, codex-acp via `-c model_auto_compact_token_limit=i64::MAX`. Operators who want pi-side compaction back can set `PI_SHELL_ACP_ALLOW_COMPACTION=1`. For long sessions, the footer percentage shows the backend's own `usage_update.used / size` value, the same signal peer ACP clients (zed, obsidian-agent-client, openclaw-acpx) display. Both supported backends emit per-turn occupancy: claude-agent-acp via `input + output + cache_read + cache_creation` of the last assistant result, codex-acp via `tokens_in_context_window()`. The `[pi-shell-acp:usage] meter=acpUsageUpdate|componentSum source=backend|promptResponse backend=… used=… size=… raw: input=… output=… cacheRead=… cacheWrite=…` diagnostic line carries the per-component breakdown and the meter mode for audit. Use `/clear` (or opt-in `/compact`) when needed.
 
@@ -296,6 +337,8 @@ To verify on a real long session:
 4. Compare the `acpUsageUpdate` footer against any independent backend telemetry (e.g. `claude-agent-acp` stderr, codex-acp logs). They should report the same `used` value.
 
 ### 1A.5 Layer 4 — Comparison with Direct Claude Code
+
+> **Prerequisite.** This layer requires a verifier capable of dispatching to **both** the `pi-shell-acp` path and a direct Claude Code path. A verifier already running through `pi-shell-acp` can invoke its sibling via `entwurf`, but cannot dispatch to direct Claude Code through standard MCP tools — Layer 4 therefore requires either a human in the loop or a verifier holding both transport handles. Attempting Layer 4 from inside a single bridged session produces symmetric output, not comparison.
 
 Throw the same questions to both direct Claude Code and the `pi-shell-acp` path (= entwurf target `pi-shell-acp/claude-sonnet-4-6`) and compare. Not string matching, but **semantic-level parity of work quality and tool selection**.
 
@@ -639,10 +682,16 @@ When checking process hygiene, `BEFORE_ACP` (captured in §1.5) sets the baselin
 
 ```
 expected_claude_agent_acp = BEFORE_ACP
-                          + 1 (this verifier's own pi-shell-acp parent, if applicable)
-                          + N (number of distinct active entwurf taskIds whose
-                                bridge session has not been explicitly closed)
+                          + (number of distinct alive
+                             (sessionKey, backend, modelId, bridgeConfigSignature) tuples
+                             that this verifier run is currently holding open)
 ```
+
+The reuse rule is in `acp-bridge.ts:2340` — `bridgeSessions.get(params.sessionKey)` plus `isSessionCompatible(...)`. Hits return the same child; misses spawn a new one. Practical consequences:
+
+- A single `entwurf` + N `entwurf_resume` calls on the same `(provider, model)` reuse **one** child for the whole sequence. Delta=0 against `BEFORE_ACP` is the **expected** state when the verifier was already holding that bridge session at snapshot time.
+- A `(provider, model)` switch (or a settings change that mutates `bridgeConfigSignature` — `mcpServers`, `tools`, `skillPlugins`, `permissionAllow`, `disallowedTools`, `codexDisabledFeatures`, `appendSystemPrompt`, `settingSources`, `strictMcpConfig`) closes the existing child and spawns a new one. Delta of +1 per such switch is normal.
+- "+1 verifier own" is **not** a separate term. If `BEFORE_ACP` was captured **before** the verifier spawned its first bridge session, the verifier's own child is part of the alive-tuples count above. If `BEFORE_ACP` was captured **after**, the verifier's own child is already in the baseline and not added again. Whichever side it falls on, do not double-count.
 
 If the actual count exceeds this formula, walk the parent chain to identify the source:
 
@@ -706,6 +755,8 @@ The following are documented but observability/automation is still insufficient.
      "$PI_ENTWURF_CHILD_STDERR_LOG"
    ```
    Without this, §5/§7 can only judge **semantic continuity** — `bridge continuity` (sessionKey/acpSessionId/bootstrap path) remains unverified.
+
+   > **Self-spawn limitation.** This env must be present in the bridge process at startup. If you run VERIFY.md from inside a pi-shell-acp session (verifier already bound to the bridge), `export` from the running shell does **not** propagate into that bridge — restart the parent session with `PI_ENTWURF_CHILD_STDERR_LOG` already exported, or run VERIFY.md from a plain shell that has not yet bound the bridge. This is a known operational corner of replicant-testing-replicant runs (see "Why this document exists" at the top).
 2. When persisted session incompatibility occurs, operators reading the invalidation reason quickly
 3. ~~Clearly observing the `unstable_setSessionModel` path vs new session fallback path on model switch~~ — see §12.3
 4. ~~Observing how cleanly bridge and child process are cleaned up on cancel/abort~~ — see §12.4
@@ -871,6 +922,21 @@ When these 10 pass, `pi-shell-acp` is considered not just an experiment but an *
 
 ---
 
+## Diversifying the verifier matrix
+
+The two runs in the History table so far are both **Anthropic ↔ Anthropic** (Opus orchestrating Sonnet). That confirms intra-vendor symmetry — it does not yet exercise the bridge invariant against a different model family. The natural next moves widen the matrix:
+
+| Verifier | Subject | What it adds |
+|---|---|---|
+| `pi-shell-acp/claude-opus-4-7` | `pi-shell-acp/claude-sonnet-4-6` | intra-Anthropic baseline (done — see History) |
+| `pi-shell-acp/claude-opus-4-7` | `pi-shell-acp/gpt-5.4` (or `gpt-5.5`) | cross-vendor: Anthropic verifying Codex through the same bridge |
+| `pi-shell-acp/gpt-5.4` | `pi-shell-acp/claude-sonnet-4-6` | cross-vendor reverse: Codex verifying Claude |
+| `pi-shell-acp/gpt-5.4` | `pi-shell-acp/gpt-5.5` | intra-Codex baseline |
+
+Cross-vendor cells are the most informative: the bridge's `developer_instructions` carrier on the Codex side and `_meta.systemPrompt` carrier on the Claude side are structurally different, so a Codex verifier and a Claude subject (or vice versa) exercise both carriers in one run. If they agree on what they see — same MCP servers, same tool boundary, same operator-config isolation — the carrier divergence is invisible to the agents, which is the bridge's identity-isolation goal made empirically visible.
+
+The §1A.4 long-turn fact retention bar (8 turns / 3+ facts / verbatim) holds across vendors — both backends have backend auto-compaction disabled, so neither side has a different excuse for forgetting.
+
 ## History
 
 A log of who ran this document end-to-end and what they changed. Each entry records: date, verifier identity (provider/model orchestrating the run), subject target(s) actually exercised, and a one-line summary of doc upgrades applied as a result.
@@ -878,3 +944,4 @@ A log of who ran this document end-to-end and what they changed. Each entry reco
 | Date | Verifier (orchestrator) | Subject target(s) | Notes |
 |------|-------------------------|-------------------|-------|
 | 2026-04-27 | pi-shell-acp / claude-opus-4-7 | pi-shell-acp / claude-sonnet-4-6 (1 target × 14 turns) | First full pass by an ACP-routed Claude (previously native gpt-5.x territory). Applied A–H upgrades: §3 entwurf-uniqueness operational note, §1.5 pre-verification snapshot block, §1A.4 in-session continuation note, §8.4 mcpServers branching note, §10.3 expected `claude-agent-acp` count formula + parent-walk recipe, §11 entwurf session file path pattern + `.message.role` schema reminder, §12.1 `PI_ENTWURF_CHILD_STDERR_LOG` verifier one-liner, §13 taskId→session-file helper. §3 / §4 / §5 / §6 / §7 / §8.4 / §8.5 / §9 / §11 / §1A.1–1A.4 all PASS. §10 borderline (3 `claude-agent-acp` for 14 turns / 1 spawn — bounded but more than the formula predicts; flagged as observation). |
+| 2026-04-29 | pi-shell-acp / claude-opus-4-7 | pi-shell-acp / claude-sonnet-4-6 (1 target × 10 turns, post-0.4.1) | Replicant-testing-replicant run against post-0.4.1 entwurf surface. §3.1 / §3.2 / §4.1 / §5.1 / §8.5 / §1A.1 / §1A.4 / §11 ALL PASS. §1A.4 held 4 facts across 9 turns at glyph-level fidelity (Wed Apr 29 03:35:17 PM KST 2026 returned verbatim from turn 2). §10 process delta=0 against `BEFORE_ACP=4` — under previous formula's prediction of 6, which led to formula re-derivation: bridge reuses one child per `(sessionKey, backend, modelId, bridgeConfigSignature)` tuple, not per entwurf taskId (`acp-bridge.ts:2340`). Doc upgrades: top-of-document "Why this document exists / Strengthened verification rules" (replicant-pair semantics + 4 hardened rules), §1.6 turn map, §1A.4 8-turn / 3-fact / verbatim bar, §1A.5 dual-transport prerequisite, §10.3 formula re-derivation, §12.1 self-spawn limitation note, §1A.5 → "Diversifying the verifier matrix" section above pointing at next cross-vendor cells. Two ACP-routed identities (verifier opus, subject sonnet) describing the same harness in the same words — strongest cross-validation evidence the bridge has produced so far. |
