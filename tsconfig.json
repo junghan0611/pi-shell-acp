@@ -7,5 +7,5 @@
 		"strict": false,
 		"skipLibCheck": true
 	},
-	"exclude": ["node_modules", "mcp", "pi-extensions/entwurf-control.ts"]
+	"exclude": ["node_modules", "mcp"]
 }

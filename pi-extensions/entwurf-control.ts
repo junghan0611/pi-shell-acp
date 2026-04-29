@@ -75,9 +75,13 @@ import type {
 } from "@mariozechner/pi-coding-agent";
 import { getMarkdownTheme } from "@mariozechner/pi-coding-agent";
 import { type TextContent } from "@mariozechner/pi-ai";
-import { StringEnum } from "@mariozechner/pi-ai";
+// Use pi-ai's re-exports of typebox so the schema universe matches what
+// pi-coding-agent.registerTool consumes. Importing Type from @sinclair/typebox
+// directly mixes typebox 0.34 (Type.*) with typebox 1.x (StringEnum, TSchema
+// inside pi-coding-agent), which silently widens StringEnum-typed parameters
+// to `unknown` and broke renderCall/execute narrowing. Single-source-of-typebox.
+import { StringEnum, Type } from "@mariozechner/pi-ai";
 import { Box, Container, Markdown, Spacer, Text } from "@mariozechner/pi-tui";
-import { Type } from "@sinclair/typebox";
 import { promises as fs } from "node:fs";
 import * as net from "node:net";
 import * as os from "node:os";
@@ -410,43 +414,6 @@ function getLastAssistantMessage(ctx: ExtensionContext): ExtractedMessage | unde
 	return undefined;
 }
 
-function getMessagesSinceLastPrompt(ctx: ExtensionContext): ExtractedMessage[] {
-	const branch = ctx.sessionManager.getBranch();
-	const messages: ExtractedMessage[] = [];
-
-	let lastUserIndex = -1;
-	for (let i = branch.length - 1; i >= 0; i--) {
-		const entry = branch[i];
-		if (entry.type === "message" && "role" in entry.message && entry.message.role === "user") {
-			lastUserIndex = i;
-			break;
-		}
-	}
-
-	if (lastUserIndex === -1) return [];
-
-	for (let i = lastUserIndex; i < branch.length; i++) {
-		const entry = branch[i];
-		if (entry.type === "message") {
-			const msg = entry.message;
-			if ("role" in msg && (msg.role === "user" || msg.role === "assistant")) {
-				const textParts = msg.content
-					.filter((c): c is { type: "text"; text: string } => c.type === "text")
-					.map((c) => c.text);
-				if (textParts.length > 0) {
-					messages.push({
-						role: msg.role,
-						content: textParts.join("\n"),
-						timestamp: msg.timestamp,
-					});
-				}
-			}
-		}
-	}
-
-	return messages;
-}
-
 function getFirstEntryId(ctx: ExtensionContext): string | undefined {
 	const entries = ctx.sessionManager.getEntries();
 	if (entries.length === 0) return undefined;
@@ -687,7 +654,13 @@ async function handleCommand(
 		return;
 	}
 
-	respond(false, command.type, undefined, `Unsupported command: ${command.type}`);
+	// Defensive fallback. After the exhaustive RpcCommand chain above the
+	// `command` local is narrowed to `never` at the type level, but at runtime
+	// we may still receive a JSON object whose `type` is a string we don't
+	// recognise (peer-protocol drift, malformed client). Cast through a
+	// runtime-only shape so we still surface the unknown command name.
+	const unknownType = (command as unknown as { type?: string }).type ?? "unknown";
+	respond(false, unknownType, undefined, `Unsupported command: ${unknownType}`);
 }
 
 // ============================================================================
@@ -988,20 +961,20 @@ export default function (pi: ExtensionAPI) {
 		updateSessionEnv(ctx, true);
 	};
 
+	// session_start is the unified post-event for the whole session lifecycle
+	// in pi-coding-agent 0.70.x: it fires with reason "startup" | "reload" |
+	// "new" | "resume" | "fork", which covers the original session_switch and
+	// session_fork cases that earlier pi versions exposed as separate events.
+	// Previous code subscribed to "session_switch" and "session_fork" — those
+	// names do not exist in the current ExtensionAPI typing, so the handlers
+	// were dead. The typecheck-exclude on this file kept that decay invisible.
+	// Don't reintroduce them without first confirming the events exist.
 	pi.on("session_start", async (_event, ctx) => {
 		await refreshServer(ctx);
 		if (!cliSendHandled) {
 			cliSendHandled = true;
 			await maybeHandleStartupControlSend(pi, ctx);
 		}
-	});
-
-	pi.on("session_switch", async (_event, ctx) => {
-		await refreshServer(ctx);
-	});
-
-	pi.on("session_fork", async (_event, ctx) => {
-		await refreshServer(ctx);
 	});
 
 	pi.on("session_shutdown", async () => {
@@ -1041,7 +1014,42 @@ export default function (pi: ExtensionAPI) {
 // ============================================================================
 
 function registerSessionTool(pi: ExtensionAPI, state: SocketState): void {
-	pi.registerTool({
+	// Extracted schema — flattens one recursion level so TypeScript doesn't
+	// hit TS2589 ("Type instantiation excessively deep") under
+	// pi-coding-agent's registerTool generic inference. Same workaround used
+	// by ./entwurf.ts (registerTool any-cast); see that file for context.
+	const entwurfSendParameters = Type.Object({
+		sessionId: Type.String({ description: "Target session id (UUID)" }),
+		action: Type.Optional(
+			StringEnum(["send", "get_message", "clear"] as const, {
+				description: "Action to perform (default: send)",
+				default: "send",
+			}),
+		),
+		message: Type.Optional(Type.String({ description: "Message to send (required for action=send)" })),
+		mode: Type.Optional(
+			StringEnum(["steer", "follow_up"] as const, {
+				description: "Delivery mode for send: steer (immediate) or follow_up (after task)",
+				default: "steer",
+			}),
+		),
+		wait_until: Type.Optional(
+			StringEnum(["turn_end", "message_processed"] as const, {
+				description:
+					"Wait behavior for send. Prefer message_processed. turn_end is best-effort only; " +
+					"prefer reply-back via entwurf_send or entwurf(mode=async) when you need a caller-owned result.",
+			}),
+		),
+	});
+
+	// TS2589 workaround — see ./entwurf.ts for the long-form rationale.
+	// The runtime contract is locked by the explicit return type on `execute`
+	// (Promise<AgentToolResult<unknown>>); this cast only relaxes the
+	// registration boundary, not the body.
+	// biome-ignore lint/suspicious/noExplicitAny: registerTool generic depth workaround
+	const registerTool = pi.registerTool as (def: any) => void;
+
+	registerTool({
 		name: "entwurf_send",
 		label: "Send To Session",
 		description: `Interact with another running pi session via its control socket.
@@ -1063,29 +1071,7 @@ Use this tool for notification / peer messaging. If the caller needs a result it
 prefer entwurf(mode=async) + entwurf_resume instead.
 
 Messages include sender session info for replies.`,
-		parameters: Type.Object({
-			sessionId: Type.String({ description: "Target session id (UUID)" }),
-			action: Type.Optional(
-				StringEnum(["send", "get_message", "clear"] as const, {
-					description: "Action to perform (default: send)",
-					default: "send",
-				}),
-			),
-			message: Type.Optional(Type.String({ description: "Message to send (required for action=send)" })),
-			mode: Type.Optional(
-				StringEnum(["steer", "follow_up"] as const, {
-					description: "Delivery mode for send: steer (immediate) or follow_up (after task)",
-					default: "steer",
-				}),
-			),
-			wait_until: Type.Optional(
-				StringEnum(["turn_end", "message_processed"] as const, {
-					description:
-						"Wait behavior for send. Prefer message_processed. turn_end is best-effort only; " +
-						"prefer reply-back via entwurf_send or entwurf(mode=async) when you need a caller-owned result.",
-				}),
-			),
-		}),
+		parameters: entwurfSendParameters,
 		async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
 			const action = params.action ?? "send";
 			const sessionId = params.sessionId?.trim();
@@ -1246,7 +1232,11 @@ Messages include sender session info for replies.`,
 
 		renderCall(args, theme) {
 			const action = args.action ?? "send";
-			const sessionRef = args.sessionName ?? args.sessionId ?? "...";
+			// sessionId-only since 0.5.0 — alias surface is gone, and
+			// renderCall is the operator's first peek at where this tool is
+			// pointing, so we render the raw UUID (truncated) and never look
+			// up a name that no longer exists.
+			const sessionRef = args.sessionId ?? "...";
 			const shortSessionRef = sessionRef.length > 12 ? sessionRef.slice(0, 8) + "..." : sessionRef;
 
 			// Build the header line
@@ -1284,11 +1274,22 @@ Messages include sender session info for replies.`,
 
 		renderResult(result, { expanded }, theme) {
 			const details = result.details as Record<string, unknown> | undefined;
-			const isError = result.isError === true;
+			// `isError` is a runtime-only property: pi-agent-core tracks it
+			// alongside the AgentToolResult and the interactive harness spreads
+			// it onto the result object before handing it to the renderer
+			// (`{ ...event.result, isError }`). It is intentionally NOT in the
+			// public AgentToolResult<T> type, so we read it through a runtime
+			// cast and fall back to our own convention of `details.error`.
+			const runtimeIsError = (result as { isError?: boolean }).isError === true;
+			const detailsError = typeof details?.error === "string" ? details.error : undefined;
+			const isError = runtimeIsError || detailsError !== undefined;
 
 			// Error case
-			if (isError || details?.error) {
-				const errorMsg = (details?.error as string) || result.content[0]?.type === "text" ? (result.content[0] as { type: "text"; text: string }).text : "Unknown error";
+			if (isError) {
+				const firstContent = result.content[0];
+				const fallbackText =
+					firstContent?.type === "text" ? (firstContent as { type: "text"; text: string }).text : "Unknown error";
+				const errorMsg = detailsError ?? fallbackText;
 				return new Text(theme.fg("error", "✗ ") + theme.fg("error", errorMsg), 0, 0);
 			}
 
@@ -1358,10 +1359,13 @@ Messages include sender session info for replies.`,
 // ============================================================================
 
 function registerListSessionsTool(pi: ExtensionAPI): void {
-	pi.registerTool({
+	// TS2589 workaround — see registerSessionTool above and ./entwurf.ts.
+	// biome-ignore lint/suspicious/noExplicitAny: registerTool generic depth workaround
+	const registerTool = pi.registerTool as (def: any) => void;
+	registerTool({
 		name: "entwurf_peers",
 		label: "List Sessions",
-		description: "List live sessions that expose a control socket (optionally with session names). Use this for discovery only; for the current session id in shell/bash use $PI_SESSION_ID.",
+		description: "List live sessions that expose a control socket. Returns sessionIds only — addressing is sessionId-only since 0.5.0 (no name aliases). Use this for discovery; for the current session id in shell/bash use $PI_SESSION_ID.",
 		parameters: Type.Object({}),
 		async execute(_toolCallId, _params, _signal, _onUpdate, _ctx) {
 			const sessions = await getLiveSessions();
@@ -1373,10 +1377,7 @@ function registerListSessionsTool(pi: ExtensionAPI): void {
 				};
 			}
 
-			const lines = sessions.map((session) => {
-				const name = session.name ? ` (${session.name})` : "";
-				return `- ${session.sessionId}${name}`;
-			});
+			const lines = sessions.map((session) => `- ${session.sessionId}`);
 
 			return {
 				content: [{ type: "text", text: `Live sessions:\n${lines.join("\n")}` }],
