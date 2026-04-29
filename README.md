@@ -306,6 +306,12 @@ The maintainer also publishes the project repositories where pi-shell-acp is exe
 
 - [junghan0611/legoagent-config](https://github.com/junghan0611/legoagent-config) — daily-driver repo where Claude Code is run through pi-shell-acp via ACP. Long-running resume sessions, tool-heavy turns, and the context-meter cases that drive [issue #2](https://github.com/junghan0611/pi-shell-acp/issues/2) all originate here. Useful as a reference for what a multi-session, multi-day pi+ACP workflow looks like in practice.
 
+## Roadmap
+
+- **0.4.x** — entwurf surface stabilization (done in 0.4.1) and identity-check session transcripts captured in [BASELINE.md](./BASELINE.md) for public verification. Long-term: publish session-level verification data (see [pi-share-hf](https://github.com/badlogic/pi-share-hf) as a reference pipeline) so ACP-bridge behaviour can be reviewed at the session-record level, not only as a narrative.
+- **0.5.0 — Compaction off → recap-as-new-question.** Replace silent compaction with explicit recap as the long-session strategy. The bridge already gates every compaction trigger; 0.5.0 codifies the alternative path the gate was always pointing at: long sessions end with a structured recap that becomes the seed for a fresh session, rather than a silently rewritten transcript.
+- **0.6.0 — OpenClaw native provider.** Drop-in like ACPx — built-in provider, no extra ACP command surface, no entwurf needed (OpenClaw uses pi natively, so the bridge only has to wire the provider; the rest is pi's existing tool model).
+
 ## Status
 
 Public, active development. The maintainer uses pi as his primary coding environment; this ACP bridge is working code, but it is still being proven through daily use.

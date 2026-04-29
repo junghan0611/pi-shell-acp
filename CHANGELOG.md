@@ -4,6 +4,38 @@ All notable changes to this project will be documented here. Format follows [Kee
 
 ## Unreleased
 
+## 0.4.1 — 2026-04-29
+
+Patch release closing a release blocker carried since 0.3.0 and adding the missing direct human-facing entwurf surface, plus removing the alias addressing layer the operating model has outgrown.
+
+### Fixed
+
+- **Entwurf extensions actually load.** `pi-extensions/entwurf.ts` and `pi-extensions/entwurf-control.ts` have lived in the repo since 0.3.0 but were never wired into `package.json`'s `pi.extensions` array, so neither the `--entwurf-control` flag nor the `/entwurf` / `/entwurf-status` / `/entwurf-sessions` slash commands actually loaded. The MCP bridge expected sockets at `~/.pi/entwurf-control/`, which an unloaded control extension never creates — leaving the entwurf surface documented in README/AGENTS.md effectively dead at runtime. Both entries are now in `pi.extensions`.
+
+### Added
+
+- **`/entwurf-sessions`** now surfaces cwd, model id, and idle state per live session via a new `get_info` RPC command, with `[N]` indices for direct addressing and per-session error rows when an individual peer fails to respond. The displayed list is cached so `/entwurf-send` can address by index.
+- **`/entwurf-send <index|sessionId> <message>`** — the previously missing interactive surface for a human operator to message another live entwurf session directly. Defaults to `follow_up` mode and auto-attaches `<sender_info>` so the receiving side can reply via the `entwurf_send` MCP tool. The MCP `entwurf_send` tool path remains the agent-facing surface (errors crash the call so the agent cannot paper over a misroute); the new slash command is the human surface and reports failures as ordinary notifications.
+- **`get_info` RPC command** on the entwurf control socket — returns `sessionId`, `cwd`, `model { id, provider }`, and `idle` for the serving session. Used by `/entwurf-sessions` enrichment; reusable by future tooling.
+- **`gcStaleSockets()`** runs once per `startControlServer()` and cleans dead `.sock` entries from `~/.pi/entwurf-control/`. Pre-0.4.1 `.alias` symlinks left in the directory by older builds are also swept on encounter, retiring the GC TODO at `pi-extensions/entwurf-control.ts:213`.
+
+### Removed (BREAKING — entwurf-control surface only)
+
+The alias layer — `<sessionName>.alias` symlinks under `~/.pi/entwurf-control/` mirroring pi's `SessionManager.sessionName` via a 1s `setInterval` polling timer — is removed entirely. With per-session compaction disabled, the operating model is short-lived sessions ending in recap+new (see roadmap), so a human-friendly alias has little time to accumulate value, and the polling timer was the sole reason a kernel-driven socket-push design needed wall-clock work at all. The three race surfaces it carried — concurrent `syncAlias`, timer-vs-shutdown, symlink-vs-listener — are now structurally absent.
+
+- `entwurf_send` MCP tool: `target` parameter renamed to `sessionId`; alias resolution removed. Use `entwurf_peers` to discover live ids.
+- `entwurf_peers` MCP response: `name` and `aliases` fields removed from each session entry.
+- `entwurf_send` extension tool (in-process): `sessionName` parameter removed; `sessionId` is now required.
+- `--entwurf-session` CLI flag: only accepts a sessionId (UUID).
+- `/entwurf-sessions` output drops the parenthetical `(alias)` label.
+- `/entwurf-send`: `<alias>` form removed; `<index|sessionId>` only.
+
+This change is independent of agent-config's `--session-control` extension under `~/.pi/session-control/` (its ingested copy of the alias surface is intentionally kept — different cost/benefit, no polling timer, no race surface) and of the bundled `mcp/session-bridge/` MCP (Claude Code-side; its `SESSION_NAME` alias is set once from cwd at `start.sh` and is the stable identity surface that side needs).
+
+### Identity verification
+
+A four-case identity interview was captured against 0.4.0 + this patch — OpenRouter Sonnet, pi-shell-acp Sonnet, native Codex, pi-shell-acp Codex. Both pi-shell-acp cases recognize `pi-shell-acp` as the bridge surface and enumerate `mcp__pi-tools-bridge__*` and `mcp__session-bridge__*` correctly. The two non-bridge cases honestly report that the entwurf MCP is "described in AGENTS.md but not in my schema" — the boundary is real and the agent sees it. The transcripts are being moved to BASELINE.md as part of 0.4.x, alongside the longer-term plan to publish session-level verification data (see roadmap).
+
 ## 0.4.0 — 2026-04-28
 
 PI-native identity carriers for both ACP backends — Claude via system-prompt replacement, Codex via codex `Config` `developer_instructions` — with whitelist overlays isolating operator config, memory, sessions, rules, history, and (codex-specific) the SQLite thread/memory state DB. The model API itself is unchanged on each side; pi-shell-acp now owns everything above the model's minimum identity prefix and below the backend authentication.
