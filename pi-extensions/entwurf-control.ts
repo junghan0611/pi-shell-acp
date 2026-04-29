@@ -433,6 +433,26 @@ function stripSenderInfo(text: string): string {
 	return text.replace(SENDER_INFO_PATTERN, "").trim();
 }
 
+// Sender identity broadcast — INTENTIONAL asymmetry vs addressing.
+//
+// Addressing on this surface has been sessionId-only since 0.5.0 (see header):
+// peers MUST be addressed by UUID, alias surface is gone. But the *outgoing*
+// <sender_info> payload still carries sessionName because its job is the
+// opposite — give a human-friendly hint to whichever AI receives the
+// message ("from `garden` (4f8a…)") so the reply renders sensibly. The
+// recipient never uses sessionName to address back; reply paths look up the
+// sessionId and call entwurf_send/entwurf_resume with that.
+//
+// Two separate roles, two separate surfaces:
+//   - addressing:  sessionId-only (this is the one that races / decays)
+//   - identity broadcast / display: sessionId + optional sessionName
+//
+// If you ever feel the urge to "harmonize" by stripping sessionName from
+// SenderInfo, don't — you would lose the human-readable trail in renders
+// and in cross-session logs without gaining any race-safety, because
+// sessionName never feeds an address resolution path here. Confirm by
+// grepping for `sessionName` callers: every one is either a JSON write
+// into the broadcast payload or a display-only render.
 interface SenderInfo {
 	sessionId?: string;
 	sessionName?: string;
@@ -1014,10 +1034,26 @@ export default function (pi: ExtensionAPI) {
 // ============================================================================
 
 function registerSessionTool(pi: ExtensionAPI, state: SocketState): void {
-	// Extracted schema — flattens one recursion level so TypeScript doesn't
-	// hit TS2589 ("Type instantiation excessively deep") under
-	// pi-coding-agent's registerTool generic inference. Same workaround used
-	// by ./entwurf.ts (registerTool any-cast); see that file for context.
+	// The schema (runtime) and the params type (compile-time) describe the
+	// same contract. We write BOTH explicitly: the schema feeds the agent
+	// runtime (Description / validation), the type feeds the execute body
+	// (`params: EntwurfSendParams`). Schema-to-type inference is then NOT
+	// taken — that inference is what blows TS2589 ("Type instantiation
+	// excessively deep") inside pi.registerTool when the schema mixes
+	// Type.Object with several Optional<TUnsafe<...>> from StringEnum.
+	//
+	// Revisit conditions for collapsing back to inferred params (i.e. drop
+	// `EntwurfSendParams` and let `params` be derived from the schema):
+	//   1. pi-coding-agent ships a registerTool overload taking
+	//      ToolDefinition<TSchema, ...> directly (no TParams generic), OR
+	//      a non-generic helper that returns it. The exported `defineTool`
+	//      currently keeps TParams generic so it does not help.
+	//   2. typebox 1.x / pi-ai narrows StringEnum's return from
+	//      TUnsafe<T[number]> to a leaner type that does not push
+	//      Type.Object's inferred shape past TypeScript's recursion budget.
+	// When either lands, drop the explicit `EntwurfSendParams` and the
+	// any-cast below in one step so the schema regains single-source
+	// status for both runtime and types.
 	const entwurfSendParameters = Type.Object({
 		sessionId: Type.String({ description: "Target session id (UUID)" }),
 		action: Type.Optional(
@@ -1042,11 +1078,15 @@ function registerSessionTool(pi: ExtensionAPI, state: SocketState): void {
 		),
 	});
 
-	// TS2589 workaround — see ./entwurf.ts for the long-form rationale.
-	// The runtime contract is locked by the explicit return type on `execute`
-	// (Promise<AgentToolResult<unknown>>); this cast only relaxes the
-	// registration boundary, not the body.
-	// biome-ignore lint/suspicious/noExplicitAny: registerTool generic depth workaround
+	type EntwurfSendParams = {
+		sessionId: string;
+		action?: "send" | "get_message" | "clear";
+		message?: string;
+		mode?: "steer" | "follow_up";
+		wait_until?: "turn_end" | "message_processed";
+	};
+
+	// biome-ignore lint/suspicious/noExplicitAny: see TS2589 note above
 	const registerTool = pi.registerTool as (def: any) => void;
 
 	registerTool({
@@ -1072,7 +1112,13 @@ prefer entwurf(mode=async) + entwurf_resume instead.
 
 Messages include sender session info for replies.`,
 		parameters: entwurfSendParameters,
-		async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
+		async execute(
+			_toolCallId: string,
+			params: EntwurfSendParams,
+			_signal: AbortSignal | undefined,
+			_onUpdate: unknown,
+			_ctx: ExtensionContext,
+		) {
 			const action = params.action ?? "send";
 			const sessionId = params.sessionId?.trim();
 
@@ -1230,7 +1276,7 @@ Messages include sender session info for replies.`,
 			}
 		},
 
-		renderCall(args, theme) {
+		renderCall(args: EntwurfSendParams, theme: { fg: (k: string, s: string) => string; bold: (s: string) => string }) {
 			const action = args.action ?? "send";
 			// sessionId-only since 0.5.0 — alias surface is gone, and
 			// renderCall is the operator's first peek at where this tool is
@@ -1359,8 +1405,9 @@ Messages include sender session info for replies.`,
 // ============================================================================
 
 function registerListSessionsTool(pi: ExtensionAPI): void {
-	// TS2589 workaround — see registerSessionTool above and ./entwurf.ts.
-	// biome-ignore lint/suspicious/noExplicitAny: registerTool generic depth workaround
+	// Same TS2589 workaround as registerSessionTool — see the comment block
+	// in that function for the revisit conditions.
+	// biome-ignore lint/suspicious/noExplicitAny: see TS2589 note above
 	const registerTool = pi.registerTool as (def: any) => void;
 	registerTool({
 		name: "entwurf_peers",
