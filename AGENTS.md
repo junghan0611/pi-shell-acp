@@ -103,9 +103,22 @@ Messages are thrown, not awaited.
 
 ## Typecheck Boundary
 
-- `pi-extensions/entwurf.ts` + `lib/*` — included in root typecheck
-- `pi-extensions/entwurf-control.ts` — excluded (ingested, type drift, runtime-verified)
-- `mcp/*` — excluded (runtime strip-types, covered by behavioral tests)
+Single fence — every `.ts` source file in this repo is reached by some `tsc --noEmit` pass. No opt-out file. The fence is composed of two configs because the two surfaces run under different runtime models:
+
+| Config | Covers | Runtime model |
+|---|---|---|
+| `tsconfig.json` (root) | `index.ts`, `acp-bridge.ts`, `engraving.ts`, `event-mapper.ts`, `pi-extensions/**` | emit-capable. `./run.sh check-models` tsc-emits the project entry into `.tmp-verify-models/` for runtime introspection, so the root config must not set `noEmit`. |
+| `mcp/tsconfig.json` (extends root) | `mcp/pi-tools-bridge/**`, `mcp/session-bridge/**`, plus the `pi-extensions/lib/*` they import | `node --experimental-strip-types`. Adds `allowImportingTsExtensions` + `noEmit` because the bridges import each other (and the shared lib) with explicit `.ts` suffixes — Node's strip-types resolver requires the suffix on the wire. |
+
+`pnpm typecheck` runs both passes. `pnpm check` runs both as part of the release gate; the husky pre-commit hook does too. Adding a new `.ts` file outside both configs is a fence breach — either include it or split a third config with a documented runtime model, but never extend the root `exclude`. The historical exclude entries (`pi-extensions/entwurf-control.ts`, `mcp/*`) hid real type drift; do not reintroduce them.
+
+Code-level invariants pinned at the same time:
+
+- **typebox single-source.** `pi-extensions/entwurf-control.ts` and `pi-extensions/entwurf.ts` both import `Type` / `StringEnum` from `@mariozechner/pi-ai` (which re-exports typebox 1.x). `@sinclair/typebox` is not a direct dependency. Mixing the two universes silently widens `StringEnum`-typed parameters to `unknown`, which only surfaces under typecheck — i.e., it was hidden by the old fence breach.
+- **sessionId-only addressing for entwurf.** Every entwurf addressing surface — in-process tool params, MCP `entwurf_send` / `entwurf_peers`, the entwurf-control RPC, the `/entwurf-send` slash command, CLI `--entwurf-session` — takes a sessionId (UUID). The `<sender_info>` payload still carries an optional `sessionName` because that is identity *broadcast* (display-only), not addressing. The asymmetry is documented inline at the `SenderInfo` declaration in `entwurf-control.ts`.
+- **session-bridge surface boundary.** `mcp/session-bridge/` keeps a human-aliased addressing surface on purpose — a different audience (Claude Code operators typing readable names) and a different cost/benefit (one-shot alias write at startup via atomic symlink-into-tmp + rename, no polling timer, no race window). The divergence from the entwurf surface is documented at the top of `mcp/session-bridge/src/index.ts`. If the two are ever bridged, do not promote `sessionName` to a primary address on the entwurf side.
+
+When a future change requires extending the schema-to-type inference (TS2589 paths, new `StringEnum`-typed params), see the comment block in `registerSessionTool` for the two concrete revisit conditions that would let the explicit `EntwurfSendParams` annotation collapse back into a single source.
 
 ## Runtime Dependencies
 

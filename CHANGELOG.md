@@ -4,6 +4,22 @@ All notable changes to this project will be documented here. Format follows [Kee
 
 ## Unreleased
 
+### Internal — fence consolidation
+
+Every `.ts` source file in the repo is now reached by `pnpm typecheck`. Previously two surfaces lived outside the fence:
+
+- `pi-extensions/entwurf-control.ts` was excluded from the root tsconfig. The exclude hid type drift introduced by the 0.5.0 sessionId-only refactor: residual `sessionName` / `session.name` reads in `renderCall`, `entwurf_peers` description, and peers output; `pi.on("session_switch", ...)` and `pi.on("session_fork", ...)` handlers registered against event names that pi-coding-agent 0.70.x does not expose (`session_start{reason: "fork" | "new" | "resume"}` covers them); a renderer reading `result.isError` against an `AgentToolResult<T>` type that does not declare it (the framework spreads it onto the result at runtime); a typebox-version mismatch (`@sinclair/typebox` 0.34 mixed with pi-coding-agent's typebox 1.x via `StringEnum`) silently widening parameters to `unknown`; a dead `getMessagesSinceLastPrompt` helper.
+- `mcp/` was excluded wholesale. Both bridges run via `node --experimental-strip-types` and were never type-checked anywhere. Inside, `mcp/session-bridge/src/index.ts` still resolved targets via `<sessionName>.alias` symlinks and a name scan — the same alias surface that `entwurf-control.ts` declared dead since 0.5.0, but on a different physical directory and a different audience (humans operating Claude Code, not AI peers).
+
+Both surfaces are now inside the fence and the invariants are reconciled:
+
+- Root `tsconfig.json` stays emit-capable so `./run.sh check-models` can keep tsc-emitting the project entry into `.tmp-verify-models/` for runtime introspection. A new `mcp/tsconfig.json` extends the root and adds the strip-types-runtime concessions (`allowImportingTsExtensions`, `noEmit`); `pnpm typecheck` runs both as a sequential pair. `AGENTS.md` § Typecheck Boundary documents the new shape and pins the rule that no `.ts` source file may sit outside both configs.
+- `pi-extensions/entwurf-control.ts`: dead handlers (`session_switch`, `session_fork`) and dead helper (`getMessagesSinceLastPrompt`) removed; defensive runtime cast at the post-exhaustive-switch fallback; `result.isError` access replaced with a documented runtime cast that reads the framework's spread-injected field plus a `details.error` fallback (with the `||` vs `?:` precedence bug fixed); residual `sessionName`/`session.name` reads removed at the addressing surfaces; `Type` imported from `@mariozechner/pi-ai` to align the typebox universe with `StringEnum` and with what `pi.registerTool` consumes; `execute(params)` and `renderCall(args)` annotated with an explicit `EntwurfSendParams` type so the schema (runtime) and the type (compile-time) describe the same contract on both sides — schema-to-type inference is then bypassed and TS2589 cannot resurface. The two concrete revisit conditions for collapsing back to schema-inferred params are documented inline.
+- `pi-extensions/entwurf.ts` and `package.json` finish the typebox single-source: `Type` is imported from `@mariozechner/pi-ai` here too, and `@sinclair/typebox` is removed as a direct dependency. pi-coding-agent's typebox 1.x continues to flow in transitively.
+- `mcp/session-bridge/`: the alias-claim path in `createAlias` is now atomic — `fs.symlink` into a unique tmp path, then `fs.rename` onto the alias path. POSIX rename atomically replaces the destination, closing the unlink-then-symlink window where two concurrent same-name starts could both observe "no alias" and both write one. The file header documents why the human-aliased addressing surface is intentionally kept here while entwurf addressing is sessionId-only — different audience, different cost/benefit, no polling timer, fall-through to live-session scan if the alias is stale.
+
+Why this is in the changelog and not folded into a feature release: the previous "typecheck green" state was green only because the broken files were outside the fence. Closing the fence forced every silent invariant violation to surface and be reconciled. The maintainer treats fence breaches as latent bugs, not as test-coverage choices, and the public log should reflect that.
+
 ## 0.4.1 — 2026-04-29
 
 Patch release closing a release blocker carried since 0.3.0 and adding the missing direct human-facing entwurf surface, plus removing the alias addressing layer the operating model has outgrown.
