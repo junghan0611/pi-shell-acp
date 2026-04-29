@@ -132,12 +132,18 @@ interface RpcSubscribeCommand {
 	id?: string;
 }
 
+interface RpcGetInfoCommand {
+	type: "get_info";
+	id?: string;
+}
+
 type RpcCommand =
 	| RpcSendCommand
 	| RpcGetMessageCommand
 	| RpcClearCommand
 	| RpcAbortCommand
-	| RpcSubscribeCommand;
+	| RpcSubscribeCommand
+	| RpcGetInfoCommand;
 
 // ============================================================================
 // Subscription Management
@@ -327,6 +333,22 @@ type LiveSessionInfo = {
 	socketPath: string;
 };
 
+type EnrichedSession = LiveSessionInfo & {
+	cwd?: string;
+	modelId?: string;
+	modelProvider?: string;
+	idle?: boolean;
+	infoError?: string;
+};
+
+function abbreviateHome(cwd: string | undefined): string {
+	if (!cwd) return "(unknown)";
+	const home = os.homedir();
+	if (cwd === home) return "~";
+	if (cwd.startsWith(`${home}${path.sep}`)) return `~${cwd.slice(home.length)}`;
+	return cwd;
+}
+
 async function getLiveSessions(): Promise<LiveSessionInfo[]> {
 	await ensureControlDir();
 	const entries = await fs.readdir(ENTWURF_DIR, { withFileTypes: true });
@@ -347,6 +369,50 @@ async function getLiveSessions(): Promise<LiveSessionInfo[]> {
 
 	sessions.sort((a, b) => (a.name ?? a.sessionId).localeCompare(b.name ?? b.sessionId));
 	return sessions;
+}
+
+// Enrich each live session with cwd/model/idle by RPC-querying its socket.
+// Per-session failures are surfaced as `infoError` so the operator sees
+// exactly which session is unreachable instead of silently dropping it.
+async function getLiveSessionsWithInfo(): Promise<EnrichedSession[]> {
+	const sessions = await getLiveSessions();
+	const enriched: EnrichedSession[] = [];
+	for (const session of sessions) {
+		try {
+			const result = await sendRpcCommand(
+				session.socketPath,
+				{ type: "get_info" },
+				{ timeout: 1500 },
+			);
+			if (!result.response.success) {
+				enriched.push({
+					...session,
+					infoError: result.response.error ?? "get_info failed",
+				});
+				continue;
+			}
+			const data = result.response.data as
+				| {
+						cwd?: string;
+						model?: { id?: string; provider?: string } | null;
+						idle?: boolean;
+				  }
+				| undefined;
+			enriched.push({
+				...session,
+				cwd: data?.cwd,
+				modelId: data?.model?.id,
+				modelProvider: data?.model?.provider,
+				idle: data?.idle,
+			});
+		} catch (e) {
+			enriched.push({
+				...session,
+				infoError: e instanceof Error ? e.message : String(e),
+			});
+		}
+	}
+	return enriched;
 }
 
 async function syncAlias(state: SocketState, ctx: ExtensionContext): Promise<void> {
@@ -626,6 +692,21 @@ async function handleCommand(
 			return;
 		}
 		respond(true, "get_message", { message });
+		return;
+	}
+
+	// Get session metadata (cwd, model, idle) — used by /entwurf-sessions enrichment.
+	if (command.type === "get_info") {
+		const sessionId = ctx.sessionManager.getSessionId();
+		const modelInfo = ctx.model
+			? { id: ctx.model.id, provider: ctx.model.provider }
+			: null;
+		respond(true, "get_info", {
+			sessionId,
+			cwd: ctx.cwd,
+			model: modelInfo,
+			idle: ctx.isIdle(),
+		});
 		return;
 	}
 
@@ -982,11 +1063,18 @@ export default function (pi: ExtensionAPI) {
 
 	pi.registerMessageRenderer(SESSION_MESSAGE_TYPE, renderSessionMessage);
 
+	// Cached session list from the most recent /entwurf-sessions invocation.
+	// /entwurf-send uses it to resolve numeric indices like `1` or `[1]`.
+	let lastDisplayedSessions: EnrichedSession[] = [];
+
 	if (shouldRegisterControlTools(pi)) {
 		registerSessionTool(pi, state);
 		registerListSessionsTool(pi);
 	}
-	registerControlSessionsCommand(pi);
+	registerControlSessionsCommand(pi, (sessions) => {
+		lastDisplayedSessions = sessions;
+	});
+	registerEntwurfSendCommand(pi, state, () => lastDisplayedSessions);
 
 	const refreshServer = async (ctx: ExtensionContext) => {
 		const enabled = pi.getFlag(ENTWURF_FLAG) === true;
@@ -1615,8 +1703,11 @@ async function maybeHandleStartupControlSend(pi: ExtensionAPI, ctx: ExtensionCon
 	}
 }
 
-function registerControlSessionsCommand(pi: ExtensionAPI): void {
-	pi.registerCommand("control-sessions", {
+function registerControlSessionsCommand(
+	pi: ExtensionAPI,
+	setSessions: (sessions: EnrichedSession[]) => void,
+): void {
+	pi.registerCommand("entwurf-sessions", {
 		description: "List controllable sessions (from entwurf-control sockets)",
 		handler: async (_args, ctx) => {
 			if (pi.getFlag(ENTWURF_FLAG) !== true) {
@@ -1626,25 +1717,193 @@ function registerControlSessionsCommand(pi: ExtensionAPI): void {
 				return;
 			}
 
-			const sessions = await getLiveSessions();
+			const sessions = await getLiveSessionsWithInfo();
+			setSessions(sessions);
+
 			const currentSessionId = ctx.sessionManager.getSessionId();
-			const lines = sessions.map((session) => {
-				const name = session.name ? ` (${session.name})` : "";
-				const current = session.sessionId === currentSessionId ? " (current)" : "";
-				return `- ${session.sessionId}${name}${current}`;
+
+			if (sessions.length === 0) {
+				pi.sendMessage(
+					{
+						customType: "entwurf-sessions",
+						content: "No live sessions found.",
+						display: true,
+					},
+					{ triggerTurn: false },
+				);
+				return;
+			}
+
+			const lines: string[] = ["Controllable sessions:", ""];
+			sessions.forEach((s, idx) => {
+				const aliasLabel = s.name ? ` (${s.name})` : "";
+				const current = s.sessionId === currentSessionId ? "  (current)" : "";
+				const idShort = `${s.sessionId.slice(0, 8)}…${s.sessionId.slice(-4)}`;
+				lines.push(`[${idx + 1}] ${idShort}${aliasLabel}${current}`);
+				if (s.infoError) {
+					lines.push(`    error: ${s.infoError}`);
+				} else {
+					lines.push(`    cwd:   ${abbreviateHome(s.cwd)}`);
+					const modelLabel =
+						s.modelProvider && s.modelId
+							? `${s.modelProvider}/${s.modelId}`
+							: (s.modelId ?? "(unknown)");
+					lines.push(`    model: ${modelLabel}`);
+					const idleLabel =
+						s.idle === undefined ? "?" : s.idle ? "yes" : "no  (turn in progress)";
+					lines.push(`    idle:  ${idleLabel}`);
+				}
+				lines.push("");
 			});
-			const content = sessions.length === 0
-				? "No live sessions found."
-				: `Controllable sessions:\n${lines.join("\n")}`;
 
 			pi.sendMessage(
 				{
-					customType: "control-sessions",
-					content,
+					customType: "entwurf-sessions",
+					content: lines.join("\n").trimEnd(),
 					display: true,
 				},
 				{ triggerTurn: false },
 			);
+		},
+	});
+}
+
+// Resolve a `/entwurf-send` target into the concrete socket.
+// Accepts: numeric index ("1", "[1]"), alias, or sessionId.
+// Aliases not present in the cached list still resolve via on-disk symlinks.
+async function resolveSendTarget(
+	raw: string,
+	cached: EnrichedSession[],
+): Promise<{ sessionId: string; socketPath: string; label: string } | { error: string }> {
+	const trimmed = raw.trim();
+	if (!trimmed) return { error: "Missing target" };
+
+	const idxMatch = trimmed.match(/^\[?\s*(\d+)\s*\]?$/);
+	if (idxMatch) {
+		if (cached.length === 0) {
+			return {
+				error: "No cached session list. Run /entwurf-sessions first to populate indices.",
+			};
+		}
+		const idx = Number.parseInt(idxMatch[1], 10) - 1;
+		if (idx < 0 || idx >= cached.length) {
+			return { error: `Index ${idx + 1} out of range (1..${cached.length})` };
+		}
+		const s = cached[idx];
+		return {
+			sessionId: s.sessionId,
+			socketPath: s.socketPath,
+			label: s.name ?? `${s.sessionId.slice(0, 8)}…`,
+		};
+	}
+
+	const cachedHit = cached.find((s) => s.aliases.includes(trimmed));
+	if (cachedHit) {
+		return {
+			sessionId: cachedHit.sessionId,
+			socketPath: cachedHit.socketPath,
+			label: trimmed,
+		};
+	}
+
+	if (isSafeAlias(trimmed)) {
+		const sessionId = await resolveSessionIdFromAlias(trimmed);
+		if (sessionId) {
+			return { sessionId, socketPath: getSocketPath(sessionId), label: trimmed };
+		}
+	}
+
+	if (isSafeSessionId(trimmed)) {
+		return {
+			sessionId: trimmed,
+			socketPath: getSocketPath(trimmed),
+			label: `${trimmed.slice(0, 8)}…`,
+		};
+	}
+
+	return { error: `Cannot resolve target: ${raw}` };
+}
+
+function registerEntwurfSendCommand(
+	pi: ExtensionAPI,
+	state: SocketState,
+	getSessions: () => EnrichedSession[],
+): void {
+	pi.registerCommand("entwurf-send", {
+		description:
+			"Send a message to another entwurf session — /entwurf-send <index|alias|sessionId> <message>",
+		handler: async (args, ctx) => {
+			if (pi.getFlag(ENTWURF_FLAG) !== true) {
+				if (ctx.hasUI) {
+					ctx.ui.notify("Session control not enabled (use --entwurf-control)", "warning");
+				}
+				return;
+			}
+
+			const trimmed = (args ?? "").trim();
+			if (!trimmed) {
+				if (ctx.hasUI) {
+					ctx.ui.notify(
+						"Usage: /entwurf-send <index|alias|sessionId> <message>",
+						"warning",
+					);
+				}
+				return;
+			}
+
+			const splitIdx = trimmed.search(/\s/);
+			if (splitIdx === -1) {
+				if (ctx.hasUI) {
+					ctx.ui.notify("Missing message body", "warning");
+				}
+				return;
+			}
+			const rawTarget = trimmed.slice(0, splitIdx);
+			const message = trimmed.slice(splitIdx + 1).trim();
+			if (!message) {
+				if (ctx.hasUI) {
+					ctx.ui.notify("Empty message body", "warning");
+				}
+				return;
+			}
+
+			const resolved = await resolveSendTarget(rawTarget, getSessions());
+			if ("error" in resolved) {
+				if (ctx.hasUI) {
+					ctx.ui.notify(resolved.error, "error");
+				}
+				return;
+			}
+
+			const senderSessionId = state.context?.sessionManager.getSessionId();
+			const senderSessionName = state.context?.sessionManager.getSessionName()?.trim();
+			const senderInfo = senderSessionId
+				? `\n\n<sender_info>${JSON.stringify({
+						sessionId: senderSessionId,
+						sessionName: senderSessionName || undefined,
+					})}</sender_info>`
+				: "";
+
+			// Default mode: follow_up — human-initiated peer message lands after
+			// the target's current turn instead of yanking it mid-stream.
+			const result = await sendRpcCommand(resolved.socketPath, {
+				type: "send",
+				message: message + senderInfo,
+				mode: "follow_up",
+			});
+			if (!result.response.success) {
+				if (ctx.hasUI) {
+					ctx.ui.notify(
+						`Failed to send to ${resolved.label}: ${result.response.error ?? "unknown error"}`,
+						"error",
+					);
+				}
+				return;
+			}
+
+			if (ctx.hasUI) {
+				ctx.ui.notify(`Sent to ${resolved.label} (follow_up)`, "info");
+			}
 		},
 	});
 }
