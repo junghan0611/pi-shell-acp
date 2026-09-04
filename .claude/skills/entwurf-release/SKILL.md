@@ -258,10 +258,14 @@ never release evidence. Do not summarize the aggregate as a fixed number of
 gates. The current `package.json` check:* scripts are the SSOT. If any check
 fails, stop at that axis, fix it, and rerun the complete aggregate.
 
-The check chains deliberately exclude `check-gate-qualification`: the LIVE
-release gate (P5) runs it as its own MUST step, and the exact-SHA CI `check`
-job (M2) requires it on the release commit. Do not add a manual qualification
-rerun here.
+The check chains carry only the qualification HEAD (`check-gate-manifests`) and
+deliberately exclude the mutant-executing body `check-gate-qualification`: the
+LIVE release gate (P5) runs the body as its own MUST step, and the exact-SHA CI
+`check` job (M2) requires it on the release commit. Do not add a manual
+qualification rerun here.
+
+CI runs on branch pushes only. Pushing the release tag creates no run, so the
+exact-SHA oracle above always reads the BRANCH push run for that commit.
 
 ## P5. Run the LIVE release gate from fresh scratch
 

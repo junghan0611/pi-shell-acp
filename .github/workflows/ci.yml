@@ -1,7 +1,14 @@
 name: ci
 
 on:
+  # BRANCH pushes only. A semver TAG push rebuilds a SHA a branch push already
+  # built: across this repo's whole history that happened 66/66 times, and a tag
+  # run has never once reported a fact its branch run did not (#99 B-1) — the one
+  # non-green tag run failed at the same step as its main run, two seconds later.
+  # The exact-SHA evidence a release quotes IS the branch run, which is also the
+  # run `entwurf-release` land mode reports. So tags trigger nothing here.
   push:
+    branches: ['**']
   pull_request:
 
 env:
@@ -27,10 +34,13 @@ jobs:
       # is the operator's ≤60s everyday core, while `check:full` adds the
       # hermetic-integration and package/install tiers machine time pays for.
       - run: pnpm run check:full
-      # check-gate-qualification left the default local check chains
-      # (operator inner-loop cost). CI machine time still re-proves the gates'
-      # kill-power on every push, so the "exact release SHA has all CI jobs
-      # green" axis keeps full qualification strength.
+      # check-gate-qualification left the default local check chains (operator
+      # inner-loop cost) — its HEAD is back inside check:full above as
+      # check-gate-manifests, and the BODY runs here. CI machine time re-proves
+      # the gates' kill-power on every BRANCH push; a tag push rebuilds nothing,
+      # because the same SHA's branch run already carries this job. So the
+      # "exact release SHA has all CI jobs green" axis keeps full qualification
+      # strength on exactly one run per SHA.
       - run: ./run.sh check-gate-qualification
 
   # The install surface has its own job because `pnpm run check:full` is a SOURCE-tree

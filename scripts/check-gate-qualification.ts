@@ -1,6 +1,18 @@
 /**
  * check-gate-qualification — kill-proof qualification of the shipped gates.
  *
+ * TWO ENTRYPOINTS, ONE FILE. `--manifests-only` (shipped as `run.sh
+ * check-gate-manifests`) stops after the HEAD — the runner self-test plus the real
+ * manifests' validation and lane inventory — having executed ZERO mutants from
+ * `scripts/mutants/` and having made NO snapshot of this repo. The default
+ * entrypoint is unchanged: it runs the same head first and then the body. The head
+ * is separable because of what it has actually caught: across 549 CI runs the
+ * qualification step went red five times, and three of those died in the head in
+ * 4-5 seconds, before a single mutant gate was invoked (#99 B-3). The head costs
+ * ~8s, so it belongs in the deterministic floor every push already pays for; the
+ * body's contract — which mutants run, how they are classified, what it prints —
+ * is untouched by the split.
+ *
  * Two phases, in a fixed order:
  *
  *   1. RUNNER SELF-TEST. The runner is itself a SUT: a qualification harness that
@@ -57,6 +69,10 @@ import {
 
 const REPO_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const MUTANTS_DIR = path.join(REPO_DIR, "scripts", "mutants");
+
+/** Head-only mode: validate, count, and stop — no mutant is executed, no repo snapshot is made. */
+const MANIFESTS_ONLY = process.argv.includes("--manifests-only");
+const SURFACE = MANIFESTS_ONLY ? "check-gate-manifests" : "gate-qualification";
 
 let passed = 0;
 function ok(label: string, cond: boolean): void {
@@ -775,10 +791,16 @@ const quiet = (): void => {};
 	}
 }
 
-console.log(`\n[gate-qualification] self-test: ${passed} checks passed`);
+console.log(`\n[${SURFACE}] self-test: ${passed} checks passed`);
 
-// ═══ Phase 2 — the real manifests against a snapshot of THIS repo ═══════════
+// ═══ Phase 1d — the real manifests, VALIDATED but not yet run ═══════════════
+//
+// The HEAD ends here. Everything above and in this block is pure reading and
+// checking: no mutant from `scripts/mutants/` is executed and no snapshot of THIS
+// repo exists yet. `--manifests-only` returns from exactly this point.
 
+let selected: MutantSpec[];
+let manifestCount: number;
 {
 	const manifests: MutantManifest[] = fs
 		.readdirSync(MUTANTS_DIR)
@@ -813,6 +835,7 @@ console.log(`\n[gate-qualification] self-test: ${passed} checks passed`);
 		"copilot-launch": 14,
 		"copilot-receive": 18,
 		"fresh-cut": 1,
+		"gate-qualification": 2,
 		"meta-facts": 4,
 		"meta-hook-session-switch": 17,
 		"meta-identity": 4,
@@ -828,7 +851,7 @@ console.log(`\n[gate-qualification] self-test: ${passed} checks passed`);
 		"omp-fresh": 24,
 		"omp-receive": 11,
 		"probe-ordering": 1,
-		"release-gate": 12,
+		"release-gate": 14,
 		"resume-args": 6,
 		"resume-launch-identity": 6,
 		"self-address": 5,
@@ -839,17 +862,44 @@ console.log(`\n[gate-qualification] self-test: ${passed} checks passed`);
 	};
 	const laneTally: Record<string, number> = {};
 	for (const man of manifests) laneTally[man.lane] = (laneTally[man.lane] ?? 0) + man.mutants.length;
-	assert.deepEqual(
-		laneTally,
-		EXPECTED_LANE_MUTANTS,
-		"mutant lane inventory drifted from the declared contract — extend EXPECTED_LANE_MUTANTS and the manifests together, never silently",
-	);
-	const allMutants = validateManifestSet(manifests, makeOriginChecks(REPO_DIR));
-	const selected = allMutants;
-	console.log(
-		`[gate-qualification] ${selected.length} mutants across ${manifests.length} lanes (no tiers — full set every run)`,
-	);
+	try {
+		assert.deepEqual(laneTally, EXPECTED_LANE_MUTANTS);
+	} catch {
+		assert.fail(
+			"[QK:LANE-INVENTORY-DECLARED] the mutant lane inventory drifted from the declared contract — extend " +
+				"EXPECTED_LANE_MUTANTS and the manifests together, never silently. A lane that lost its manifest in a " +
+				"merge, or gained mutants nobody declared, would otherwise pass as `n/n killed` over whatever set " +
+				`happened to be on disk. declared=${JSON.stringify(EXPECTED_LANE_MUTANTS)} onDisk=${JSON.stringify(laneTally)}`,
+		);
+	}
+	try {
+		selected = validateManifestSet(manifests, makeOriginChecks(REPO_DIR));
+	} catch (err) {
+		assert.fail(
+			"[QK:MANIFEST-SET-INTEGRITY-REFUSED] the committed manifest set broke its cross-manifest contract (global " +
+				"claim uniqueness, subject tracked + lstat-regular in the ORIGIN index, signatureSource on the origin work " +
+				"surface, claim token present exactly once in its gate source). Every one of those is what makes a KILLED " +
+				"verdict mean something, so the set is refused rather than run. Refusal: " +
+				(err instanceof Error ? err.message : String(err)),
+		);
+	}
+	manifestCount = manifests.length;
+	console.log(`[${SURFACE}] ${selected.length} mutants across ${manifestCount} lanes (no tiers — full set every run)`);
+}
 
+if (MANIFESTS_ONLY) {
+	console.log(
+		`[check-gate-manifests] ok — runner self-test green, ${selected.length} committed mutants across ` +
+			`${manifestCount} lanes validated against the origin index, and the lane inventory matches its declared ` +
+			"contract. ZERO mutants were executed and this repo was never snapshotted: the body " +
+			"(check-gate-qualification) owns that, unchanged.",
+	);
+	process.exit(0);
+}
+
+// ═══ Phase 2 — the real manifests against a snapshot of THIS repo ═══════════
+
+{
 	const headBefore = originHead(REPO_DIR);
 	const workSurfaceBefore = originWorkSurfaceSha(REPO_DIR);
 

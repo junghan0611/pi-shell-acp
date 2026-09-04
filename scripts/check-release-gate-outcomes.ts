@@ -25,7 +25,15 @@
 //      "internal prerequisite" case, Cortex being the one that was measured).
 //   7. every LIVE smoke is either wired into the aggregate or excluded for a
 //      reason the docs actually state — the protocol cannot vouch for a step the
-//      gate never lists.
+//      gate never lists;
+//   8. the moved check-gate-qualification stays reachable on its owners, and the
+//      CI step qualifies the FULL floor;
+//   9. every gate a committed mutant NAMES also runs inside `check:full` (or says
+//      in its own prose why it deliberately does not) — a gate reachable only
+//      through qualification's control-pre puts a whole defect class behind the
+//      28-minute body;
+//  10. the CI push trigger is filtered to BRANCH refs, so pushing a release tag
+//      does not rebuild a SHA its branch run already built.
 //
 // Cells 5-6 SPAWN the real subcommands rather than reasoning about them: the
 // whole defect was an assumption about what a step would do, so an assumption is
@@ -329,7 +337,7 @@ function runSubcommand(sub: string, env: Record<string, string | undefined>): { 
 //    check-gate-qualification left the default check chains (operator
 //    inner-loop cost, 2026-08 subtraction). That move is a gate/release
 //    contract: the step must stay REACHABLE on the axes that now own it — the
-//    CI check job on every push and release_gate as its own MUST step — and
+//    CI check job on every branch push and release_gate as its own MUST step — and
 //    must not silently return to the default chain. Without this cell,
 //    deleting the release_gate qualification block or the CI line leaves every
 //    focused gate green while a cut quietly loses its discriminating-power
@@ -374,7 +382,7 @@ function runSubcommand(sub: string, env: Record<string, string | undefined>): { 
 		!qualGateBody.includes('results+=("FAIL  check-gate-qualification")')
 	)
 		holes.push("the release_gate qualification step does not wire PASS/FAIL into the MUST counters");
-	if (!verifyDoc.includes("in the CI `check` job on every push, and as a release-gate MUST step"))
+	if (!verifyDoc.includes("in the CI `check` job on every branch push, and as a release-gate MUST step"))
 		holes.push("VERIFY.md no longer names the owners of the moved qualification step");
 	assert.ok(
 		holes.length === 0,
@@ -403,6 +411,153 @@ function runSubcommand(sub: string, env: Record<string, string | undefined>): { 
 			"kill-power proof covers the floor a candidate actually ships on. The committed replant qualifies the " +
 			"downgrade/omission axis; ordering is directly asserted by this same oracle. " +
 			`Broken: check:full at index ${ciFloorAt}, qualification at index ${ciQualAt}.`,
+	);
+}
+
+// ===========================================================================
+// 9. Every gate a mutant manifest NAMES runs inside `pnpm run check:full`
+//
+//    The measurement behind this (#99 B-3/B-4): across 549 CI runs the mutant-
+//    EXECUTION half of qualification never once produced a SURVIVED / WRONG-REASON /
+//    MUTANT-STALE / HANG. What it did catch twice was a gate that was already red on a
+//    clean tree — CONTROL-PRE — and that class is caught 5.4 minutes earlier, and for
+//    free, by any gate the deterministic floor already runs. So a mutant-named gate
+//    that sits OUTSIDE `check:full` is the one place where a baseline break can only
+//    be found by paying the 28-minute body. `check-omp-birth-hook` was exactly that
+//    gate, reachable in the whole repo only through qualification's control-pre.
+//
+//    The exclusion arm is not a loophole: `scripts/check-setup-qualification.sh` is a
+//    mutation-attribution oracle the manifests invoke DIRECTLY and its own header says
+//    it is deliberately outside every tier. Like cell 7, the excuse is checked against
+//    the text an operator can read, never against a list only this gate believes in.
+//
+//    ONE PREMISE, stated because it is invisible from here: the script-path join below
+//    ignores MODE FLAGS in a gate argv. The `--attribution-self-test` gate therefore
+//    counts as covered by the `check-gate-manifests` arm only because
+//    `checkVitestAttribution()` runs UNCONDITIONALLY, before that flag is read
+//    (`scripts/check-gate-qualification.ts`). Move that call behind a flag and this
+//    cell stays green while saying something false.
+// ===========================================================================
+{
+	const pkg = JSON.parse(readFileSync(join(REPO_DIR, "package.json"), "utf8")) as { scripts: Record<string, string> };
+	// The floor is composed (#70): `check:full` names group scripts, and a group script
+	// may name further ones. Expand transitively rather than hard-coding the tier list.
+	const expand = (name: string, seen: Set<string>): string => {
+		if (seen.has(name)) return "";
+		seen.add(name);
+		const body = pkg.scripts[name] ?? "";
+		let out = body;
+		for (const ref of body.matchAll(/pnpm run ([\w:.-]+)/g)) out += ` ${expand(ref[1], seen)}`;
+		const elapsed = /check-elapsed\.sh\s+[\w:.-]+\s+(.+)$/.exec(body);
+		if (elapsed) for (const g of elapsed[1].trim().split(/\s+/)) out += ` ${expand(g, seen)}`;
+		return out;
+	};
+	const floorText = expand("check:full", new Set());
+	const floorSubcommands = new Set([...floorText.matchAll(/\.\/run\.sh ([\w:.-]+)/g)].map((m) => m[1]));
+
+	// run.sh case arms, so a gate invoked by SCRIPT PATH can be joined to the floor
+	// subcommand that runs that same script.
+	const arms = new Map<string, string>();
+	{
+		let names: string[] = [];
+		let body: string[] = [];
+		for (const line of readFileSync(join(REPO_DIR, "run.sh"), "utf8").split("\n")) {
+			const head = /^ {2}([\w|:.-]+)\)$/.exec(line);
+			if (head) {
+				names = head[1].split("|");
+				body = [];
+				continue;
+			}
+			if (line === "    ;;") {
+				for (const n of names) arms.set(n, body.join("\n"));
+				names = [];
+				continue;
+			}
+			if (names.length > 0) body.push(line);
+		}
+	}
+
+	const gates = new Map<string, string[]>();
+	for (const rel of globSync("scripts/mutants/*.json", { cwd: REPO_DIR }).sort()) {
+		const doc = JSON.parse(readFileSync(join(REPO_DIR, rel), "utf8")) as { mutants: Array<{ gate: string[] }> };
+		for (const m of doc.mutants) gates.set(m.gate.join(" "), m.gate);
+	}
+	assert.ok(gates.size >= 40, `expected the committed mutant gate set, found ${gates.size} distinct gate argvs`);
+
+	// argv → the file that states, in prose an operator reads, why it is outside the floor.
+	const DOCUMENTED_OUTSIDE: Record<string, [file: string, sentence: string]> = {
+		"bash scripts/check-setup-qualification.sh": [
+			"scripts/check-setup-qualification.sh",
+			"run.sh subcommand and NOT in any check tier",
+		],
+	};
+
+	const unreached: string[] = [];
+	for (const [key, argv] of gates) {
+		if (argv[0] === "bash" && argv[1] === "run.sh") {
+			if (!floorSubcommands.has(argv[2])) unreached.push(`${key} — run.sh ${argv[2]} is in no check:full group`);
+			continue;
+		}
+		const scriptPath = argv.find((t) => /^scripts\/.+\.(sh|ts|py)$/.test(t));
+		if (scriptPath !== undefined && [...floorSubcommands].some((sub) => (arms.get(sub) ?? "").includes(scriptPath))) {
+			continue;
+		}
+		const excused = DOCUMENTED_OUTSIDE[key];
+		if (excused === undefined) {
+			unreached.push(`${key} — no check:full subcommand invokes ${scriptPath ?? "(no script path in its argv)"}`);
+			continue;
+		}
+		const [file, sentence] = excused;
+		if (!readFileSync(join(REPO_DIR, file), "utf8").includes(sentence)) {
+			unreached.push(`${key} claims a documented exclusion, but ${file} no longer says "${sentence}"`);
+		}
+	}
+	assert.ok(
+		unreached.length === 0,
+		"[QK:MUTANT-GATES-INSIDE-FULL-FLOOR] every gate a committed mutant names must also run inside `pnpm run " +
+			"check:full`, or state its exclusion where an operator reads it. A gate reachable ONLY through " +
+			"qualification's control-pre makes the 28-minute mutant body the only thing that can notice it going red on " +
+			"a clean tree — the one CI class that body has actually caught, and the one the 5.4-minute floor catches for " +
+			`free everywhere else. Unreached: ${unreached.join("; ")}`,
+	);
+}
+
+// ===========================================================================
+// 10. A TAG push rebuilds nothing
+//
+//     Measured over this repo's whole history (#99 B-1): 66 of 66 semver tag-push runs
+//     rebuilt a SHA some other run had already built, and no tag run ever reported a
+//     fact its branch run did not — the single non-green one failed at the same step as
+//     its main run, two seconds later. That is 28% of a release window's runner minutes
+//     buying a badge on a ref. The exact-SHA evidence a release quotes is the BRANCH
+//     run, which is also the run `entwurf-release` land mode reports.
+//
+//     So `on.push` must carry a REF FILTER that selects branches. `branches:` alone is
+//     what makes a tag push create no run at all; a `tags:` key would put them back.
+// ===========================================================================
+{
+	const ciYml = readFileSync(join(REPO_DIR, ".github/workflows/ci.yml"), "utf8");
+	const onAt = ciYml.indexOf("\non:\n");
+	const envAt = ciYml.indexOf("\nenv:\n");
+	assert.ok(onAt !== -1 && envAt > onAt, "located the workflow `on:` block");
+	const onLines = ciYml.slice(onAt, envAt).split("\n");
+	const pushAt = onLines.findIndex((l) => /^ {2}push:\s*$/.test(l));
+	const nextKeyAt = onLines.findIndex((l, i) => i > pushAt && /^ {2}\S/.test(l));
+	const pushBody = onLines
+		.slice(pushAt + 1, nextKeyAt === -1 ? undefined : nextKeyAt)
+		.filter((l) => l.trim() !== "" && !/^\s*#/.test(l));
+	const gaps: string[] = [];
+	if (pushAt === -1) gaps.push("the `on:` block has no `push:` trigger");
+	if (!pushBody.some((l) => /^ {4}branches(-ignore)?:/.test(l)))
+		gaps.push(`the push trigger carries no branch ref filter (body: ${JSON.stringify(pushBody)})`);
+	if (pushBody.some((l) => /^ {4}tags(-ignore)?:/.test(l)))
+		gaps.push("the push trigger names tags — a tag push would create a second run for a SHA already built");
+	assert.ok(
+		gaps.length === 0,
+		"[QK:CI-TAG-PUSH-NOT-REBUILT] the CI `push` trigger must be filtered to BRANCH refs, so pushing a release tag " +
+			"creates no run: 66/66 semver tag runs in this repo's history rebuilt an already-built SHA and none ever " +
+			"reported a fact its branch run had not, while costing 28% of a release window's runner minutes. Dropping " +
+			`the filter does not add evidence, it duplicates it. Broken: ${gaps.join("; ")}`,
 	);
 }
 
@@ -501,5 +656,7 @@ console.log(
 		"LIVE smoke is either wired into release_gate or excluded by a sentence the docs still carry; and the moved " +
 		"check-gate-qualification stays reachable on its owners (absent from the default chain, exactly once in CI, " +
 		"exactly once as a release-gate MUST step) and the CI step qualifies the FULL floor, which runs before it; and " +
+		"every gate a committed mutant names is itself inside check:full or states its exclusion in prose an operator " +
+		"reads; and the CI push trigger is filtered to branch refs, so a release tag creates no duplicate run; and " +
 		"the operator's CONFIGURED bridge invocation is booted exactly once through run_step, before the ACP LIVE tier",
 );

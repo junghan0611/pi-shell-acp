@@ -19,7 +19,7 @@
 			"subject": "scripts/agy-bridge.sh",
 			"find": ["      if command_boots \"$invocation\"; then"],
 			"replace": ["      if true; then"],
-			"gate": ["bash", "scripts/smoke-agy-install-state.sh"],
+			"gate": ["bash", "run.sh", "smoke-agy-install-state"],
 			"timeoutSeconds": 300,
 			"signature": "[QK:AGY-DOCTOR-BOOT-NEGATIVE]",
 			"signatureSource": "scripts/smoke-agy-install-state.sh"
@@ -43,7 +43,7 @@
 			"subject": "scripts/agy-bridge-config.py",
 			"find": ["    args = server.get(\"args\", [])"],
 			"replace": ["    args = []"],
-			"gate": ["bash", "scripts/smoke-agy-install-state.sh"],
+			"gate": ["bash", "run.sh", "smoke-agy-install-state"],
 			"timeoutSeconds": 300,
 			"signature": "[QK:AGY-DOCTOR-PROBES-ARGS]",
 			"signatureSource": "scripts/smoke-agy-install-state.sh"
@@ -54,7 +54,7 @@
 			"subject": "scripts/agy-bridge-config.py",
 			"find": ["    env = server.get(\"env\", {})"],
 			"replace": ["    env = {}"],
-			"gate": ["bash", "scripts/smoke-agy-install-state.sh"],
+			"gate": ["bash", "run.sh", "smoke-agy-install-state"],
 			"timeoutSeconds": 300,
 			"signature": "[QK:AGY-DOCTOR-PROBES-ENV]",
 			"signatureSource": "scripts/smoke-agy-install-state.sh"

@@ -433,6 +433,7 @@ pnpm run check:full                     # full deterministic floor (adds the her
 # source-maintainer only — qualification snapshots the git work surface, and both
 # commands are source-contract gates rather than installed operator checks:
 ./run.sh check-agy-permission-matrix    # AGY permission contract space as a literal table (declared cells + stated exclusions)
+./run.sh check-gate-manifests           # the qualification HEAD alone: self-test + manifest-set validation + declared lane inventory, zero mutants run (in check:hermetic)
 ./run.sh check-gate-qualification       # kill-proof: committed defect mutants must turn their gates red for the claimed reason
 
 # agy LIVE acceptance — requires an already-running conversation:
@@ -450,9 +451,12 @@ LIVE=1 ./run.sh release-gate /tmp/scratch --cut # the single cut gate (MUST + BE
 LIVE=1 ENTWURF_ACP_CORTEX_CONNECTION=<conn> ./run.sh smoke-acp-cortex-live  # Cortex is on-demand: the aggregate does not re-certify it
 ```
 
-`pnpm run check:full` includes the AGY permission contract matrix; the committed-mutant
-gate qualification is scheduled separately (`./run.sh check-gate-qualification` — the CI
-`check` job runs it on every push, and release-gate carries it as a MUST step). A gate a
+`pnpm run check:full` includes the AGY permission contract matrix and the qualification
+HEAD (`check-gate-manifests` — runner self-test, manifest-set validation, declared lane
+inventory, zero mutants executed); the committed-mutant EXECUTION is scheduled separately
+(`./run.sh check-gate-qualification` — the CI `check` job runs it on every branch push,
+and release-gate carries it as a MUST step; a tag push runs no CI, since the same SHA's
+branch run already carries every job). A gate a
 release touches must kill its known defect for the claimed `[QK:<claim>]` reason —
 the descriptions above name what each smoke covers, and no check count is quality
 evidence on its own. Gate qualification needs the git work surface, while the matrix

@@ -137,6 +137,28 @@
 			"signatureSource": "scripts/check-release-gate-outcomes.ts"
 		},
 		{
+			"claim": "MUTANT-GATES-INSIDE-FULL-FLOOR",
+			"title": "a gate a committed mutant names drops out of check:full — the #99 B-4 shape, where check-omp-birth-hook was reachable in the whole repo only through qualification's control-pre, so the one CI class that half has ever caught (a gate already red on a clean tree) could be found only by paying the 28-minute mutant body",
+			"subject": "package.json",
+			"find": [" && ./run.sh check-omp-birth-hook"],
+			"replace": [""],
+			"gate": ["bash", "run.sh", "check-release-gate-outcomes"],
+			"timeoutSeconds": 180,
+			"signature": "[QK:MUTANT-GATES-INSIDE-FULL-FLOOR]",
+			"signatureSource": "scripts/check-release-gate-outcomes.ts"
+		},
+		{
+			"claim": "CI-TAG-PUSH-NOT-REBUILT",
+			"title": "the CI push trigger loses its branch ref filter, so every release tag rebuilds a SHA its branch run already built — 66/66 historically, 28% of a release window's runner minutes, and not once a fact the branch run had not already reported",
+			"subject": ".github/workflows/ci.yml",
+			"find": ["    branches: ['**']"],
+			"replace": ["    # the branch ref filter was dropped, so a tag push rebuilds the SHA again"],
+			"gate": ["bash", "run.sh", "check-release-gate-outcomes"],
+			"timeoutSeconds": 180,
+			"signature": "[QK:CI-TAG-PUSH-NOT-REBUILT]",
+			"signatureSource": "scripts/check-release-gate-outcomes.ts"
+		},
+		{
 			"claim": "PI-DOCTOR-IS-RELEASE-MUST",
 			"title": "the pi-provider boot doctor is quietly dropped from the gate — the operator's CONFIGURED bridge invocation is never booted, so a 127 launcher (the #81 relocated cmd-shim class) stays invisible until smoke-acp-bundled-mcp-live sixteen LIVE steps and real model spend later",
 			"subject": "run.sh",

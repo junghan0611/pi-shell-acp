@@ -192,6 +192,7 @@ Usage:
   ./run.sh smoke-omp-receive-live      # #87 bundle B acceptance: another harness wakes an ALREADY-OPEN omp citizen, which reads its inbox and answers in the same session. Decides its own outcome from the capability registry — omp without a drainable mailbox is a protocol SKIP (no receiver unit exists to arm), which an unattended release-gate reports and `--cut` reads as RED; a registry that claims a receive rail with no acceptance body here is a FAIL
   ./run.sh smoke-entwurf-chain-live    # LIVE cross-harness delivery chain: native Claude Code -> pi GPT -> pi ACP Sonnet -> mailbox terminus, proving sender identity/replyable at every hop and a real read receipt at the end. Prerequisites (claude on PATH, pi credentials per backend) report protocol SKIP, never a pass
   ./run.sh check-release-gate-outcomes  # release-gate STEP OUTCOME protocol (P1): one skip exit code shared by the shell + TS halves, classifier never rounds a skip up to a pass, `--cut` refuses a MUST SKIP while a bare diagnostic stays exit 0, no LIVE smoke keeps the old exit-0 skip shape, and both real skip surfaces are INVOKED and observed to propagate the code
+  ./run.sh check-gate-manifests         # the HEAD of that qualification, on its own: runner self-test + the committed manifests validated against the origin index + the declared lane inventory. Executes ZERO mutants and never snapshots this repo (~8s), which is why it lives in check:hermetic while the body stays on CI/release-gate — three of the five reds qualification ever produced in CI died right here, before a mutant gate ran (#99 B-3)
   ./run.sh check-gate-qualification    # kill-proof qualification (the gate-of-gates): runner self-test (classifier truth table + synthetic negatives incl. wrong-reason/hang/control-red/impurity) + committed mutant manifests (scripts/mutants/*.json) run in an isolated snapshot repo under control→mutant→restore→control; the real checkout is never written. Evidence = claim IDs + killed mutant IDs, never assertion counts
   ./run.sh check-probe-ordering        # §11-7 ordering-probe deterministic gate: raw-client SAMENESS pinned to backend.ts (sequence/args/timeouts/permission policy — the probe may never measure a lookalike), phase attribution incl. set-model, probe-mode fixture wire markers (delay honored, probeRunId REQUIRED, smoke-acp-mcp-live legacy compat), event-log door integrity (reserved keys refused at write; unknown marker name, broken sort axis, or a payload the classifier cannot judge on is MALFORMED, never a quiet event), and the §11-7 paired-verdict truth table (P0/I0 outside the space, phase-qualified D, B promotion ladder, C, A two-delay rule). Offline/deterministic; one product claim (no production prompt cutoff) is replant-qualified via scripts/mutants/probe-ordering.json, while the other assertions are direct [CHECK:*] contracts
   ./run.sh check-probe-cli-shim        # §11-7-c B-name-snapshot PRODUCER gate: the CLI shim driven as a REAL process against fake CLIs (no API, no cost). Proves what a defect would buy — FABRICATED evidence (a malformed init is never reported as an empty name set; the boot report carries the true target path+sha256 the classifier verifies against the roster), a DESTROYED turn (byte transparency across mid-UTF8/CRLF/oversized/unterminated framing, exit-code fidelity, signal re-raise, inbound signal forwarding, stderr passthrough, stdout backpressure), and LEAKED operator state (exact-allowlist env scrub, no argv/env/prompt body in the log). Offline/deterministic; 20 direct [CHECK:*] contracts, deliberately no longer replant-qualified after #70 subtraction
@@ -5458,10 +5459,11 @@ release_gate() {
     results+=("FAIL  static (pnpm run check:full)"); failc=$((failc + 1))
   fi
 
-  # 1b. Discriminating power of that floor. check-gate-qualification left the
-  # default check chains (operator inner-loop cost), so release acceptance
-  # carries it explicitly as its own MUST step: a cut must re-prove the gates
-  # still kill what they claim to kill.
+  # 1b. Discriminating power of that floor. The mutant-EXECUTING body left the
+  # default check chains (operator inner-loop cost) — only its head rides along,
+  # as check-gate-manifests inside check:hermetic — so release acceptance carries
+  # the body explicitly as its own MUST step: a cut must re-prove the gates still
+  # kill what they claim to kill.
   section "release-gate step: check-gate-qualification"
   if (cd "$REPO_DIR" && bash "$self" check-gate-qualification); then
     ok "check-gate-qualification: PASS"
@@ -6035,6 +6037,16 @@ case "$cmd" in
     # expectations (oracle independence — nothing is read back from the SUT). Sandbox
     # per cell; offline + deterministic (deps: python3).
     (cd "$REPO_DIR" && python3 scripts/check-agy-permission-matrix.py)
+    ;;
+  check-gate-manifests)
+    # The HEAD of check-gate-qualification, exposed on its own so the deterministic
+    # floor can pay for it: the runner self-test (classifier truth table + synthetic
+    # negatives) plus the REAL manifests — schema, global claim uniqueness, subjects
+    # tracked and lstat-regular in the origin index, claim tokens exactly once in their
+    # gate sources — plus the declared lane inventory. It executes ZERO mutants and
+    # makes NO snapshot of this repo; the body (check-gate-qualification) owns that and
+    # is unchanged. Cheap enough for check:hermetic (~8s).
+    run_ts scripts/check-gate-qualification.ts --manifests-only
     ;;
   check-gate-qualification)
     # Kill-proof qualification — the gate-of-gates. Proves the committed defect mutants

@@ -1,0 +1,28 @@
+{
+	"schemaVersion": 1,
+	"lane": "gate-qualification",
+	"mutants": [
+		{
+			"claim": "MANIFEST-SET-INTEGRITY-REFUSED",
+			"title": "a committed manifest points a claim at a gate source that does not carry its token — the cross-manifest contract that makes a KILLED verdict mean anything is broken, and the run must refuse rather than certify kills whose signature nothing can attribute (the 08-20 CI catch, run 32421631735, which died in validateManifestSet in 5s)",
+			"subject": "scripts/mutants/probe-ordering.json",
+			"find": ["\"signatureSource\": \"scripts/check-probe-ordering.ts\""],
+			"replace": ["\"signatureSource\": \"run.sh\""],
+			"gate": ["bash", "run.sh", "check-gate-manifests"],
+			"timeoutSeconds": 120,
+			"signature": "[QK:MANIFEST-SET-INTEGRITY-REFUSED]",
+			"signatureSource": "scripts/check-gate-qualification.ts"
+		},
+		{
+			"claim": "LANE-INVENTORY-DECLARED",
+			"title": "a lane is renamed in its manifest and the declared inventory is not moved with it — the vacuous-green shape where the run reports n/n killed over whatever set happened to be on disk (the 08-21 and 08-28 CI catches, runs 32450955048 and 33154263432, both dead at the inventory assertion in under 5s)",
+			"subject": "scripts/mutants/capability-cache.json",
+			"find": ["\"lane\": \"capability-cache\","],
+			"replace": ["\"lane\": \"capability-cache-renamed\","],
+			"gate": ["bash", "run.sh", "check-gate-manifests"],
+			"timeoutSeconds": 120,
+			"signature": "[QK:LANE-INVENTORY-DECLARED]",
+			"signatureSource": "scripts/check-gate-qualification.ts"
+		}
+	]
+}
