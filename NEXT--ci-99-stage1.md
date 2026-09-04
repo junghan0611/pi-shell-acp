@@ -14,19 +14,22 @@
 - [x] **3. inner loop (바뀐 게이트만)** — typecheck 0 · lint 0 · `check-gate-manifests` 0 (8.06s) ·
       `check-release-gate-outcomes` 0 · `check-omp-birth-hook` 0 · `check-shell-quote` 0 ·
       `check-install-surface` 0 (git add 후). 전체 바닥 미개봉.
-- [ ] **4. 코디네이터에게 리뷰 요청 → amendment 한 번들** ← CURRENT: 요청 보냄, 회신 대기
-- [ ] **5. standalone `check-gate-qualification` 1회 + frozen candidate `check:full` 1회 (둘 다 tmux)**
-- [ ] **6. 산문 스윕 → GLG 승인 뒤 `commit` 스킬** — 푸시는 GLG 몫
+- [x] **4. 독립 리뷰 → amendment 한 번들** — Blocker 0 / Defect 2 / Observation 3. D1(두 tier 산문 정정),
+      D2(#102 acceptance 2 의 "51 그룹" 은 코디네이터 산술 오류, 이슈 본문 정정됨), 셀 9 전제 주석 한 줄 반영.
+- [x] **5. standalone qualification 1회 + frozen candidate `check:full` 1회 (둘 다 tmux)** —
+      **368/368 KILLED, exit 0**, 38.9분(22:47:31→23:26:24), 52 그룹, control 816.4s / 뮤턴트 1506.2s.
+      `pnpm run check:full` **exit 0, 472s**. 워크트리·index 는 두 실행 내내 불변.
+- [x] **6. 산문 스윕 → GLG 승인 뒤 커밋** — 커밋 `8649967` (floor 가 본 트리 그대로).
+- [ ] **7. GLG 아침 판단** ← CURRENT: main 머지 여부 + 2단계(P2/P5/P6b) 분할. 푸시 없음.
 
-현재 좌표: 1–3 완료 → 4 리뷰 회신 대기
+현재 좌표: 1–6 완료 → 7 GLG 판단 대기 (푸시·머지 금지)
 
 # NOW
 
-- **Current:** candidate 굳음. 코디네이터(20260904T213456-dfdfc4)에게 리뷰 요청을 보냈고 회신 대기.
-- **Next:** (1) amendment 번들 수령·반영 → (2) tmux 에서 `./run.sh check-gate-qualification`
-  standalone 1회(awk strftime 타임스탬프, scratch 로그) → (3) frozen candidate 위 `pnpm run check:full`
-  1회 → (4) GLG 승인 뒤 `commit` 스킬.
-- **Blocker:** 리뷰 회신. floor 는 그 전에 열지 않는다.
+- **Current:** 1단계가 브랜치에 랜딩했다 — `8649967`. 두 축 모두 초록. 푸시·머지 없음.
+- **Next:** GLG 가 아침에 (1) `ci/99-stage1` 을 main 에 머지할지, (2) 2단계(P2 이벤트 좁히기 /
+  P5 잡 분리 / P6b 느린 그룹 재배치)를 어떻게 쪼갤지 정한다. 머지 전에 이 파일을 삭제한다.
+- **Blocker:** 없음. 대기만 남았다.
 - **Read:** `#102` 본문 · `#99` 댓글 5541060606(측정)과 그 아래 결정 댓글 ·
   AGENTS.md "Verification scheduling" / "Kill-proof discipline" / "When changing a contract/gate".
 - **Do not touch:** 본체 qualification 의 뮤턴트 실행 계약 · P2(이벤트 좁히기) · P5(잡 분리) ·
@@ -74,3 +77,21 @@
   제외를 말한다"로 썼다(셀 7 의 `DOCUMENTED_EXCLUSIONS` 관용구).
 - 산문 이동이 기존 claim 을 건드린 유일한 지점: `[QK:QUALIFICATION-SCHEDULING-REACHABLE]` 의
   VERIFY needle 을 "on every push" → "on every branch push" 로 같이 옮겼다.
+
+# 랜딩 증거 (2026-09-04, oracle, 전부 여기서 측정)
+
+- **candidate `8649967`** 위에서 두 축을 각 1회씩만 돌렸다.
+  - `./run.sh check-gate-qualification` standalone: **368/368 KILLED, exit 0**, wall 38.9분
+    (22:47:31 → 23:26:24), 스냅샷 411 파일, origin HEAD `67c40869b6ce`,
+    `origin checkout: HEAD + work-surface content hash identical before/after`.
+    로그: scratch `qual102.log` (워크트리 밖, awk strftime KST 타임스탬프).
+  - `pnpm run check:full`: **exit 0, 472s**. 그 안에서 `check-omp-birth-hook` 124 assertions ok,
+    `check-gate-manifests` 368 mutants / 40 lanes ok 를 확인했다.
+- **그룹 816.4s / 뮤턴트 1506.2s / 104 control 실행 / 52 그룹.** #99 A-1(control 856.8s,
+  뮤턴트 1461.4s, 52 그룹)과 **절대값으로 비교하지 않는다** — 두 실행의 호스트 부하가 다르다.
+  같은 로그 안에서 읽는 상대값: control 비중 37.0% → **35.1%**, 그리고 이번 실행 자신의 요율로
+  agy control 쌍 66.2s 하나가 사라지고 머리 쌍 16.4s 하나가 들어왔다.
+- 산문 스윕 두 축 완료: "on every push" 4곳 + CONTRIBUTING.md · entwurf-release SKILL.md ·
+  run.sh release_gate 주석 · AGENTS/VERIFY floor bullet. 은퇴 어휘 신규 없음.
+- 이 파일의 최종 좌표 갱신만 floor 이후에 이뤄졌다. 그래서 별도 커밋으로 분리했다 —
+  `8649967` 은 floor 가 본 트리와 바이트 동일하다.
