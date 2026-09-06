@@ -50,48 +50,51 @@ CHANGELOG `## Unreleased`가 구현 범위 `v0.15.1..19ad90c` **30커밋** 전�
       **369/369 KILLED** exit 0 (38분) · `pnpm run check:full` exit 0 **481s** ·
       `check-pack-install` exit 0 · `check-install-container` exit 0. #91 은 문서 절이
       랜딩해 **닫혔다**. **푸시 안 함** — origin 은 여전히 `67c4086`.
-- [ ] **15. 0.18.1 컷 (#102 + #104 합본)** ← CURRENT: GLG 몫. `## Unreleased` 는 두 이슈 전수로
-      채워져 있고, 버전 범프·절 승격은 `entwurf-release` **prepare**, 그 뒤 land/make/publish 가
-      각각 별도 승인이다. 먼저 **푸시**가 있어야 exact-SHA CI 가 존재한다.
+- [x] **15. 0.18.1 컷 (#102 + #104 합본)** — **`v0.18.1` @ `cabecf6`, GitHub 릴리즈 공개.**
+      land(`c247594` CI run `34018205091` 3잡 초록) → prepare(`cabecf6`) →
+      make(prepared-HEAD CI run `34027762637` 3잡 초록, candidate 수용, 태그·릴리즈·도장)까지
+      끝났다. **npm 발행만 남았다** — 토큰이 401 이라 0.17.2·0.18.0 과 같이 GLG가 직접 한다.
+- [ ] **16. npm publish 0.18.1** ← CURRENT: GLG 몫. 수용된 **정확히 그 파일**만 올린다(리팩 금지):
+      `/tmp/entwurf-release-candidate-0.18.1.26W337/junghanacs-entwurf-0.18.1.tgz`
+      sha256 `e1f94b6855499098aca1bce081abe0472ea4711aa28746d7b182880ca7742603`, dist-tag `latest`.
+      발행 뒤 레지스트리 integrity 가 이 sha 와 같은지 사후 증명한다.
 
-현재 좌표: 1–14 완료 → 15 GLG 판단 대기 · **0.16.1 make는 열린 채 PAUSED**. 푸시·태그는
+현재 좌표: 1–15 완료 → 16 npm 발행 대기 · **0.16.1 make는 열린 채 PAUSED**. 푸시·태그는
 `entwurf-release` 4모드 몫이다 (CalVer `tag-release`가 아님).
 
-# NOW — #104 랜딩 완료, 0.18.1 컷은 GLG 몫
+# NOW — v0.18.1 컷 완료, npm 발행만 남았다
 
-- **Stem:** 없다. 이 레인은 닫혔다. 다음은 릴리즈 결정이고 그건 GLG 가 모드별로 승인한다.
-- **랜딩 좌표:** `9e1d067` (main, **푸시 안 함** — origin `67c4086`). 앞선 부기 커밋은 `66a3fc6`.
-- **네 축 영수증 (전부 이 호스트 oracle, 2026-09-06):**
-  - `./run.sh check-gate-qualification` standalone: **369/369 KILLED, exit 0**, 15:06:21→15:44:15
-    (38분). `origin checkout: HEAD + work-surface content hash identical before/after`.
-    새 claim 2종 모두 자기 signature 로 죽었다 — `PACK-INSTALL-PIN-MATCHER-BOUNDED`,
-    `PACK-INSTALL-PIN-MATCHER-COVERS-CLOSURE`.
-  - `pnpm run check:full`: **exit 0, 481s**.
-  - `./run.sh check-pack-install`: **exit 0** — `pi runtime tree pin verified: every
-    @earendil-works package is 0.85.1 (chord included)`, all-absent 행 **5x SKIP**.
-  - `./run.sh check-install-container`: **exit 0**, artifact sha256 `7c5cee2b7960…`.
-  - **정직한 단서 하나:** qualification 은 candidate 가 두 번 더 움직이기 **전에** 돌았다 —
-    이후 변경은 `probe.ts` biome 포맷과 ROADMAP 산문의 `engines.node` 표기 한 곳뿐이고,
-    둘 다 게이트·뮤턴트·매트릭스 주체가 아니다(뮤턴트 매니페스트에 `ROADMAP.md` 도
-    `raw-acp-compaction` 도 subject 로 없음, 실측). `check:full` 은 최종 바이트 위에서 돌았다.
-- **이 레인이 잡은 것 (정찰이 예고하지 못한 것):**
-  1. **pi 0.85.x 미선언 breaking** — `pi-tui` `Container` 가 `private mouseLayout?` 를 얻어
-     `Box → Container` 구조적 할당이 TS2322 로 깨졌다. 수리는 `Component` 로 좁힌 것.
-  2. **`0.85.0` 은 깨진 publish** — 그래서 0.85.1 이 유일한 랜딩 좌표.
-  3. **`check-pack-install` 의 all-absent 행이 OMP 에 대해 절대 all-absent 가 아니었다** —
-     0.16.0 OMP admission 때 `OMP_BIN` seam 이 이 픽스처에만 안 들어갔다. omp 를 든 호스트에서
-     0.16.0 이래 계속 빨갰고, CI 러너에 omp 가 없고 `release_gate` 가 이 게이트를 안 들어서
-     아무 floor 도 못 봤다. 통제군(`66a3fc6` 클린 클론)이 같은 행에서 같은 이유로 실패하는 것을
-     확인하고 고쳤다.
-- **미측정 (넘긴다):** 압축 `completed` 분기(세션이 짧아 벤더가 "Not enough messages to
-  compact." 로 끝냈다) · `usage-markdown.ts`(#1085) 소비 경로 · pi 0.85.1 + acp 0.75.1 을 함께
-  넣은 트리의 `@anthropic-ai/sdk` 두 사본 재확인 · `packages/chord` 내용물이 우리 표면에 닿는지 ·
-  **이 레인의 LIVE 축 전체** — `smoke-acp-raw-turn-live`(Dep bump 트랙이 지정한 잠금)를 포함해
-  스모크를 하나도 안 돌렸다. 0.18.1 릴리즈 게이트가 그것을 요구한다.
-- **Read:** #104 본문과 그 스레드(코디네이터 grant + 독립 리뷰) · ROADMAP **Dep bump(별도 트랙)**
-  의 2026-09-06 두 항목 · `docs/acp-backend-rail.md` §11-8 · `docs/setup-clean-host.md` §4b.
-- **Do not touch:** 푸시(GLG 몫) · 0.18.1 을 `tag-release` 로 컷하는 것(`entwurf-release` 4모드다) ·
-  `scripts/raw-acp-compaction-measure/` 를 게이트로 승격하는 것(측정 프로브다).
+- **Stem:** 없다. 이 릴리즈 레인은 npm 한 단계만 남기고 닫혔다.
+- **좌표:** `v0.18.1` @ `cabecf6`, `main` = `cabecf6` (origin 동일),
+  릴리즈 https://github.com/junghan0611/entwurf/releases/tag/v0.18.1
+- **Next (GLG):** 수용된 candidate 를 그대로 발행한다 —
+  `npm publish /tmp/entwurf-release-candidate-0.18.1.26W337/junghanacs-entwurf-0.18.1.tgz --tag latest`.
+  **리팩 금지**(그 파일만 수용됐다). 발행 전 `latest`=0.18.0 / `repair`=0.12.8-repair.1 이었으니
+  발행 뒤 `latest`=0.18.1 이고 `repair` 는 그대로여야 한다.
+- **릴리즈 영수증 (전부 oracle, 2026-09-06):**
+  - LIVE `release-gate --cut`: **MUST PASS=23 FAIL=0 SKIP=0**, BEHAVIOR 1/0/0, `cut: OK`,
+    18:30:51→19:23:40 (52m49s). 그 안에서 qualification **369/369 KILLED**.
+  - `smoke-acp-raw-turn-live` PASS — acp 범프의 지정 잠금. ROADMAP ledger ⑹ 에 실렸다.
+  - `smoke-omp-fresh-live` 21 assertions + `smoke-omp-receive-live` — #91 센티널 둘 다 초록,
+    **omp 18.0.0 위에서**(문서 weak floor 18.1.10 보다 낮다 — floor 는 허용이 아니라 증명의 기록).
+  - prepared-HEAD CI `34027762637` 3잡 초록, candidate sha256
+    `e1f94b6855…`, image `sha256:f1158c7f34cf…`, repoDigest `node@sha256:5711a0d445a1…`.
+- **이 컷이 새로 가르쳐 준 것 두 가지:**
+  1. **첫 `--cut` 은 우리 코드 때문이 아니라 codex 주간 쿼터 100% 로 막혔다.** codex 레일
+     형제 셋(chain hop2 · mux pi-native · omp-fresh)이 태어나고 소켓까지 세우지만 턴을 못 돌아
+     콜백/배달이 안 왔고, Claude 레일은 전부 초록이었다. **chain 스모크의 타임아웃 계측이
+     이걸 읽히게 만들었다** — `terminus fixture at timeout: … alive=true watchArmed=true` 가
+     mailbox 는 멀쩡했음을 증명해서 "미스터리"를 "판독"으로 바꿨다(#101 이월 관측 3번의
+     계측이 실제로 값을 했다). GLG 가 쿠폰으로 초기화한 뒤 **코드 변경 0으로** 같은 게이트가 초록.
+  2. **floor 를 올리면 우리 호스트가 먼저 비준수가 된다.** `entwurf setup` 이 `pi 0.84.4 is
+     outside >=0.85.1 <0.86` 로 FAIL 하고 pi wiring 을 안 썼다 — 설계대로다(Hard Rule 17).
+     GLG 가 `pi update` 하고 뜬 세션을 껐다. 그 경험이 CHANGELOG Upgrade note 의 3단계다.
+- **미측정 (다음 레인으로):** 압축 `completed` 분기 · `usage-markdown.ts`(#1085) 소비 경로 ·
+  `packages/chord` 내용물이 우리 표면에 닿는지 · **npm 발행 후 레지스트리 integrity 대조**.
+- **Read:** CHANGELOG `## 0.18.1` Verification(두 컷 다 기록돼 있다) · ROADMAP
+  **Dep bump(별도 트랙)** 2026-09-06 두 항목 · #102 종결 댓글의 CI 영수증.
+- **Do not touch:** candidate 를 다시 pack 하는 것(수용된 바이트는 그 파일 하나다) ·
+  `v0.18.1` 태그와 CHANGELOG 0.18.1 절 · 0.16.1 make 를 이 레인에 섞는 것.
 
 <details><summary>0.18.0 착지 직후의 NOW (레인 닫힘 — 이월 관측은 여기 남는다)</summary>
 
