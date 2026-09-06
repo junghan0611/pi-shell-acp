@@ -124,6 +124,17 @@
 			"signatureSource": "scripts/check-release-gate-outcomes.ts"
 		},
 		{
+			"claim": "RELEASE-SHA-QUALIFIED-IN-CI",
+			"title": "the exact-SHA CI oracle stops requiring the qualification BODY step, so a release SHA whose body never executed is certified by three green job names",
+			"subject": ".claude/skills/entwurf-release/scripts/verify-exact-ci.sh",
+			"find": ["elif steps[QUAL_STEP] != \"success\":"],
+			"replace": ["elif False:"],
+			"gate": ["bash", "run.sh", "check-release-gate-outcomes"],
+			"timeoutSeconds": 180,
+			"signature": "[QK:RELEASE-SHA-QUALIFIED-IN-CI]",
+			"signatureSource": "scripts/check-release-gate-outcomes.ts"
+		},
+		{
 			"claim": "MUX-LIFECYCLE-IS-RELEASE-MUST",
 			"title": "the integrated mux lifecycle stays listed but bypasses run_live_step, so a missing prerequisite returns SKIP into a branch that never classifies it and the cut reads green",
 			"subject": "run.sh",

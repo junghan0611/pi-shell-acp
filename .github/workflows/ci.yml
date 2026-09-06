@@ -10,6 +10,18 @@ on:
   push:
     branches: ['**']
   pull_request:
+  # The release path fires this when the qualification BODY did not run at the
+  # SHA it is about to tag: `verify-exact-ci.sh` requires that step's success as
+  # its fourth axis (#103). `qualify` is the operator's explicit "run the body"
+  # request; the body has no condition on it yet, so today it only records intent
+  # -- but the input must EXIST for `gh workflow run ci.yml -f qualify=true` to
+  # be accepted at all.
+  workflow_dispatch:
+    inputs:
+      qualify:
+        description: 'Force the check-gate-qualification body to run'
+        type: boolean
+        default: false
 
 env:
   # Run all JS-based actions on Node 24 ahead of GitHub's 2026-06-02 default

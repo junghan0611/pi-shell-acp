@@ -150,7 +150,47 @@ CI_ORACLE=".claude/skills/entwurf-release/scripts/verify-exact-ci.sh"
 bash "$CI_ORACLE" "$SHA" wait
 ```
 
-Report the SHA, workflow URL, and all three job conclusions. End with:
+The oracle requires four axes on one run at that exact SHA: the workflow
+conclusion, the three job conclusions, and the `check` job's
+`./run.sh check-gate-qualification` step concluding `success`. A skipped body is
+not evidence, so it fails the same way a red one does.
+
+If the oracle names the qualification step -- absent or skipped -- the body did
+not run at this SHA. Force it, wait, and re-run the oracle. `gh workflow run`
+takes a branch, never a SHA, so the branch must still point at `$SHA` when it is
+dispatched; the oracle re-checks `headSha` afterwards and refuses a run whose
+branch moved.
+
+`gh workflow run --ref` runs the REMOTE branch head, so check that head, not the
+local one. And do not sleep: until the dispatch run is registered, the oracle's
+newest-run rule would pick the already-finished push run and ABORT on the same
+axis. Wait for the run to appear, then hand it to the oracle.
+
+```bash
+BRANCH="$(git rev-parse --abbrev-ref HEAD)"
+git fetch origin "$BRANCH"
+test "$(git rev-parse FETCH_HEAD)" = "$SHA"
+
+count_dispatch_runs() {
+  gh run list --workflow ci.yml --event workflow_dispatch --commit "$SHA" \
+    --limit 20 --json databaseId --jq length
+}
+BEFORE="$(count_dispatch_runs)"
+gh workflow run ci.yml --ref "$BRANCH" -f qualify=true
+for _ in $(seq 1 12); do
+  sleep 5
+  if [ "$(count_dispatch_runs)" -gt "$BEFORE" ]; then break; fi
+done
+test "$(count_dispatch_runs)" -gt "$BEFORE" || {
+  echo "ABORT: no dispatch run appeared for $SHA within 60s" >&2
+  exit 1
+}
+
+bash "$CI_ORACLE" "$SHA" wait
+```
+
+Report the SHA, workflow URL, the run event, all three job conclusions, and the
+qualification-step conclusion. End with:
 
 ```text
 Landing checkpoint complete. Ready for /entwurf-release prepare <version>.
@@ -442,7 +482,10 @@ push has already happened; report that half-complete state exactly.
 bash .claude/skills/entwurf-release/scripts/verify-exact-ci.sh "$SHA" wait
 ```
 
-A CI failure stops make before candidate creation or tagging.
+A CI failure stops make before candidate creation or tagging. This is the same
+four-axis oracle L3 runs, including the qualification-BODY step: if it names that
+step, dispatch the body exactly as L3 documents and re-run the oracle. Do not
+create a candidate or a tag while that axis is unproven.
 
 ## M3. Create and accept one preserved exact candidate
 

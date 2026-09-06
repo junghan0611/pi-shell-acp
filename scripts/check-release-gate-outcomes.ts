@@ -343,11 +343,13 @@ function runSubcommand(sub: string, env: Record<string, string | undefined>): { 
 //    focused gate green while a cut quietly loses its discriminating-power
 //    step.
 //
-//    TWO claims, because #70 added a second independent contract here. 8a is
-//    REACHABILITY (absent from the default chain; present exactly once in CI and
-//    exactly once as a wired release_gate MUST step; named in VERIFY). 8b is what
-//    the CI step qualifies (the FULL floor, before the qualification run). Each
-//    carries its own replant — one mutant must never stand in for both.
+//    THREE claims, because each is an independent contract. 8a is REACHABILITY
+//    (absent from the default chain; present exactly once in CI and exactly once
+//    as a wired release_gate MUST step; named in VERIFY). 8b is what the CI step
+//    qualifies (the FULL floor, before the qualification run), added by #70. 8c is
+//    what the RELEASE path ACCEPTS as evidence for one SHA — that the body step
+//    actually ran there (#103). Each carries its own replant — one mutant must
+//    never stand in for another.
 // ===========================================================================
 {
 	// The default chain is tiered (#70): `check` (core) and `check:full` compose the
@@ -411,6 +413,37 @@ function runSubcommand(sub: string, env: Record<string, string | undefined>): { 
 			"kill-power proof covers the floor a candidate actually ships on. The committed replant qualifies the " +
 			"downgrade/omission axis; ordering is directly asserted by this same oracle. " +
 			`Broken: check:full at index ${ciFloorAt}, qualification at index ${ciQualAt}.`,
+	);
+
+	// 8c. The RELEASE oracle requires that body to have actually run at the release
+	//     SHA -- its own contract, not a branch of 8a. 8a is REACHABILITY (the step
+	//     exists in the CI job and in release_gate); this is about what the release
+	//     path ACCEPTS as evidence for one SHA. `verify-exact-ci.sh` read only three
+	//     job names, and a job conclusion says nothing about whether the step inside
+	//     it ran: the moment ci.yml can skip that step (#103 piece 2), a green oracle
+	//     would certify a SHA whose qualification body never executed. That is the
+	//     "green with no evidence" class this repo fails closed on, which is why the
+	//     oracle gets the fourth axis BEFORE the skip exists.
+	//
+	//     This is a TEXT oracle, the same grade as check-install-surface S7g. A
+	//     behavioural oracle would need either a second file (S7a/S7g bind the
+	//     release surface to one script read from the index) or an injectable
+	//     RUN_JSON seam -- and that seam would be a way to launder release evidence
+	//     past gh. Both cost more than the axis is worth here.
+	const ciOracle = readFileSync(join(REPO_DIR, ".claude/skills/entwurf-release/scripts/verify-exact-ci.sh"), "utf8");
+	const axis: string[] = [];
+	if (!ciOracle.includes('QUAL_JOB = "check"') || !ciOracle.includes('"Run ./run.sh check-gate-qualification"'))
+		axis.push("the oracle does not name the check job's check-gate-qualification step");
+	if (!ciOracle.includes('steps[QUAL_STEP] != "success"'))
+		axis.push("the oracle does not require that step's conclusion to be 'success'");
+	if (!ciOracle.includes('steps[QUAL_STEP] == "skipped"'))
+		axis.push("the oracle does not classify a SKIPPED body as a failure of its own");
+	assert.ok(
+		axis.length === 0,
+		"[QK:RELEASE-SHA-QUALIFIED-IN-CI] the exact-SHA CI oracle must require the qualification BODY to have run " +
+			"at the release SHA -- the `check` job's `Run ./run.sh check-gate-qualification` step concluding 'success', " +
+			"with skipped named as its own failure. Three green job names do not prove the step inside one of them " +
+			`executed. Broken: ${axis.join("; ")}`,
 	);
 }
 
@@ -655,7 +688,8 @@ console.log(
 		"a run.sh wrapper declining its own prerequisite (including the measured LIVE=1 no-cortex-connection cell); and every " +
 		"LIVE smoke is either wired into release_gate or excluded by a sentence the docs still carry; and the moved " +
 		"check-gate-qualification stays reachable on its owners (absent from the default chain, exactly once in CI, " +
-		"exactly once as a release-gate MUST step) and the CI step qualifies the FULL floor, which runs before it; and " +
+		"exactly once as a release-gate MUST step) and the CI step qualifies the FULL floor, which runs before it, " +
+		"while the exact-SHA release oracle requires that BODY step to have concluded success at the release SHA; and " +
 		"every gate a committed mutant names is itself inside check:full or states its exclusion in prose an operator " +
 		"reads; and the CI push trigger is filtered to branch refs, so a release tag creates no duplicate run; and " +
 		"the operator's CONFIGURED bridge invocation is booted exactly once through run_step, before the ACP LIVE tier",

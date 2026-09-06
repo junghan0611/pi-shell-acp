@@ -76,7 +76,7 @@ Do not collapse source, package, fixture, and native-host evidence into one “g
 | Source | `pnpm run check:full` + `./run.sh check-gate-qualification` | Does not prove an installed consumer. |
 | Packed install | `check-pack-install` | Real tarball, but checkout-visible. |
 | Linux artifact consumer | required `check-install-container` CI job against one preserved candidate | Fixtures prove package/oracle shape, not a real Claude lifecycle. |
-| Exact release commit | all required CI jobs green at the exact SHA | A different green SHA is not transferable evidence. |
+| Exact release commit | all required CI jobs green, and the `check` job's qualification body step concluded success, at the exact SHA | A different green SHA is not transferable evidence. |
 | LIVE runtime | `LIVE=1 ./run.sh release-gate <scratch> --cut` plus any shipped on-demand backend axis | `--cut` enforces `SKIP=0`; a red wired gate blocks the cut. |
 | Native Claude host | installed strict doctor against a new real session | Missing live join is `NOT CERTIFIED`, not a fixture PASS. |
 | Native agy host | three doctors plus conversation-id-gated native-push round trip | Aggregate release-gate does not own an agy conversation id. |
