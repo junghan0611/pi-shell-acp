@@ -53,24 +53,30 @@ CHANGELOG `## Unreleased`가 구현 범위 `v0.15.1..19ad90c` **30커밋** 전�
 - [x] **15. 0.18.1 컷 (#102 + #104 합본)** — **`v0.18.1` @ `cabecf6`, GitHub 릴리즈 공개.**
       land(`c247594` CI run `34018205091` 3잡 초록) → prepare(`cabecf6`) →
       make(prepared-HEAD CI run `34027762637` 3잡 초록, candidate 수용, 태그·릴리즈·도장)까지
-      끝났다. **npm 발행만 남았다** — 토큰이 401 이라 0.17.2·0.18.0 과 같이 GLG가 직접 한다.
-- [ ] **16. npm publish 0.18.1** ← CURRENT: GLG 몫. 수용된 **정확히 그 파일**만 올린다(리팩 금지):
-      `/tmp/entwurf-release-candidate-0.18.1.26W337/junghanacs-entwurf-0.18.1.tgz`
-      sha256 `e1f94b6855499098aca1bce081abe0472ea4711aa28746d7b182880ca7742603`, dist-tag `latest`.
-      발행 뒤 레지스트리 integrity 가 이 sha 와 같은지 사후 증명한다.
+      끝났다. 발행은 토큰이 401 이라 0.17.2·0.18.0 과 같이 GLG가 직접 했다 — 16 에서 닫혔다.
+- [x] **16. npm publish 0.18.1 + 사후 integrity 대조** — GLG 가 직접 발행했고(토큰 401),
+      레지스트리 바이트가 수용 candidate 와 **동일**함을 2026-09-06 에 측정했다 —
+      리팩이 없었다. `latest`=0.18.1 / `repair`=0.12.8-repair.1 (보존됨).
+      수치는 아래 NOW 의 integrity 영수증 한 줄이 진다.
 
-현재 좌표: 1–15 완료 → 16 npm 발행 대기 · **0.16.1 make는 열린 채 PAUSED**. 푸시·태그는
+현재 좌표: 1–16 완료(0.18.1 레인 전부 닫혔다) · **0.16.1 make는 열린 채 PAUSED**. 푸시·태그는
 `entwurf-release` 4모드 몫이다 (CalVer `tag-release`가 아님).
 
-# NOW — v0.18.1 컷 완료, npm 발행만 남았다
+# NOW — v0.18.1 전부 닫힘 (npm 발행 + 레지스트리 integrity 대조 완료)
 
-- **Stem:** 없다. 이 릴리즈 레인은 npm 한 단계만 남기고 닫혔다.
-- **좌표:** `v0.18.1` @ `cabecf6`, `main` = `cabecf6` (origin 동일),
+- **Stem:** 없다. 이 릴리즈 레인은 발행까지 전부 닫혔다. 다음 stem 은 GLG 가 고른다.
+- **좌표:** `v0.18.1` @ `cabecf6` — 태그·GitHub 릴리즈·npm `latest` 가 전부 그 지점이다.
+  그 뒤 `main` 에 쌓인 것은 NEXT 갱신 커밋 둘(`f01dc1e` + 이 integrity 영수증 커밋)뿐 —
+  코드 변경 0 이라 릴리즈된 바이트와 어긋나지 않는다.
   릴리즈 https://github.com/junghan0611/entwurf/releases/tag/v0.18.1
-- **Next (GLG):** 수용된 candidate 를 그대로 발행한다 —
-  `npm publish /tmp/entwurf-release-candidate-0.18.1.26W337/junghanacs-entwurf-0.18.1.tgz --tag latest`.
-  **리팩 금지**(그 파일만 수용됐다). 발행 전 `latest`=0.18.0 / `repair`=0.12.8-repair.1 이었으니
-  발행 뒤 `latest`=0.18.1 이고 `repair` 는 그대로여야 한다.
+- **integrity 영수증 (2026-09-06 oracle 측정, 발행 후 사후 증명):** 레지스트리 바이트 =
+  수용 candidate 바이트, 세 해시 전부 일치 — sha512
+  `sha512-CBHlaErNivPxXTHTc/yLXveEH+8/oZvQ4IET1LTpdKN8Jz9uFOYfkgpWcWc8f35uSznuVU2l8m+A0UFgBo9uNg==`
+  (`dist.integrity` ≡ `openssl dgst -sha512 -binary | base64`), sha1
+  `0605a979ac87c4f9494ead0118a3d9df268dbe0a` (`dist.shasum` ≡ `sha1sum`), sha256
+  `e1f94b6855499098aca1bce081abe0472ea4711aa28746d7b182880ca7742603` (레지스트리 tarball 을
+  내려받아 재계산 + `cmp` 바이트 동일, 12,495,520 bytes). dist-tags: `latest`=0.18.1,
+  `repair`=0.12.8-repair.1 (발행이 건드리지 않은 레인 보존됨). 리팩은 없었다.
 - **릴리즈 영수증 (전부 oracle, 2026-09-06):**
   - LIVE `release-gate --cut`: **MUST PASS=23 FAIL=0 SKIP=0**, BEHAVIOR 1/0/0, `cut: OK`,
     18:30:51→19:23:40 (52m49s). 그 안에서 qualification **369/369 KILLED**.
@@ -90,7 +96,7 @@ CHANGELOG `## Unreleased`가 구현 범위 `v0.15.1..19ad90c` **30커밋** 전�
      outside >=0.85.1 <0.86` 로 FAIL 하고 pi wiring 을 안 썼다 — 설계대로다(Hard Rule 17).
      GLG 가 `pi update` 하고 뜬 세션을 껐다. 그 경험이 CHANGELOG Upgrade note 의 3단계다.
 - **미측정 (다음 레인으로):** 압축 `completed` 분기 · `usage-markdown.ts`(#1085) 소비 경로 ·
-  `packages/chord` 내용물이 우리 표면에 닿는지 · **npm 발행 후 레지스트리 integrity 대조**.
+  `packages/chord` 내용물이 우리 표면에 닿는지. (레지스트리 integrity 대조는 위에서 측정돼 빠졌다.)
 - **Read:** CHANGELOG `## 0.18.1` Verification(두 컷 다 기록돼 있다) · ROADMAP
   **Dep bump(별도 트랙)** 2026-09-06 두 항목 · #102 종결 댓글의 CI 영수증.
 - **Do not touch:** candidate 를 다시 pack 하는 것(수용된 바이트는 그 파일 하나다) ·
