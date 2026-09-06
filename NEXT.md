@@ -45,54 +45,53 @@ CHANGELOG `## Unreleased`가 구현 범위 `v0.15.1..19ad90c` **30커밋** 전�
       이미 빌드된 SHA를 재빌드하지 않는다. #99·#102 닫힘. **2단계는 #103** — P2(이벤트 좁히기) /
       P5(잡 분리) / P6b(느린 그룹 재배치). 브랜치 NEXT(`NEXT--ci-99-stage1.md`)는 이 커밋에서 삭제됐다
       (머지 전에 지웠어야 했다).
-- [ ] **14. 버전 범프 레인 — pi 0.85.1 + claude-agent-acp 0.75.1 (+ #91 OMP 채택 규칙)**
-      ← CURRENT: **#104**. 정찰 → GLG grant → 구현이 main 위에 있다. 남은 것은 코디네이터 리뷰
-      한 번 → amendment 한 번들 → 동결 candidate 위 `check-gate-qualification` 1회 +
-      `check:full` 1회 + `check-pack-install` + `check-install-container`. 릴리즈는 #102 와
-      합본 **0.18.1** 이고 버전 범프·절 승격은 `entwurf-release` prepare 몫이다. 푸시 금지.
+- [x] **14. 버전 범프 레인 — pi 0.85.1 + claude-agent-acp 0.75.1 (+ #91 OMP 채택 규칙)** —
+      **`9e1d067` 로 main 에 랜딩**(#104). 네 축 전부 초록: `check-gate-qualification`
+      **369/369 KILLED** exit 0 (38분) · `pnpm run check:full` exit 0 **481s** ·
+      `check-pack-install` exit 0 · `check-install-container` exit 0. #91 은 문서 절이
+      랜딩해 **닫혔다**. **푸시 안 함** — origin 은 여전히 `67c4086`.
+- [ ] **15. 0.18.1 컷 (#102 + #104 합본)** ← CURRENT: GLG 몫. `## Unreleased` 는 두 이슈 전수로
+      채워져 있고, 버전 범프·절 승격은 `entwurf-release` **prepare**, 그 뒤 land/make/publish 가
+      각각 별도 승인이다. 먼저 **푸시**가 있어야 exact-SHA CI 가 존재한다.
 
-현재 좌표: 1–13 완료 → 14 구현 완료·검증 대기 · **0.16.1 make는 열린 채 PAUSED**. 푸시·태그는
+현재 좌표: 1–14 완료 → 15 GLG 판단 대기 · **0.16.1 make는 열린 채 PAUSED**. 푸시·태그는
 `entwurf-release` 4모드 몫이다 (CalVer `tag-release`가 아님).
 
-# NOW — #104 구현이 main 위에 있다, 검증 남음
+# NOW — #104 랜딩 완료, 0.18.1 컷은 GLG 몫
 
-- **Stem:** 세 상류 이동을 한 레인으로. 원인은 셋이고 acceptance 도 셋이지만, 셋 다
-  `run.sh` 핀 · `check-acp-sdk-surface` · lockfile 이라는 같은 표면을 건드려 스케줄링 계약상
-  qualification 1회 + `check:full` 1회를 각자 부른다. GLG 결정으로 한 번만 지불한다.
-- **Current:** 조각 A(pi)·B(acp)·C(#91 문서)·D(ledger·CHANGELOG) 구현 완료, main 워크트리에
-  있다. `check-dep-versions` · `check-acp-sdk-surface`(7/7) · `check-pack-pin-matcher` ·
-  `check-gate-manifests`(369/40) · `pnpm check`(exit 0, 48s) · `check-install-surface` green.
-- **Next:** ① 코디네이터(`20260904T213456-dfdfc4`)에게 리뷰 요청 1회 → ② amendment 한 번들 →
-  ③ 동결 candidate 위에서 tmux 로 `check-gate-qualification` 1회 + `check:full` 1회 +
-  `check-pack-install` + `check-install-container`(Docker) → ④ 커밋. **푸시는 GLG.**
-- **이 레인이 실제로 잡은 것 두 가지 (정찰이 예고하지 못한 것):**
-  1. **pi 0.85.x 의 미선언 breaking 하나.** `pi-tui` `Container` 가 `private mouseLayout?` 를
-     얻어(0.84.4 의 `Container` 는 private 멤버가 없었다) `Box → Container` 구조적 할당이
-     TS2322 로 깨졌다. upstream Breaking 절은 `createGatewayBindingFetch` 만 이름한다.
-     수리는 벤더가 실제로 요구하는 `Component` 로 좁힌 것 — `Container` 는 애초에 필요 없었다.
-  2. **`0.85.0` 은 깨진 publish 다.** `./client`·`./experimental/plugin` 을 tarball 에 없는
-     `dist/*` 로 광고했고 0.85.1 이 source-only 로 되돌렸다. 랜딩 좌표는 0.85.1 뿐이다.
-- **A항(chord) 은 실물 트리로 닫혔다.** 실제 0.85.1 `.pnpm` 목록에 `@earendil-works+chord@0.85.1`
-  이 있고 옛 `pi-` 접두사 matcher 는 그것을 못 봤다. matcher 를 org 접두사로 넓히고 chord 를
-  8번째 핀으로 넣었으며, 새 claim `[QK:PACK-INSTALL-PIN-MATCHER-COVERS-CLOSURE]` + mutant 1종으로
-  kill-proof 를 세웠다(뮤턴트 368→**369**, lane 40 불변, 두 mutant 모두 자기 signature 로 죽는 것을
-  손으로 확인).
-- **B-4 는 LIVE 로 봤다.** `/compact` 한 턴 → `tool_call(kind:"think", "Compact conversation")` →
-  `tool_call_update`, 그 알림을 프로덕션 매퍼에 재생하면 `[tool:start]`/`[tool:failed]` 공지 쌍.
-  타입 파손 아니고 회계 경로 무관. **한계: 성공 분기(`completed` + preTokens/postTokens)는
-  미관측** — 세션이 짧아 벤더가 "Not enough messages to compact." 로 끝냈다. 영수증은
-  `scripts/raw-acp-compaction-measure/README.md`, 계약은 `docs/acp-backend-rail.md` §11-8.
-- **#91 은 문서 절이 랜딩하면 닫는다.** 규칙은 `docs/setup-clean-host.md` §4b — floor 없음이
-  계약이고, weak floor 는 LIVE 영수증이 있는 마지막 버전(`18.1.10`), 센티널은
-  `smoke-omp-fresh-live` + `smoke-omp-receive-live`. 랜딩 SHA 로 닫는 댓글은 이 세션이 쓴다.
-- **미측정 (넘기는 것):** 압축 `completed` 분기 · `usage-markdown.ts`(#1085) 소비 경로 ·
-  pi 0.85.1 + acp 0.75.1 을 함께 넣은 트리의 `@anthropic-ai/sdk` 두 사본 재확인 ·
-  `packages/chord` 내용물이 우리 표면에 닿는지 · 이 레인의 LIVE 릴리즈 축 전체.
-- **Read:** #104 본문과 코디네이터 grant 댓글(스레드가 본문을 이긴다) · ROADMAP
-  **Dep bump(별도 트랙)** 의 이번 두 항목 · `docs/acp-backend-rail.md` §11-8.
-- **Do not touch:** 푸시 · 빨간 floor 를 고치는 것(멈추고 보고) · 워크트리 안에 로그(scratch 전용) ·
-  긴 명령을 하네스 백그라운드 도구로(tmux) · `.claude/skills/entwurf-release/SKILL.md` 에 비-ASCII ·
-  `check-install-surface` 는 git index 를 읽는다(`git add` 후 재실행).
+- **Stem:** 없다. 이 레인은 닫혔다. 다음은 릴리즈 결정이고 그건 GLG 가 모드별로 승인한다.
+- **랜딩 좌표:** `9e1d067` (main, **푸시 안 함** — origin `67c4086`). 앞선 부기 커밋은 `66a3fc6`.
+- **네 축 영수증 (전부 이 호스트 oracle, 2026-09-06):**
+  - `./run.sh check-gate-qualification` standalone: **369/369 KILLED, exit 0**, 15:06:21→15:44:15
+    (38분). `origin checkout: HEAD + work-surface content hash identical before/after`.
+    새 claim 2종 모두 자기 signature 로 죽었다 — `PACK-INSTALL-PIN-MATCHER-BOUNDED`,
+    `PACK-INSTALL-PIN-MATCHER-COVERS-CLOSURE`.
+  - `pnpm run check:full`: **exit 0, 481s**.
+  - `./run.sh check-pack-install`: **exit 0** — `pi runtime tree pin verified: every
+    @earendil-works package is 0.85.1 (chord included)`, all-absent 행 **5x SKIP**.
+  - `./run.sh check-install-container`: **exit 0**, artifact sha256 `7c5cee2b7960…`.
+  - **정직한 단서 하나:** qualification 은 candidate 가 두 번 더 움직이기 **전에** 돌았다 —
+    이후 변경은 `probe.ts` biome 포맷과 ROADMAP 산문의 `engines.node` 표기 한 곳뿐이고,
+    둘 다 게이트·뮤턴트·매트릭스 주체가 아니다(뮤턴트 매니페스트에 `ROADMAP.md` 도
+    `raw-acp-compaction` 도 subject 로 없음, 실측). `check:full` 은 최종 바이트 위에서 돌았다.
+- **이 레인이 잡은 것 (정찰이 예고하지 못한 것):**
+  1. **pi 0.85.x 미선언 breaking** — `pi-tui` `Container` 가 `private mouseLayout?` 를 얻어
+     `Box → Container` 구조적 할당이 TS2322 로 깨졌다. 수리는 `Component` 로 좁힌 것.
+  2. **`0.85.0` 은 깨진 publish** — 그래서 0.85.1 이 유일한 랜딩 좌표.
+  3. **`check-pack-install` 의 all-absent 행이 OMP 에 대해 절대 all-absent 가 아니었다** —
+     0.16.0 OMP admission 때 `OMP_BIN` seam 이 이 픽스처에만 안 들어갔다. omp 를 든 호스트에서
+     0.16.0 이래 계속 빨갰고, CI 러너에 omp 가 없고 `release_gate` 가 이 게이트를 안 들어서
+     아무 floor 도 못 봤다. 통제군(`66a3fc6` 클린 클론)이 같은 행에서 같은 이유로 실패하는 것을
+     확인하고 고쳤다.
+- **미측정 (넘긴다):** 압축 `completed` 분기(세션이 짧아 벤더가 "Not enough messages to
+  compact." 로 끝냈다) · `usage-markdown.ts`(#1085) 소비 경로 · pi 0.85.1 + acp 0.75.1 을 함께
+  넣은 트리의 `@anthropic-ai/sdk` 두 사본 재확인 · `packages/chord` 내용물이 우리 표면에 닿는지 ·
+  **이 레인의 LIVE 축 전체** — `smoke-acp-raw-turn-live`(Dep bump 트랙이 지정한 잠금)를 포함해
+  스모크를 하나도 안 돌렸다. 0.18.1 릴리즈 게이트가 그것을 요구한다.
+- **Read:** #104 본문과 그 스레드(코디네이터 grant + 독립 리뷰) · ROADMAP **Dep bump(별도 트랙)**
+  의 2026-09-06 두 항목 · `docs/acp-backend-rail.md` §11-8 · `docs/setup-clean-host.md` §4b.
+- **Do not touch:** 푸시(GLG 몫) · 0.18.1 을 `tag-release` 로 컷하는 것(`entwurf-release` 4모드다) ·
+  `scripts/raw-acp-compaction-measure/` 를 게이트로 승격하는 것(측정 프로브다).
 
 <details><summary>0.18.0 착지 직후의 NOW (레인 닫힘 — 이월 관측은 여기 남는다)</summary>
 
