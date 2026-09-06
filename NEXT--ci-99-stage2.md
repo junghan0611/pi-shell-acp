@@ -120,3 +120,32 @@
 
 **`pnpm run check:full` EXIT=1 (4s)** — biome format 에러 2건(`check-release-gate-outcomes.ts`,
 `qualify-replay.json`). `--write` 로 고쳤다. 1회차가 이것도 잡았다.
+
+# acceptance 5 — GitHub 실관측
+
+## (b) 필터가 본체를 돌린 push — run `34047559085` (`d5eb5c8`, 2026-09-06)
+판정 줄 원문 [측정, 러너 로그]:
+```
+ci-qualify-decide: hit .github/workflows/ci.yml (manifest-subject)
+ci-qualify-decide: hit scripts/check-gate-qualification.ts (manifest-subject)
+ci-qualify-decide: hit scripts/check-release-gate-outcomes.ts (manifest-subject)
+ci-qualify-decide: hit scripts/ci-qualify-decide.sh (manifest-subject)
+ci-qualify-decide: hit scripts/mutants/release-gate.json (glob:scripts/mutants/**)
+ci-qualify-decide: 5 of 11 changed files touch the qualification surface -> run_body=true
+```
+본체 스텝 `Run ./run.sh check-gate-qualification` = **success**, 17:12:39→17:42:55Z (**30m16s**).
+run 3잡 전부 success. 4축 오라클도 이 SHA 에 **PASS**(`event=push`, 네 축 전부).
+러너 위에서 새 claim 둘이 KILLED: `QUALIFY-FILTER-COVERS-SUBJECTS` 5.6s ·
+`QUALIFY-FILTER-READS-PUSH-RANGE` 6.2s.
+
+**`fetch-depth: 0` 실비용 = 0초** [측정]: 조각 1(기본 depth 1) checkout 2s vs 조각 2(depth 0)
+checkout 2s — 차이가 1초 해상도 아래다. 24 MiB 팩 · 1228 커밋.
+
+**`if:` 를 `run:` 뒤에 둔 형태가 GitHub 에서도 스텝 이름을 바꾸지 않는다** [측정]: 렌더 이름이
+여전히 정확히 `Run ./run.sh check-gate-qualification` — 조각 1 오라클의 리터럴이 조각 2 랜딩 뒤에도 유효.
+
+## (a) 필터가 본체를 건너뛴 push — 이 커밋이 그 관측이다
+이 커밋은 `.md` 한 파일만 바꾼다. 기대: `run_body=false`(사유 "no qualification-surface path
+among 1 changed files"), 본체 스텝 **conclusion=skipped**, `check` 잡 수 분.
+그리고 그 SHA 에 `verify-exact-ci.sh … verify` 를 돌리면 **네 번째 축에서 ABORT** 해야 한다 —
+조각 1 의 skipped 분기 첫 실관측. 결과는 이 절 아래에 다음 커밋이 적는다.
