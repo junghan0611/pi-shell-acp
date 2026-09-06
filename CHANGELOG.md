@@ -4,6 +4,119 @@ All notable changes to this project will be documented here. Format follows [Kee
 
 ## Unreleased
 
+Two lanes, both landing on `main` after `v0.18.0`: the CI evidence-budget stage 1 (#102, from
+research #99) and the dependency bump (#104 — pi, claude-agent-acp, and the OMP adoption rule
+GLG decided to carry with them). They are not one cause; they are one release.
+
+### Changed
+
+- **The qualification HEAD runs in the everyday floor; the mutant BODY stays scheduled (#102).**
+  Across 549 CI runs the qualification step went red five times and **none of the five came from
+  mutant execution** — three died in the head in four or five seconds, two were a gate already red
+  on a clean tree (#99 B-3). So the head stops waiting behind the ~28-minute body.
+  `check-gate-qualification` gains a `--manifests-only` entrypoint, shipped as
+  `run.sh check-gate-manifests` and placed in `check:hermetic` (~8s): runner self-test, manifest-set
+  validation against the origin index, and the declared lane inventory — **zero mutants executed and
+  no snapshot of this repo**. The body runs the same head first; its contract, output and
+  mutant-execution semantics are unchanged.
+- **CI push is filtered to branch refs (#102).** All 66 semver-tag runs in this repo's history
+  rebuilt a SHA a branch push had already built, and not one reported a fact its branch run had not
+  (the single non-green tag run failed at the same step as its main run, two seconds later). The
+  exact-SHA evidence a release quotes is the branch run, which is what the release skill's oracle
+  already selects.
+- **`check-omp-birth-hook` joins `check:hermetic` (#102).** It was the one gate a committed mutant
+  named that ran nowhere else, so the control-pre of a 28-minute run was the only thing in the repo
+  that could notice it going red. `check-release-gate-outcomes` cell 9 now owns that as a contract:
+  every mutant-named gate is inside `check:full` **or** states its exclusion in prose an operator
+  reads (`scripts/check-setup-qualification.sh` takes the second arm, as its own header declared).
+- **pi runtime 0.84.4 → 0.85.1** (#104): devDep exact ×3, peer range `>=0.85.1 <0.86` ×3, the
+  `run.sh` pack-install pins, `pnpm-workspace.yaml`, the lockfile, and the five baseline docs
+  `check-dep-versions` binds. **0.85.0 is deliberately skipped**: its published `exports` advertised
+  `./client` and `./experimental/plugin` at `dist/*` paths the tarball does not contain, which
+  upstream named and fixed in 0.85.1 ("SDK import failures caused by unintentionally publishing
+  internal experimental code and dependencies in 0.85.0") by making both subpaths source-only.
+  entwurf imports neither, so it never reached us — but the landing coordinate is 0.85.1.
+- **`@agentclientprotocol/claude-agent-acp` 0.73.0 → 0.75.1** (#104). The other two ACP pins do
+  **not** move: all four tags v0.73.0–v0.75.1 declare the same `@agentclientprotocol/sdk 1.4.0`,
+  `@anthropic-ai/claude-agent-sdk 0.3.257`, `zod ^4.0.0` and `engines.node >=22`, so
+  `@anthropic-ai/sdk` stays pinned at `0.100.1` against an unchanged `>=0.93.0` peer floor.
+- **Compaction now reaches operators as a tool lifecycle, not assistant text** (upstream #991, in
+  0.75.0). A compacting turn shows a `[tool:start] Compact conversation` / `[tool:…]` notice pair
+  where 0.73.0 wrote `Compacting completed.` into the assistant's own text. No mapper change was
+  needed and no accounting path is touched; the measurement, the join through the production event
+  mapper, and the limits are in `scripts/raw-acp-compaction-measure/README.md` and
+  `docs/acp-backend-rail.md` §11-8.
+- **OMP gets a documented *weak* floor instead of a version gate (#91).** entwurf still detects omp
+  by presence alone — no `entwurf.ompFloor`, no coherence gate, no exact pin — because a floor is
+  the answer to a vendor that fails SILENTLY, which OMP has never been observed to do, and its
+  contact surface is guarded by two release-gate MUST smokes that go loudly red. What is recorded
+  instead is the last version with a LIVE receipt (**18.1.10**, 2026-09-04 thinkpad), the rule that
+  the number moves only when a new receipt exists, and the two sentinels
+  (`smoke-omp-fresh-live`, `smoke-omp-receive-live`). Code change: none.
+  `docs/setup-clean-host.md` §4b.
+
+### Fixed
+
+- **An undeclared pi 0.85.x break, caught by our own typecheck (#104).** `pi-tui`'s `Container`
+  gained a `private mouseLayout?` in the 0.85.0 mouse work (0.84.4's `Container` had no private
+  member at all) while `Box` declares a separate private field of the same name, so TypeScript's
+  private-member identity rule broke the `Box → Container` structural assignment that had held
+  through 0.84.4 (`TS2322` at `entwurf-control.ts`). Upstream's Breaking section names only
+  `createGatewayBindingFetch`. The repair narrows the annotation to what the vendor contract
+  actually asks for — `MessageRenderer` returns `Component | undefined` — which is what the helper
+  always needed.
+- **The pack-install pin-leak matcher was blind to a new closure member (#104).** pi 0.85.0 added
+  `@earendil-works/chord` as a runtime dependency of pi-coding-agent, pi-agent-core, pi-client and
+  pi-protocol — inside the runtime closure, with a name carrying no `pi-` prefix. Measured on a real
+  0.85.1 install tree, `@earendil-works+chord@0.85.1` sits beside the seven pi entries and the
+  `^@earendil-works+pi-` filter did not see it, so an unpinned caret would have floated while
+  `check-pack-install` printed a verified pin — the same class as the 2026-07-21 `pi-agent-core`
+  incident, and it made the "covers every other pi package" comment false. The matcher now filters on
+  the org prefix, chord is pinned explicitly, and the self-test splits into two cells so each
+  property fails under its own name. New claim `[QK:PACK-INSTALL-PIN-MATCHER-COVERS-CLOSURE]` with
+  its exact-once replant; inventory **368 → 369 mutants across 40 lanes**.
+- **`check-pack-install`'s "every harness absent" row was not actually absent of OMP.** The row
+  pins harness probes away with explicit `*_BIN` seams, and `OMP_BIN` was never added when 0.16.0
+  admitted OMP — the two sibling fixtures (`smoke-setup-verdict.sh`,
+  `check-setup-qualification.sh`) both got it. On a host that HAS `omp` on PATH the row's premise
+  was therefore false: setup detected omp, and the omp config/receiver installers refused —
+  correctly — because the row also exports `PI_CODING_AGENT_DIR`, which omp reads too, leaving the
+  target directory ambiguous. The product was right and the fixture was wrong. It stayed invisible
+  because CI runners carry no omp **and** `release_gate()` does not run this gate (it is
+  `prepublishOnly` plus the CI install-surface job), so no green floor ever covered it. Measured
+  here with a control: a clean clone of the pre-bump HEAD fails at the same row for the same
+  reason. The seam is added to both setup rows, and the zero-state probe now requires **five**
+  SKIPs so a sixth harness cannot be admitted while this seam is left behind again.
+- **`VERIFY.md` still advertised a pi range two bumps stale, and now nothing can leave it there.**
+  It sat outside `check-dep-versions`' `BASELINE_DOCS`, so nothing read it; it has joined that
+  list (six docs). Its declaration is a plain range, so the existing range scan binds it — no new
+  prose pattern was added for it.
+- **`AGENTS.md` claimed `check-dep-versions` checks the ACP pins.** It does not — it is the **pi**
+  pin's oracle and reads no ACP pin (`run.sh:1820-1919`). The ACP pins are owned by
+  `check-acp-sdk-surface`, which is the vitest contract `test/acp-sdk-surface.contract.test.ts`;
+  the `run.sh` name is a transition shim into it.
+
+### Added
+
+- **`scripts/raw-acp-compaction-measure/`** — a raw measurement probe (not a gate, in no check
+  tier) that drives one live `/compact` turn on the pinned adapter and replays the captured
+  notifications through the production event mapper, so the vendor wire and our rendered notice sit
+  in one receipt.
+- Four new qualification claims from #102, each with its exact-once replant:
+  `MANIFEST-SET-INTEGRITY-REFUSED` and `LANE-INVENTORY-DECLARED` (new `gate-qualification` lane,
+  replanting the 08-20 / 08-21 / 08-28 catches), `MUTANT-GATES-INSIDE-FULL-FLOOR` and
+  `CI-TAG-PUSH-NOT-REBUILT` (`release-gate` lane).
+
+### Notes
+
+- **`allowBuilds: esbuild: false`.** chord's only dependency is esbuild, and its arrival made
+  `pnpm install` stop on `ERR_PNPM_IGNORED_BUILDS` until the key carried a decision. Denied like the
+  other two entries: nothing here executes esbuild.
+- **`bridge-command-boot`'s three agy gates moved to the `run.sh` argv the other manifests use**,
+  merging a duplicate group (#102). Group count is unchanged at 52 — the merge removes one and the
+  new head gate adds one — so the saving is a 66s control pair traded for a 16s one, not fewer
+  groups.
+
 ## 0.18.0 - 2026-09-04
 
 ### Fixed

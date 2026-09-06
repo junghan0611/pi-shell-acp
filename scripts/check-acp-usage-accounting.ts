@@ -72,7 +72,7 @@ interface WireUsage {
  * One `_meta.quota.token_count` row. The field NAMES deliberately differ from
  * `PromptResponse.usage`: cache reads are `cachedInputTokens` here because the
  * shape is shared with codex-acp, and `cachedWriteTokens` is Claude's extra
- * sibling (read at claude-agent-acp 0.73.0 `dist/acp-agent.js:5750-5765`).
+ * sibling (read at claude-agent-acp 0.75.1 `dist/acp-agent.js:6493-6502`).
  * Reading a quota row with the `usage` field names silently yields zeros, so the
  * fixture below spells the vendor's names out rather than reusing `WireUsage`.
  */
@@ -137,7 +137,7 @@ function makeFakeChild() {
  *
  * Each `prompt` call consumes the next TurnScript: it first pushes that turn's
  * `usage_update` notification (the wire the running cost total actually arrives
- * on — read at claude-agent-acp 0.73.0 `dist/acp-agent.js:2918-2933`), then answers the
+ * on — read at claude-agent-acp 0.75.1 `dist/acp-agent.js:3467-3482`), then answers the
  * prompt with that turn's `PromptResponse.usage` (the wire the turn aggregate
  * arrives on). Both orderings are the real one: the notification precedes the
  * response, because the SDK emits it from the `result` message that ENDS the turn.
@@ -393,8 +393,8 @@ try {
 	// AGENT LOOP only. `_meta.quota.model_usage` comes from `result.modelUsage` and
 	// also counts Task subagents, sidechains and INTERNAL CALLS SUCH AS COMPACTION;
 	// the vendor states its rows "can total more than `token_count`" and are "the
-	// fuller picture, not a decomposition of it" (read at claude-agent-acp 0.73.0
-	// `dist/acp-agent.js:5732-5738`).
+	// fuller picture, not a decomposition of it" (read at claude-agent-acp 0.75.1
+	// `dist/acp-agent.js:6468-6474`).
 	//
 	// The wide one is required, not merely nicer, because the DENOMINATOR already
 	// has that scope: turn cost is the adjacent diff of the backend's running total,
@@ -608,8 +608,8 @@ try {
 	// identity that produces the bound is a property of the MAIN AGENT LOOP's
 	// cache breakpoints. `_meta.quota.model_usage` is a WIDER scope: the vendor
 	// states those rows also count Task subagents, sidechains, and INTERNAL
-	// CALLS SUCH AS COMPACTION (read at claude-agent-acp 0.73.0
-	// `dist/acp-agent.js:5728-5748`). Mixing the two scopes inflates the bound
+	// CALLS SUCH AS COMPACTION (read at claude-agent-acp 0.75.1
+	// `dist/acp-agent.js:6465-6485`). Mixing the two scopes inflates the bound
 	// through both remaining terms that mention cacheWrite:
 	//   max(0, occupancy − cacheWrite) shrinks as wide cacheWrite grows, so
 	//   less is subtracted; min(rawBound, cacheWrite) rises with it.
@@ -749,9 +749,9 @@ try {
 	// CELL 3 — a turn with NO cost notification holds the baseline.
 	//
 	// Measured upstream: the result-path `usage_update` carries cost (read at
-	// claude-agent-acp 0.73.0 `dist/acp-agent.js:2913-2924`), while other
+	// claude-agent-acp 0.75.1 `dist/acp-agent.js:3467-3482`), while other
 	// `usage_update` paths can carry `used` without cost (for example the
-	// rate-limit path at `:3661-3671`). A live thinkpad ledger shows such turns
+	// rate-limit path at `:4269-4277`). A live thinkpad ledger shows such turns
 	// really occur. The honest handling is to HOLD the baseline so the amount lands
 	// in the NEXT diff: misattributed by turn, exact by session. Rebaselining to 0
 	// there would double-count the whole prefix.
@@ -831,7 +831,7 @@ try {
 	// CELL 4 — a DECREASING session total is never silently absorbed.
 	//
 	// `conversation_reset` switches the session to a fresh transcript (read at
-	// claude-agent-acp 0.73.0 `dist/acp-agent.js:3675-3682`), but whether that
+	// claude-agent-acp 0.75.1 `dist/acp-agent.js:4282-4289`), but whether that
 	// changes `total_cost_usd` is an SDK-internal value we cannot observe here.
 	// A diff can therefore go negative in a session we are still holding.
 	// Absorbing it quietly would both misreport the turn and destroy the only

@@ -4,13 +4,24 @@
 	"mutants": [
 		{
 			"claim": "PACK-INSTALL-PIN-MATCHER-BOUNDED",
-			"title": "the pin-leak matcher loses its version boundary and blesses substring lookalikes — @0.84.30 reads as the pinned 0.84.3 and the gate announces a verified tree it never verified (independent review, 2026-08-25)",
+			"title": "the pin-leak matcher loses its version boundary and blesses substring lookalikes — @0.85.10 reads as the pinned 0.85.1 and the gate announces a verified tree it never verified (independent review, 2026-08-25)",
 			"subject": "run.sh",
-			"find": ["  grep '^@earendil-works+pi-' | grep -Ev '@0\\.84\\.4(_|$)' || true"],
-			"replace": ["  grep '^@earendil-works+pi-' | grep -v '@0\\.84\\.4' || true"],
+			"find": ["  grep '^@earendil-works+' | grep -Ev '@0\\.85\\.1(_|$)' || true"],
+			"replace": ["  grep '^@earendil-works+' | grep -v '@0\\.85\\.1' || true"],
 			"gate": ["bash", "run.sh", "check-pack-pin-matcher"],
 			"timeoutSeconds": 120,
 			"signature": "[QK:PACK-INSTALL-PIN-MATCHER-BOUNDED]",
+			"signatureSource": "run.sh"
+		},
+		{
+			"claim": "PACK-INSTALL-PIN-MATCHER-COVERS-CLOSURE",
+			"title": "the pin-leak matcher narrows back to the pi-* families and goes blind to a non-pi member of the same runtime closure — @earendil-works/chord (new in pi 0.85.0, a runtime dependency of pi-coding-agent/pi-agent-core/pi-client/pi-protocol) floats unpinned while the gate prints a verified pin (measured 2026-09-06 on a real 0.85.1 install tree)",
+			"subject": "run.sh",
+			"find": ["  grep '^@earendil-works+' | grep -Ev '@0\\.85\\.1(_|$)' || true"],
+			"replace": ["  grep '^@earendil-works+pi-' | grep -Ev '@0\\.85\\.1(_|$)' || true"],
+			"gate": ["bash", "run.sh", "check-pack-pin-matcher"],
+			"timeoutSeconds": 120,
+			"signature": "[QK:PACK-INSTALL-PIN-MATCHER-COVERS-CLOSURE]",
 			"signatureSource": "run.sh"
 		}
 	]

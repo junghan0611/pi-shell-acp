@@ -150,7 +150,7 @@ export interface AcpAdapterSettingsParams {
  *
  * During stream handling the vendor keeps a per-message snapshot in
  * `lastAssistantUsage`, but its `usage_update` publishes only the scalar `used`
- * value (read at claude-agent-acp 0.73.0 `dist/acp-agent.js:3273-3297`). Until
+ * value (read at claude-agent-acp 0.75.1 `dist/acp-agent.js:3853-3878`). Until
  * that partition is carried on the wire, NOTHING honest can go in pi's four
  * fields, so entwurf writes none of them.
  */
@@ -342,8 +342,8 @@ export const claudeAdapter: AcpBackendAdapter = {
 
 	// MEASURED (2026-09-02, #93): claude-agent-acp's `usage_update` carries a
 	// session-cumulative ESTIMATED cost (`cost.amount = message.total_cost_usd`)
-	// and a context-occupancy scalar (`used`; both read at 0.73.0
-	// `dist/acp-agent.js:2918-2924`). Both are measured, so backend.ts seals them.
+	// and a context-occupancy scalar (`used`; both read at 0.75.1
+	// `dist/acp-agent.js:3467-3482`). Both are measured, so backend.ts seals them.
 	// The token partition is NOT declared here: ACP's only token carrier is a
 	// per-turn round-trip aggregate, which is not what pi's four fields mean.
 	sealsTurnAccounting: true,

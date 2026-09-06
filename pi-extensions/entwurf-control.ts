@@ -79,7 +79,7 @@ import type {
 	MessageRenderer,
 } from "@earendil-works/pi-coding-agent";
 import { getMarkdownTheme, type Theme } from "@earendil-works/pi-coding-agent";
-import { Box, type Container, Markdown, Spacer, Text } from "@earendil-works/pi-tui";
+import { Box, type Component, Markdown, Spacer, Text } from "@earendil-works/pi-tui";
 import { ENTWURF_SENT_MESSAGE_TYPE } from "../protocol.js";
 import { CONTROL_SOCKET_SUFFIX, controlSocketPathIn, defaultControlSocketDir } from "./lib/control-socket-path.js";
 import {
@@ -548,7 +548,17 @@ interface SentBoxData {
 // `expanded` truncates the body the same way as renderSessionMessage so a
 // large send shows the same preview shape as a large receive. operators
 // reading the transcript should not need different mental models.
-const buildSentMessageBox = (data: SentBoxData, expanded: boolean, theme: Theme): Container => {
+// Return type is `Component`, the interface `MessageRenderer` actually asks for
+// (`Component | undefined`, read at pi-coding-agent
+// `dist/core/extensions/types.d.ts:889`) — NOT the concrete `Container`.
+// `[측정 2026-09-06]` pi 0.85.0's mouse work gave `Container` a `private mouseLayout?`
+// (`pi-tui dist/tui.d.ts:198`; 0.84.4's `Container` had no private member at all), and
+// `Box` declares a SEPARATE private `mouseLayout` of its own. TypeScript only accepts a
+// private member from the same declaration, so the structural assignment `Box -> Container`
+// that held through 0.84.4 became TS2322 at 0.85.x. This was an UNDECLARED break — the
+// upstream Breaking section names only `createGatewayBindingFetch`. Annotating the shared
+// interface is the honest fix: nothing here ever needed Container's own surface.
+const buildSentMessageBox = (data: SentBoxData, expanded: boolean, theme: Theme): Component => {
 	let body = data.body || "(no content)";
 	if (!expanded) {
 		const lines = body.split("\n");

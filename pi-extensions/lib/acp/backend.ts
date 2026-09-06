@@ -137,7 +137,7 @@ function finiteOrZero(value: unknown): number {
  * "the accounting-grade figure per the SDK" — it also counts Task subagents,
  * sidechains, and INTERNAL CALLS SUCH AS COMPACTION, so its rows "can total more
  * than `token_count`" and are "the fuller picture, not a decomposition of it"
- * (read at claude-agent-acp 0.73.0 `dist/acp-agent.js:5728-5748`). The narrower
+ * (read at claude-agent-acp 0.75.1 `dist/acp-agent.js:6465-6485`). The narrower
  * `PromptResponse.usage` (== `quota.token_count`) is the MAIN AGENT LOOP only.
  *
  * The wider one is the right numerator because the denominator already has that
@@ -1237,7 +1237,7 @@ export function streamAcpTurn(
 		// Writing zeros is not a placeholder for a better number we could compute:
 		// the per-request partition is genuinely absent from the wire. The vendor
 		// builds it in `lastAssistantUsage` and sends only its scalar sum (read at
-		// claude-agent-acp 0.73.0 `dist/acp-agent.js:3273-3297`) — #96.
+		// claude-agent-acp 0.75.1 `dist/acp-agent.js:3853-3878`) — #96.
 		//
 		// But silence is NOT the resting state. A cache miss the operator never sees
 		// is a false reading, not a modest one: a session can run for hours believing
@@ -1356,7 +1356,7 @@ export function streamAcpTurn(
 				// between them is exactly why the notice below names a MECHANISM and
 				// never a cause: claude-agent-acp's `conversation_reset` handler only
 				// switches the SDK to a fresh conversation and touches no cost at all
-				// (read at 0.73.0 `dist/acp-agent.js:3675-3682`), while claude-agent-sdk
+				// (read at 0.75.1 `dist/acp-agent.js:4282-4289`), while claude-agent-sdk
 				// separately documents that "a mid-session /clear resets the running
 				// total" (read at 0.3.257 `sdk.d.ts:4884`). A reset therefore PLAUSIBLY
 				// explains a backwards total, but nothing here has MEASURED that it did,

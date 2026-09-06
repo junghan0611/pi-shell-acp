@@ -3,7 +3,7 @@
 //   LIVE=1 ./run.sh smoke-acp-raw-turn-live
 //
 // What this proves (and ONLY this): the pinned Claude ACP adapter
-// (@agentclientprotocol/claude-agent-acp@0.73.0) spawns, speaks the ACP wire
+// (@agentclientprotocol/claude-agent-acp@0.75.1) spawns, speaks the ACP wire
 // protocol over stdio NDJSON, and returns one real model turn. It is the
 // bytes-flow proof that the S2a dep surface is not just installable but
 // actually drivable — before any provider/overlay/streamSimple code (S2b+).

@@ -93,9 +93,9 @@ undifferentiated "supported" column is what let a Claude PASS read as if it also
 | Surface | Declaration | Class | What a green actually says |
 |---|---|---|---|
 | Entwurf package | `0.17.0` | shipped baseline | the package contract these rows belong to |
-| pi runtime | devDep exact `0.84.4`, peer `>=0.84.4 <0.85` | **exact** oracle + **closed range** | built and certified against 0.84.4; hosts inside the range are accepted, and the ceiling moves only on measurement |
+| pi runtime | devDep exact `0.85.1`, peer `>=0.85.1 <0.86` | **exact** oracle + **closed range** | built and certified against 0.85.1; hosts inside the range are accepted, and the ceiling moves only on measurement |
 | ACP wire SDK | `@agentclientprotocol/sdk 1.4.0` | **exact** | the shared wire oracle both adapters speak |
-| Claude ACP adapter | `@agentclientprotocol/claude-agent-acp 0.73.0` | **exact**, bundled | the adapter we ship and certify; resolved before any PATH fallback |
+| Claude ACP adapter | `@agentclientprotocol/claude-agent-acp 0.75.1` | **exact**, bundled | the adapter we ship and certify; resolved before any PATH fallback |
 | Claude Agent SDK | `0.3.257` (transitive) | **exact** oracle | the runtime risk surface behind the adapter |
 | Anthropic SDK | `0.100.1` | **exact**, peer-resolution only | satisfies the Agent SDK peer floor (0.93.0+); never an API client here (gate L4) |
 | Claude Code runtime | `>=2.1.217` (`entwurf.claudeCodeFloor`) | **floor** | below it, hook args are silently dropped; entwurf enforces this itself |
@@ -144,9 +144,19 @@ different reasons, and collapsing them would hide a real risk**:
 - **Advertised but never called.** Some surfaces carry no capability prerequisite at all — the
   `providers/list` / `providers/set` / `providers/disable` trio added in 0.70.0 is advertised
   unconditionally, and 0.71.0–0.73.0 add native subagents, async tasks, message-specific session
-  forks, AI-generated session titles and permission-mode kinds on the same footing. They are
+  forks, AI-generated session titles and permission-mode kinds on the same footing. 0.74.0–0.75.1
+  extend the same list: the `authStatus` extension (0.75.0, #1080), Markdown-rendered usage
+  statistics (0.75.0, #1085) and restored session forks (0.75.1, #1089). The `--hide-claude-auth`
+  subscription refusal (0.74.0, #1079) is unreachable for a second reason — `[측정 2026-09-06]`
+  entwurf passes that flag nowhere (repo grep, 0 hits). They are
   unreachable only because the common loop never invokes them (nor `logout`). Nothing upstream
   enforces that; it is our own call-site discipline, and it stops holding the moment we use one.
+- **The one 0.73.0 → 0.75.1 change that DOES reach us:** context compaction is now surfaced as a
+  synthetic ACP tool lifecycle (0.75.0, #991) — a `tool_call` with `kind: "think"`, title
+  `Compact conversation`, and `_meta.contextCompaction` schema v1 — where it used to arrive as
+  assistant text. Our mapper routes every `tool_call`/`tool_call_update` through
+  `renderToolUpdate` (`event-mapper.ts`), so this is not a type break; what changes is what an
+  operator SEES in a compacting turn. See §11-8 for the measurement.
 
 Adopting either class requires a separate observed need plus a complete rendering/lifecycle/evidence
 contract. An optional upstream feature is not a core-value gap.
@@ -257,17 +267,19 @@ caller-session `_meta`, and cross-machine certification.
 
 A backend can return `newSession` before its declared MCP server is callable. This was
 observed intermittently on the Claude rail and directly on Cortex's private `mcp.json`
-path. Neither `claude-agent-acp` 0.73.0 nor the Cortex landing adds a client-side
+path. Neither `claude-agent-acp` 0.75.1 nor the Cortex landing adds a client-side
 readiness fence over a session's declared MCP servers, and entwurf's common loop
 calls `mcpServerStatus()` nowhere.
-(Re-measured at the 0.70.0 → 0.73.0 bump, not inherited from the previous one.
-`mcpServerStatus` call sites in `src/acp-agent.ts` went 0 → 2, new in 0.71.0 via
-`0cbbaf3` (MCP OAuth, LLM-25012) — so the ADAPTER now calls it where it previously
-did not. Both sites were read at `v0.73.0 src/acp-agent.ts:1618` and `:1711`: each is
-gated behind `supportsMcpOAuth(query)`, and the polling one waits only on a server
-that already reported `needs-auth`, never on every declared server before
-`newSession` returns. That is an auth handshake, not a readiness fence, so the
-boundary below is unchanged. The other reachable-surface findings also re-measured:
+(Re-measured at the 0.73.0 → 0.75.1 bump, not inherited from the previous one — and the
+0.70.0 → 0.73.0 argument is not reused either. `mcpServerStatus` call sites in
+`src/acp-agent.ts` are **2 at both v0.73.0 and v0.75.1** `[측정 2026-09-06, git grep -c]`;
+they first appeared in 0.71.0 via `0cbbaf3` (MCP OAuth, LLM-25012), so the ADAPTER calls it
+where it once did not. Both were re-read at `v0.75.1 src/acp-agent.ts:1736` and `:1829`
+(the 0.73.0 coordinates were `:1618` and `:1711`): the first sits inside
+`authenticateMcpServers` behind `supportsMcpOAuth(query)` and skips every status that is not
+`needs-auth`; the second polls a SINGLE named server to `connected` under an OAuth deadline.
+Neither waits on every declared server before `newSession` returns. That is an auth
+handshake, not a readiness fence, so the boundary below is unchanged. The other reachable-surface findings also re-measured:
 AIR typed failures and the AIR file-change report stay capability-gated and
 unadvertised by entwurf; `providers/set` / `providers/disable` stay advertised
 unconditionally and uncalled; native subagents, async tasks, session forks, session
@@ -337,6 +349,28 @@ can run the package floor. That means Cortex is **on demand**, not optional evid
 a cut that changes or ships the Cortex rail must run and read its dedicated smoke.
 Per-cut counts, digests, versions, and host observations belong in BASELINE/CHANGELOG,
 not this standing contract.
+
+## 11-8. Compaction is a tool lifecycle (0.75.0 onward)
+
+The one change in the `0.73.0 → 0.75.1` bump that REACHES the common loop. Upstream #991
+(`f74a517`) replaced compaction's assistant text with a synthetic ACP tool call: `kind:
+"think"`, title `Compact conversation`, `_meta.contextCompaction` schema v1.
+
+`[측정 2026-09-06, oracle, adapter 0.75.1, claude-sonnet-5]` one live `/compact` turn emitted
+exactly two notifications (`tool_call` in-progress → `tool_call_update`), and those verbatim
+objects replayed through the production `applyAcpSessionUpdate` produced a
+`[tool:start] Compact conversation` / `[tool:…] Compact conversation` notice pair. No new
+mapper branch is needed — `renderToolUpdate` routes every tool call regardless of `kind` —
+and `_meta.contextCompaction` is dropped by the mapper, so no accounting path sees it.
+
+What changed is therefore what an OPERATOR sees in a compacting turn, not what entwurf
+computes. The post-compaction occupancy refresh is NOT new: `v0.73.0 src/acp-agent.ts:3460`
+already emitted a `usage_update` at `compact_boundary` and 0.75.1 still does
+(`dist/acp-agent.js:2740-2752`, now reading `compact_metadata.post_tokens` instead of a
+`getContextUsage` control request), so the shrinking-`used_end` case that
+`backend.ts:1286-1288` names as #96's weak floor gains no new trigger here.
+
+Receipt, limits and the `completed`-branch gap: `scripts/raw-acp-compaction-measure/README.md`.
 
 ## Open work
 

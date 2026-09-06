@@ -44,6 +44,11 @@ Two facts this table exists to make obvious:
 - **One tool, three spellings — and that is the smallest of the differences.** Every column
   varies per harness, every cell was measured, and the next harness will disagree with all five
   rows somewhere. The gauge holds because the STEPS are fixed while their ANSWERS are not.
+- **A version floor is earned, not standard issue.** Node, pi and Claude Code each have an
+  enforcement point; OMP deliberately has none, and carries a documented **weak floor** — the
+  last version with a LIVE receipt — instead. The rule and its reasoning live in
+  [docs/setup-clean-host.md](./setup-clean-host.md) §4b (#91). Read it before giving a new
+  harness a floor: the question is whether that vendor can fail SILENTLY, not how fast it ships.
 
 **Why the doorbell is worth this much work** (GLG doctrine, 2026-08-31). Every row keeps its own
 runtime, auth and transcript; entwurf refuses prompt reconstruction, transcript hydration and

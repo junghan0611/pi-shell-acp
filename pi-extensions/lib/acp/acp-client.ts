@@ -46,8 +46,8 @@ import type { AcpTextBlock } from "./context.js";
  * shape) and never onto those four. A field rename upstream fails the typecheck
  * here rather than silently zeroing the operator's cache-effect badge.
  */
-/** One `_meta.quota.token_count` row (claude-agent-acp 0.73.0
- *  `dist/acp-agent.js:5750-5765`). `cachedInputTokens` is cache READS — the name
+/** One `_meta.quota.token_count` row (claude-agent-acp 0.75.1
+ *  `dist/acp-agent.js:6493-6502`). `cachedInputTokens` is cache READS — the name
  *  differs from `usage.cachedReadTokens` because the shape is shared with
  *  codex-acp; `cachedWriteTokens` is Claude's extra sibling. */
 export type AcpQuotaTokenCount = {
@@ -64,7 +64,7 @@ export type AcpPromptResponse = {
 	/** Vendor-private, version-pinned. `_meta` is a standard ACP extension slot
 	 *  whose values a client may not assume, and `quota` is NOT in
 	 *  claude-agent-acp's exported types — it is produced by the private
-	 *  `turnQuotaMeta()` (read at 0.73.0 `dist/acp-agent.js:5738-5748`). Read
+	 *  `turnQuotaMeta()` (read at 0.75.1 `dist/acp-agent.js:6476-6485`). Read
 	 *  defensively, never structurally required, and re-measure on a pin move. */
 	_meta?: {
 		quota?: {

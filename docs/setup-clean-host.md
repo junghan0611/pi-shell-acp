@@ -12,7 +12,7 @@ only on Linux because its strict live-owner join uses `/proc`.
 | npm/pnpm | npm is bundled with Node; pnpm is required for source setup | package or source installation |
 | Python 3 | required by `setup`/`install` (project-path normalization + settings writers); `--help`/`check-bridge` stay Python-free | pi/Claude/agy/Copilot wiring writers |
 | entwurf | global/project-local `@junghanacs/entwurf`, or a source checkout | operator command and garden capability |
-| pi | optional-by-presence, `>=0.84.4 <0.85` — absent is an explicit setup SKIP, below-floor is a named FAIL | ACP provider, control sockets |
+| pi | optional-by-presence, `>=0.85.1 <0.86` — absent is an explicit setup SKIP, below-floor is a named FAIL | ACP provider, control sockets |
 | Claude Code | optional, **`>=2.1.217`** — the exec-form hook floor | Claude ACP auth/runtime and mailbox-backed native citizen |
 | GitHub Copilot CLI | optional-by-presence, operator-installed and authenticated — absent is an explicit setup SKIP; detected composes all four units (birth/MCP/receiver/footer) | self-fetch citizen and visible fresh |
 | OMP (`omp`) | optional-by-presence, operator-installed — absent is an explicit setup SKIP; detected composes all four units (birth/MCP/`tools.xdev` setting/receiver) | self-fetch citizen and visible fresh (accepted on one host — see §4b) |
@@ -110,7 +110,7 @@ packageRoot↔installerRoot coupling mismatch and a package/provider managed-pat
 Install the exact release floor, then wire the project:
 
 ```bash
-npm install -g @earendil-works/pi-coding-agent@0.84.4
+npm install -g @earendil-works/pi-coding-agent@0.85.1
 pi --version
 
 cd ~/entwurf-smoke
@@ -118,7 +118,7 @@ entwurf install .
 pi -e "$(npm root -g)/@junghanacs/entwurf" --list-models entwurf
 ```
 
-The supported range is `>=0.84.4 <0.85`. It is a hard minimum: installing this
+The supported range is `>=0.85.1 <0.86`. It is a hard minimum: installing this
 release onto a 0.83.x pi host upgrades the runtime rather than keeping the older
 minor. A host using only the external MCP bridge can skip pi until it needs a
 control socket; no delivery rail launches a pi process.
@@ -238,6 +238,38 @@ Order matters only in one direction: the receiver JOINS the citizen birth mints,
 announces a tool the MCP hand provides. Install it without them and it will log
 `arm-deferred`, give up after ~20s, and `doctor-omp-receive` will name the missing sibling
 as a note rather than a fault.
+
+### The OMP version rule — a weak floor, deliberately (#91)
+
+**entwurf sets no OMP version floor in code, and will not grow one on schedule.** Detection is
+presence-only (`command -v "${OMP_BIN:-omp}"`); there is no `entwurf.ompFloor`, no coherence
+gate, and no exact pin — unlike Node (`engines.node`), pi (`>=0.85.1 <0.86`) and Claude Code
+(`entwurf.claudeCodeFloor`), each of which has an enforcement point. That asymmetry is a
+decision, not an omission. A floor is the answer to a vendor that fails SILENTLY — Claude Code
+earned one because an older binary validates the exec manifest, drops `args` at runtime, and
+reports success. OMP has never been observed to fail that way, it publishes at close to a
+daily cadence, and when its contact surface breaks the two LIVE smokes go loudly red.
+
+What stands instead is a **weak floor: the last version with a LIVE receipt.**
+
+> **OMP minimum: `18.1.10`** — `[측정 2026-09-04, thinkpad, Linux x86-64, omp/18.1.10]`
+> `smoke-omp-receive-live` 11 assertions ok (garden `20260904T224103-d36fed`) and
+> `smoke-omp-fresh-live` 21 assertions ok (garden `20260904T224132-351877`, model
+> `openai-codex/gpt-5.6-sol`), with `doctor-omp-receive` PASS and `doctor-omp-mcp` ok. That
+> update skipped one minor and ten patches from 18.0.0 and broke nothing.
+>
+> **This number moves only when a NEW LIVE receipt exists** — never on a release cadence, a
+> changelog read, or a static gate. Run newer OMP freely; the floor records what was proven,
+> not what is permitted.
+>
+> **The drift sentinels are `smoke-omp-fresh-live` and `smoke-omp-receive-live`**, both
+> release-gate MUST steps. Green after an update means keep going. Red means open a NEW issue
+> carrying the first vendor contact point that broke and its reproduction receipt — do not
+> reopen the closed adoption question. If a SILENT failure is ever observed (green smokes over
+> a dead contact point), that is the evidence a real floor needs, and it earns its own issue
+> for the same reason Claude Code's floor exists.
+
+The evidence and the reasoning are in **#91**; this paragraph is its durable form.
 
 **The receiver arms per session, and only for the visible TUI host.** Opening omp arms it;
 `/new` re-arms it for the replacement citizen and retires the previous one; closing omp

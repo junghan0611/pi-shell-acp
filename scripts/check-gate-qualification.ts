@@ -844,7 +844,7 @@ let manifestCount: number;
 		"mux-fresh-call": 37,
 		"mux-launcher-fence": 7,
 		"mux-parent-artifact": 3,
-		"pack-install": 1,
+		"pack-install": 2,
 		"pi-package-ownership": 6,
 		"mux-resume-call": 12,
 		"omp-birth": 11,

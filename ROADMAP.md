@@ -80,7 +80,7 @@ ACP는 중심이 아니라 v2 core 위에 provider/model로 들어오는 **plugi
 | v2 live Antigravity → native-push direct injection | native-push adapter/register/decider gates + `smoke-agy-native-push-live` |
 | agy automatic citizen birth + sender/reply identity | hooks/statusline/install/sender gates + three doctors + fresh live round trip |
 | v2 honest reject (false-delivered/`.msg` garbage 0) | matrix-live C3 + deliverability/native-push reject gates |
-| pi 0.84.4 fence | `pnpm check` + release-gate MUST |
+| pi 0.85.1 fence | `pnpm check` + release-gate MUST |
 
 ### Historical — 0.12.0 cutover close checklist
 
@@ -285,7 +285,7 @@ v2 필드 `parentGardenId`/`isEntwurf`는 **stray key로 거부된다** — 되�
 ## 검증 원장 (measured, 재탐색 불필요)
 
 - **pi 0.80 public export:** `hasProjectTrustInputs`/`ProjectTrustStore`/`getAgentDir`/`VERSION` 모두 index
-  public export → TS 직접 import(재구현 불필요). floor = **0.84.4** (`>=0.84.4 <0.85`, next-minor 상한).
+  public export → TS 직접 import(재구현 불필요). floor = **0.85.1** (`>=0.85.1 <0.86`, next-minor 상한).
 - **pi trust(0.79.1+):** `pi -p`는 trust에서 안 멈춤(비대화 미결정→`false` degraded). `--approve`(`-a`)=
   project 파일 로드, `--no-approve`(`-na`)=무시·degraded. `ProjectTrustStore.get`은 nearest-ancestor
   walk-up(조상 cwd 결정을 자식이 상속). `AGENTS.md`/`CLAUDE.md`는 0.79.1에서 trust input에서 제거(항상
@@ -744,6 +744,88 @@ v2 필드 `parentGardenId`/`isEntwurf`는 **stray key로 거부된다** — 되�
     포함), `pnpm-lock.yaml`, `test/acp-sdk-surface.contract.test.ts` PINS + L2 lock regex + L2b/L2c
     runtime probe, `docs/acp-backend-rail.md` 지원 matrix + §11-7, `scripts/smoke-acp-raw-turn-live.ts`
     헤더. 게이트 신설 없음 — `check-acp-sdk-surface`/`check-dep-versions`의 도출이 그대로 authority.
+  - **2026-09-06 bump — pi 0.84.4 → 0.85.1 (0.85.0 은 건너뛴다).** #104. `~/repos/3rd/pi/pi-mono`
+    `v0.84.4..v0.85.1`. **0.85.0 은 랜딩 대상이 아니다:** `[측정]` `npm view` 로 읽은 0.85.0
+    pi-coding-agent 의 `exports` 가 `./client` 와 `./experimental/plugin` 을
+    `dist/*` 로 광고하는데 그 파일들이 publish 에 없다. 벤더 CHANGELOG 0.85.1 이 그것을 "SDK import
+    failures caused by unintentionally publishing internal experimental code and dependencies in
+    0.85.0" 로 이름 붙이고 두 서브패스를 `source` 전용으로 되돌린다. 우리 import 0건이라 도달하진
+    않지만 좌표는 0.85.1 이다.
+    ⑴ **하중 파일 sha256 (0.85.0→0.85.1, 앞 12; 0.84.4→0.85.0 논거 재사용 없음):** SAME
+    `ai/src/compat.ts` `c1212487653e` · `coding-agent/src/core/extensions/loader.ts` `7e0e3a709946` ·
+    `.../runner.ts` `6d5101ab0551` · `.../api.ts` `e3b0c44298fc` · `.../sdk.ts` `938f9f3d4845` ·
+    `.../pi-manifest.ts` `cdeed96fef83` · `.../agent-session.ts` `23e4acac8446` ·
+    `.../session-manager.ts` `57bc70a75156`. DIFF 하나 — `ai/src/types.ts` `7f2a2d650ff8` →
+    `ae0427bfba13`, **전량 22줄 JSDoc 2 hunk**(GPT-5.6+ prompt-cache 문구), 타입 멤버 변경 0.
+    0.85.0→0.85.1 규모 13 commits / 68 files / +751 −390.
+    ⑵ **도달한 것 — upstream 미선언 breaking 1건(우리가 실측):** `pi-tui` `Container` 가
+    0.85.x 에서 `private mouseLayout?` 를 얻었다(`dist/tui.d.ts:198`; 0.84.4 의 `Container` 는
+    private 멤버가 아예 없었다). `Box` 는 자기 소유의 별개 `private mouseLayout` 을 선언하므로
+    TypeScript 의 private-멤버 동일선언 규칙에 걸려 `Box → Container` 구조적 할당이 TS2322 로 깨졌다
+    (`entwurf-control.ts:551` `buildSentMessageBox` 반환 타입). upstream Breaking 절은
+    `createGatewayBindingFetch` 만 이름한다 — 이건 **미선언**이고, #99 정찰의 "계약 파손 후보 8개
+    전부 미도달"이 `packages/tui` 를 안 읽어서 놓친 자리다. 수리는 벤더 계약이 실제로 요구하는
+    인터페이스로 좁힌 것: `MessageRenderer` 는 `Component | undefined` 를 원한다
+    (`pi-coding-agent dist/core/extensions/types.d.ts:889`). `Container` 는 애초에 필요하지 않았다.
+    ⑶ **별자리가 `pi-` 밖으로 커졌다 — 게이트 구멍 하나 동봉 수리.** `@earendil-works/chord` 는
+    0.85.0 신규이고 pi-coding-agent · pi-agent-core · pi-client · pi-protocol 의 runtime
+    `dependencies` 다(`[측정]` `npm view <pkg>@0.85.1 dependencies`). `[측정]` 실제 0.85.1 설치
+    트리의 `.pnpm` 목록에 `@earendil-works+chord@0.85.1` 이 있고, `run.sh` 의
+    `pack_install_leaked_pi` 는 `^@earendil-works+pi-` 접두사라 그것을 **못 본다** —
+    `run.sh:3394` 의 "covers ... any package a future pi bump adds to the closure" 주석이 거짓이
+    되는 자리다. matcher 를 org 접두사로 넓히고 chord 를 8번째 명시 핀으로 넣었다. 부수 측정:
+    peer-hash 접미사가 `_ws@8.21.3` 이라는 새 모양으로 나오는데 `(_|$)` 경계가 그대로 흡수한다 —
+    두 모양 다 픽스처에 박았다. 새 claim `[QK:PACK-INSTALL-PIN-MATCHER-COVERS-CLOSURE]` +
+    mutant 1종(접두사를 `pi-` 로 되돌림) 신설, 기존
+    `[QK:PACK-INSTALL-PIN-MATCHER-BOUNDED]` 는 새 경계로 이동. 뮤턴트 368 → **369**, lane 40 불변.
+    ⑷ **부수 하나 — esbuild.** chord 의 유일한 의존이 esbuild 라 `pnpm install` 이
+    `ERR_PNPM_IGNORED_BUILDS` 로 결정을 요구했다. `allowBuilds: esbuild: false` (기존 두 항목과
+    같은 거부). 우리는 esbuild 를 실행하지 않는다.
+    ⑸ **기계 이동:** `package.json` devDep 3종 exact `0.85.1` + peer `>=0.85.1 <0.86` 3종,
+    `pnpm-workspace.yaml` `minimumReleaseAgeExclude` 7종 + chord 행 신설, `run.sh`
+    pack-install 핀 7→8행 · matcher · 자기시험 2셀 · `:3394` 주석 · `check-dep-versions` 주석,
+    `scripts/mutants/pack-install.json`, `scripts/check-gate-qualification.ts` lane inventory,
+    `pnpm-lock.yaml`, baseline 문서 5곳(AGENTS/README/ROADMAP/setup-clean-host/demo) +
+    `docs/acp-backend-rail.md` 지원 matrix + `VERIFY.md`(그 자리는 어느 게이트도 읽지 않아
+    0.84.3 세대에 멈춰 있었다 — BASELINE_DOCS 밖이라 두 번의 bump 를 그냥 지나쳤다).
+  - **2026-09-06 bump — claude-agent-acp 0.73.0 → 0.75.1 (ACP SDK 1.4.0 · claude-agent-sdk
+    0.3.257 유지).** #104, pi 범프와 같은 랜딩이지만 **다른 원인**이다.
+    ⑴ **선언 deps 를 태그별로 실측 — 네 태그 전부 불변:** v0.73.0 / v0.74.0 / v0.75.0 / v0.75.1 모두
+    `@agentclientprotocol/sdk 1.4.0` · `@anthropic-ai/claude-agent-sdk 0.3.257` · `zod ^4.0.0` ·
+    `engines.node (upstream major 22)`. **움직이는 핀은 `claude-agent-acp` 하나뿐**이다. claude-agent-sdk 가
+    제자리이므로 그 `>=0.93.0` anthropic peer floor 도 불변 → `@anthropic-ai/sdk 0.100.1` 유지
+    (기계적 상향 금지, 0.62.0 bump 규율 그대로). lock 재측정:
+    `claude-agent-acp@0.75.1(@anthropic-ai/sdk@0.100.1(zod@4.3.6))(@modelcontextprotocol/sdk@1.29.0(zod@4.3.6))`
+    (`pnpm-lock.yaml:1663`).
+    ⑵ **8 commits / `src` 18 files +6354 −491 중 도달하는 변경은 정확히 하나:** `f74a517`
+    (0.75.0, #991) 압축의 ACP tool lifecycle 화. `[측정 2026-09-06]` LIVE `/compact` 한 턴이
+    `tool_call(kind:"think", "Compact conversation")` → `tool_call_update` 두 알림을 내고, 그
+    알림을 프로덕션 `applyAcpSessionUpdate` 에 그대로 재생하면 `[tool:start]`/`[tool:…]` 공지 쌍이
+    된다. 타입 파손 아님(`renderToolUpdate` 는 kind 무관), `_meta.contextCompaction` 은 매퍼가
+    버리므로 회계 경로 무관. **바뀐 것은 운영자가 보는 것**이다. 영수증·한계(성공 분기 미관측):
+    `scripts/raw-acp-compaction-measure/README.md`, 계약은 `docs/acp-backend-rail.md` §11-8.
+    ⑶ **도달하지 않는 신규 표면:** `authStatus` 확장(0.75.0 #1080), usage markdown 렌더
+    (0.75.0 #1085), session fork 복구(0.75.1 #1089). `--hide-claude-auth` 구독 거부
+    (0.74.0 #1079)는 **우리가 그 플래그를 넘기지 않아서**(repo grep 0건) 두 겹으로 unreachable.
+    ⑷ **#96 근거 재측정 — 0.75.1 에서도 동일.** 설치 아티팩트 직독: 4분할 구성 `:3853-3866`,
+    다음 emit `:3867-3878` 은 여전히 스칼라 `used` + `size` 뿐 `_meta` 없음, 이 파일의 `_claude/*`
+    `_meta` 키는 여전히 셋(`sdkMessage`/`origin`/`rateLimit`)이고 **`_claude/usage` 없음**.
+    `sessionUsage()`(`:6444-6452`)·`turnQuotaMeta()`(`:6476-6485`) 는 0.73.0 과 텍스트 동일.
+    ACP 표면 전수 대조도 동일(sessionUpdate 리터럴 11종, agent 메서드 7종, `stopReason` 집합).
+    ⑸ **readiness 재측정(§11-7 갱신, 0.70→0.73 논거 재사용 없음).** `mcpServerStatus` 호출은
+    `src/acp-agent.ts` 에서 v0.73.0 **2건** / v0.75.1 **2건**으로 불변이고, 두 site 를 새 좌표
+    `v0.75.1:1736`·`:1829` 에서 다시 읽었다 — 하나는 `supportsMcpOAuth` 뒤 `needs-auth` 만 훑고,
+    다른 하나는 이름 하나짜리 서버를 OAuth deadline 안에서 polling 한다. 선언된 전체 MCP 를
+    `newSession` 전에 막는 fence 가 아니다. 결론 유지, 근거는 새로 측정.
+    ⑹ **기계 이동:** `package.json` 한 dependency, `pnpm-workspace.yaml` exclude 에 0.74.0/0.75.0/
+    0.75.1, `pnpm-lock.yaml`, `test/acp-sdk-surface.contract.test.ts` PINS + L2 lock regex,
+    `docs/acp-backend-rail.md` 지원 matrix + §11-7 + 신설 §11-8, 그리고 0.73.0 dist 줄번호
+    provenance 주석 **11곳**(`check-acp-usage-accounting.ts` 6 · `acp-client.ts` 2 ·
+    `backend-adapter.ts` 2 · `backend.ts` 2 · `event-mapper.ts` 2 · `smoke-acp-raw-turn-live.ts` 1).
+    `AGENTS.md:189` 도 정정했다 — `check-dep-versions` 는 **pi 전용**이고 ACP 핀을 한 줄도 읽지
+    않는다(`run.sh:1820-1919` 전문 독파). ACP 핀의 오라클은 `check-acp-sdk-surface` 이고 그것은
+    `scripts/` 게이트가 아니라 vitest 계약 `test/acp-sdk-surface.contract.test.ts` 다.
+    게이트 신설 없음(pi 쪽 ⑶ 의 한 claim 은 pi 레인 몫).
 - **Standing focus — Mitsein over MCP:** plain external(non-replyable) vs garden-native meta-session
   (replyable by garden id) 구분이 agent 발화에 정직히 반영되는가. native Claude meta-session이
   external-mcp로 퇴행하거나 `wants_reply=true`를 비대칭 거절하면 버그.
