@@ -817,7 +817,13 @@ v2 필드 `parentGardenId`/`isEntwurf`는 **stray key로 거부된다** — 되�
     `v0.75.1:1736`·`:1829` 에서 다시 읽었다 — 하나는 `supportsMcpOAuth` 뒤 `needs-auth` 만 훑고,
     다른 하나는 이름 하나짜리 서버를 OAuth deadline 안에서 polling 한다. 선언된 전체 MCP 를
     `newSession` 전에 막는 fence 가 아니다. 결론 유지, 근거는 새로 측정.
-    ⑹ **기계 이동:** `package.json` 한 dependency, `pnpm-workspace.yaml` exclude 에 0.74.0/0.75.0/
+    ⑹ **트랙이 지정한 잠금 실행.** `check-acp-sdk-surface`(vitest **7/7 PASS** — PINS·L2 lock
+    peer-resolve·L2b/L2c runtime probe가 `1.4.0`/`0.75.1`/`0.3.257`로 이동) + **`LIVE=1 ./run.sh
+    smoke-acp-raw-turn-live` 2026-09-06 19:19:41 KST 실행 → PASS**
+    (launch source = `package:@agentclientprotocol/claude-agent-acp`, PATH fallback 아님;
+    model `claude-sonnet-5`, `protocolVersion=1`, `stopReason=end_turn`, NDJSON 65,780 bytes
+    캡처, EXIT=0). 0.18.1 release-gate `--cut` 안에서 돌았다(MUST 23/0/0).
+    ⑺ **기계 이동:** `package.json` 한 dependency, `pnpm-workspace.yaml` exclude 에 0.74.0/0.75.0/
     0.75.1, `pnpm-lock.yaml`, `test/acp-sdk-surface.contract.test.ts` PINS + L2 lock regex,
     `docs/acp-backend-rail.md` 지원 matrix + §11-7 + 신설 §11-8, 그리고 0.73.0 dist 줄번호
     provenance 주석 **11곳**(`check-acp-usage-accounting.ts` 6 · `acp-client.ts` 2 ·

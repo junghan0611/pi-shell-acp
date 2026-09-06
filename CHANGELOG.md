@@ -4,9 +4,68 @@ All notable changes to this project will be documented here. Format follows [Kee
 
 ## Unreleased
 
+## 0.18.1 - 2026-09-06
+
 Two lanes, both landing on `main` after `v0.18.0`: the CI evidence-budget stage 1 (#102, from
 research #99) and the dependency bump (#104 — pi, claude-agent-acp, and the OMP adoption rule
 GLG decided to carry with them). They are not one cause; they are one release.
+
+### Upgrade note — this one asks something of the operator
+
+**The pi floor moved, and entwurf does not install harnesses.** The supported range is now
+`>=0.85.1 <0.86`, so a host still carrying pi 0.84.x is BELOW it. `entwurf setup` says so by
+name — `pi FAIL — detected pi <version> is outside the supported range >=0.85.1 <0.86 — Pi
+wiring not written` — and writes no pi wiring rather than wiring a runtime it cannot vouch
+for. That refusal is the design (Hard Rule 17), not a bug to work around.
+
+The order matters:
+
+1. **Upgrade pi yourself first.** `pi update`, or `pnpm add -g @earendil-works/pi-coding-agent@0.85.1`
+   for a pnpm-global install. entwurf never does this for you.
+2. **Then `entwurf setup`** — one command, as always. This release changes no deployment
+   writer (`pi-extensions/lib/meta-session.ts`, the four `install-*` paths and the packaged
+   plugins are byte-identical to 0.18.0), so unlike the 0.17.2 and 0.18.0 upgrades there is no
+   stale-writer trap here. What setup does need to redo is the pi wiring it refused to write
+   while the runtime was below floor.
+3. **Restart any pi session you had open.** A running pi process keeps the binary it started
+   with, and this release's changed extension surfaces (`entwurf-control.ts` and four ACP
+   modules) are loaded at session start. A live 0.84.4 session stays a 0.84.4 session.
+
+Hosts without pi are unaffected: absence is still an explicit setup SKIP, not a failure.
+
+### Verification
+
+All of the following ran on oracle (Linux, Claude Code 2.1.263, node 24.18.1, pi 0.85.1,
+omp 18.0.0).
+
+- **`LIVE=1 ./run.sh release-gate /tmp/entwurf-release-gate-0.18.1.PtUm0r --cut` → `cut: OK`.**
+  **MUST: PASS=23 FAIL=0 SKIP=0**, BEHAVIOR: PASS=1 FAIL=0 SKIP=0, exit 0.
+  2026-09-06 18:30:51 → 19:23:40 KST (52m49s). Log preserved at
+  `<scratch>/release-gate.log`.
+  - `check-gate-qualification` as its MUST step: **369/369 KILLED**.
+  - `smoke-acp-raw-turn-live` — the Dep-bump track's designated lock for an ACP adapter
+    move — PASS on 0.75.1: launch source `package:@agentclientprotocol/claude-agent-acp`
+    (not a PATH fallback), model `claude-sonnet-5`, `protocolVersion=1`,
+    `stopReason=end_turn`, 65,780 bytes of NDJSON captured.
+  - Both #91 drift sentinels green: `smoke-omp-receive-live`, and `smoke-omp-fresh-live`
+    with 21 assertions (step 9 clause 7) — on omp **18.0.0**, below the documented weak
+    floor of 18.1.10, which is exactly what "the floor records what was proven, not what is
+    permitted" means.
+- `pnpm run check:full` on the prepared tree: exit 0, 480s.
+- Pre-push landing run for the implementation HEAD `c247594`: CI run `34018205091`,
+  `check` + `install-surface` + `artifact-consumer` all `success` (`check` 34m14s,
+  `check:full` 328s, qualification 369/369).
+
+**The first `--cut` was BLOCKED, and the reason was not this release.** MUST PASS=20 FAIL=3
+SKIP=0: `smoke-entwurf-chain-live`, `smoke-mux-lifecycle-live` and `smoke-omp-fresh-live`
+each failed waiting on a sibling that never took its turn, and all three drive their sibling
+on `openai-codex/*` while every Claude-rail step passed. Measured at the time: the codex
+weekly window was at **100%**. The chain's own timeout instrumentation is what made this
+readable rather than mysterious — it printed `terminus fixture at timeout: ownerPid=… alive=true
+ownerAlive=true watchArmed=true`, so the mailbox was provably healthy and the chain had simply
+stalled upstream. After the quota reset the same gate went green with no code change. Recorded
+because an exhausted subscription rail looks exactly like a broken product until someone
+measures it.
 
 ### Changed
 
