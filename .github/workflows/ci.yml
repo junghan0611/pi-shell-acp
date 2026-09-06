@@ -22,6 +22,14 @@ on:
         description: 'Force the check-gate-qualification body to run'
         type: boolean
         default: false
+  # Weekly, 04:00 KST Sunday (19:00 UTC Saturday). The path filter below means a
+  # long run of docs-only pushes never re-proves kill-power, and the things that
+  # rot underneath it are not in our diff at all: the ubuntu-latest image, and
+  # the movable @v4 major tags on checkout/setup-node/pnpm. --frozen-lockfile
+  # pins npm dependencies and neither of those (#99 stage-2 SS4). This run is the
+  # ceiling on that drift; it is not evidence about any particular commit.
+  schedule:
+    - cron: '0 19 * * 6'
 
 env:
   # Run all JS-based actions on Node 24 ahead of GitHub's 2026-06-02 default
@@ -34,6 +42,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # The qualification filter reads the two-dot push range GitHub itself
+          # documents, so the BASE commit has to exist here. The default depth of
+          # 1 does not fetch it, which would trip fail-open 4 on every push and
+          # quietly turn the filter off. ~24 MiB of pack, 1.2k commits.
+          fetch-depth: 0
       - uses: pnpm/action-setup@v4
         with:
           version: 11.9.0
@@ -49,11 +63,31 @@ jobs:
       # check-gate-qualification left the default local check chains (operator
       # inner-loop cost) — its HEAD is back inside check:full above as
       # check-gate-manifests, and the BODY runs here. CI machine time re-proves
-      # the gates' kill-power on every BRANCH push; a tag push rebuilds nothing,
+      # the gates' kill-power on a BRANCH push that touched the qualification
+      # surface (see the decision step below); a tag push rebuilds nothing,
       # because the same SHA's branch run already carries this job. So the
       # "exact release SHA has all CI jobs green" axis keeps full qualification
       # strength on exactly one run per SHA.
+      # Which pushes still owe the body (#103 piece 2). The path set is READ FROM
+      # THE MANIFESTS at runtime, so a new mutant subject cannot fall outside the
+      # filter without anyone noticing; scripts/check-release-gate-outcomes.ts
+      # owns that containment as [QK:QUALIFY-FILTER-COVERS-SUBJECTS], and the
+      # five historical CI catches are replayed against this same script.
+      - id: qualify-decide
+        run: ./scripts/ci-qualify-decide.sh "${{ github.event.before }}" "${{ github.sha }}" >> "$GITHUB_OUTPUT"
+        env:
+          CI_EVENT_NAME: ${{ github.event_name }}
+          CI_FORCED: ${{ github.event.forced }}
+          CI_QUALIFY: ${{ inputs.qualify }}
+      # KEY ORDER IS A CONTRACT HERE. `run:` must lead this step. Cell 8a counts the
+      # sequence-item form of this exact command and requires exactly one hit --
+      # so it must not appear a second time anywhere in this file, comments
+      # included -- and the release oracle matches GitHub's rendered step name
+      # `Run <command>`, which an `if:` placed first (or any `name:`) would both
+      # destroy. YAML mappings are unordered, so `if` sits underneath and both
+      # contracts survive.
       - run: ./run.sh check-gate-qualification
+        if: steps.qualify-decide.outputs.run_body == 'true'
 
   # The install surface has its own job because `pnpm run check:full` is a SOURCE-tree
   # floor: it can only ever prove a dev clone works. Every fence bug this repo has shipped —

@@ -851,7 +851,7 @@ let manifestCount: number;
 		"omp-fresh": 24,
 		"omp-receive": 11,
 		"probe-ordering": 1,
-		"release-gate": 15,
+		"release-gate": 17,
 		"resume-args": 6,
 		"resume-launch-identity": 6,
 		"self-address": 5,

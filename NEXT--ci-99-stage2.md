@@ -15,9 +15,25 @@
 - [x] **4. candidate 동결 → Fable 독립 리뷰 1회 → amendment 한 번들** — Blocker 0 / Defect 5
       (D-1 원격 브랜치 헤드 · D-2 dispatch run bounded poll · D-3 블록 헤더 THREE claims ·
       D-4 VERIFY.md:79 라이브 산문 · D-5 이 RAIL), 한 번들로 반영.
-- [ ] **5. `check-gate-qualification` standalone 1회 + `pnpm run check:full` 1회** ← CURRENT
-      (둘 다 tmux, 도는 동안 HEAD·인덱스·워크트리 이동 금지). 370 전부 KILLED 이어야 한다.
-- [ ] **6. GLG 승인 뒤 `commit` 스킬. 푸시는 GLG.**
+- [x] **5. `check-gate-qualification` standalone 1회 + `pnpm run check:full` 1회** —
+      **370/370 KILLED exit 0 (2392s)** · **check:full exit 0 (483s)**, 둘 다 tmux, 동결 트리 불변.
+- [x] **6. 조각 1 커밋 + 푸시** — `92dc6dd`, `origin/ci/99-stage2` 신설, 어젠다 도장 1회.
+      브랜치 push CI **run 34034426691**.
+
+# RAIL — 조각 2 (경로 필터)
+
+- [x] **7. 설계 단락 → Fable 승인** — `if` 를 `run` **뒤**에(8a 리터럴 + 조각 1 스텝 이름 동시 보존),
+      claim 둘로 분리, fail-open ①~⑤, `fetch-depth: 0`, schedule 주 1회.
+- [x] **8. 구현** — 아래 파일들.
+- [x] **9. candidate 동결 보고 → Fable 리뷰 → amendment** — Blocker 0 / Defect 1
+      (D-1 `qualify` 입력이 죽은 설정이었다: dispatch 를 값과 무관하게 fail-open 3 으로 보냈다.
+      이제 `CI_QUALIFY=true` 만 본체를 돌리고, 그 외 dispatch 는 `run_body=false` + "floor-only
+      rerun" 사유). Observation 4건은 아래.
+- [x] **10. qualification + check:full 각 1회(tmux)** — 2회차 **372/372 KILLED exit 0 (2425s)** ·
+      **check:full exit 0 (489s)**, 동결 트리 불변. **1회차는 RED 였고 그게 설계 결함을 잡았다** — 아래.
+- [ ] **12. GLG 커밋 승인 대기** ← CURRENT. 승인 오면 `commit` 스킬로 한 커밋. 푸시는 GLG.
+- [ ] **11. acceptance 5 준비** — 조각 2 커밋 **뒤** 별도 커밋 둘: (a) `.md` 한 줄(본체 skipped 기대),
+      (b) 뮤턴트 매니페스트 `title` 한 글자(subject 불변 → kill 결과 불변, 본체 실행 기대). 푸시는 GLG.
 
 # 조각 1 범위 (이슈 #103 본문 그대로)
 
@@ -67,3 +83,40 @@
 - **이벤트 필터를 되돌리는 회귀는 fail-closed 다** — `--event push` 로 되돌리면 dispatch run 을
   못 찾아 "no push- or dispatch-triggered run" 으로 ABORT 한다. 조용히 통과하지 않으므로
   claim 을 새로 만들지 않았다.
+
+# Observation — 조각 2 (일 안 연다)
+
+- **8d 는 경로마다 bash+python 을 새로 띄운다**(약 70회, 지금 수 초). 인벤토리가 크게 자라면
+  `--files-from` 에 여러 경로를 묶어 한 번에 도는 최적화 후보 (Fable, 2026-09-06).
+- **8e 의 `if (wrong.length > 0) continue;`** 는 첫 결손 뒤 나머지 run 판정을 생략한다 —
+  여전히 red 이고 이름도 부르지만 진단 정보가 준다. 손대지 않는다.
+- **뮤턴트 A 의 kill 은 "글로브 밖 `signatureSource` 가 하나 이상 존재한다"에 기댄다.**
+  언젠가 전부 글로브 안으로 들어가면 SURVIVED 로 드러난다 — 그게 qualification 의 일이다.
+- **PR 은 three-dot 으로 좁힐 수 있으나 안 한다** (fail-open ⑤). 이 리포는 PR 을 거의 안 쓴다.
+- **`scripts/ci-qualify-decide.sh` 와 `scripts/fixtures/` 가 npm 패키지에 실린다**(`files: scripts/`,
+  447 → +2). `scripts/check-*` 선례와 같고 소비자 표면이 아니다. 별건.
+- **`fetch-depth: 0` 실제 비용**은 첫 실관측 run 의 checkout 스텝 시간으로 보고한다.
+- **8f 의 fixture 커밋에 `-c commit.gpgsign=false` 를 더하면 더 안전하다** — 전역 서명 설정이 있는
+  호스트에서 그 커밋이 죽는다. [측정 2026-09-06: 이 호스트는 `commit.gpgsign` 미설정, CI 러너도
+  없음 → 지금 red 위험 0] 다음에 이 게이트를 만질 때 코드와 함께 (Fable 결정, 이번 라운드 밖).
+
+# 1회차 긴 게이트가 잡은 것 (2026-09-06 22:05→22:45)
+
+**`check-gate-qualification` EXIT=1, 355/372 — release-gate lane 17개 전부 CONTROL-RED.**
+원인: 셀 8e 가 리포 **히스토리**(2026-07/08 커밋 객체)를 읽었는데, qualification 은 게이트를
+**자체 git baseline 을 가진 스냅샷** 안에서 돌린다 — 거기엔 그 커밋이 없다. "로컬 객체 없으면
+이름 불러 red" 규칙이 운영자 클론에서는 옳고 스냅샷에서는 lane 전체를 죽였다.
+[측정: `control-pre bash run.sh check-release-gate-outcomes: RED … /tmp/entwurf-qualify-RDwo8T/repo/...:531`]
+
+**수리(설계 변경, Fable 승인 필요):**
+- 픽스처가 **측정된 파일 목록**(`files`, `tipOnlyFiles`)을 진다 — 히스토리는 여기서 한 번 읽고
+  커밋했다. 8e 는 `--files-from` 으로 그 목록을 매처에 먹인다 → 어디서든 돈다.
+- 두-점 **읽기** 자체는 새 셀 **8f `[QK:QUALIFY-FILTER-READS-PUSH-RANGE]`** 가 진다 —
+  임시 git 리포를 만들어(스크립트 사본 + 1항 매니페스트 동봉, seam 없음) tip 은 docs 뿐이고
+  그 아래 커밋이 subject 를 건드리는 실제 결함 모양을 재현. 두-점 true / tip-only false 를 단언.
+- **8e 는 뮤턴트를 갖지 않는다**(8b 선례). [측정] 다섯 range 전부 manifest-subject 히트가 있어
+  어떤 단일 팔 제거도 8d 가 먼저 잡는다 → WRONG-REASON 이 된다. 주석에 그 이유를 박았다.
+- lane 17 유지, 총 **372**.
+
+**`pnpm run check:full` EXIT=1 (4s)** — biome format 에러 2건(`check-release-gate-outcomes.ts`,
+`qualify-replay.json`). `--write` 로 고쳤다. 1회차가 이것도 잡았다.

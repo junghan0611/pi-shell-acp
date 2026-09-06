@@ -454,7 +454,7 @@ LIVE=1 ENTWURF_ACP_CORTEX_CONNECTION=<conn> ./run.sh smoke-acp-cortex-live  # Co
 `pnpm run check:full` includes the AGY permission contract matrix and the qualification
 HEAD (`check-gate-manifests` — runner self-test, manifest-set validation, declared lane
 inventory, zero mutants executed); the committed-mutant EXECUTION is scheduled separately
-(`./run.sh check-gate-qualification` — the CI `check` job runs it on every branch push,
+(`./run.sh check-gate-qualification` — the CI `check` job runs it on a branch push that touched the qualification surface,
 and release-gate carries it as a MUST step; a tag push runs no CI, since the same SHA's
 branch run already carries every job). A gate a
 release touches must kill its known defect for the claimed `[QK:<claim>]` reason —

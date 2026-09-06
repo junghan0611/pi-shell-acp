@@ -44,7 +44,8 @@
 
 import { strict as assert } from "node:assert";
 import { execFileSync } from "node:child_process";
-import { globSync, readFileSync } from "node:fs";
+import { copyFileSync, globSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { LIVE_SKIP_EXIT, LIVE_SKIP_MARKER } from "./lib/live-skip.ts";
@@ -337,7 +338,8 @@ function runSubcommand(sub: string, env: Record<string, string | undefined>): { 
 //    check-gate-qualification left the default check chains (operator
 //    inner-loop cost, 2026-08 subtraction). That move is a gate/release
 //    contract: the step must stay REACHABLE on the axes that now own it — the
-//    CI check job on every branch push and release_gate as its own MUST step — and
+//    CI check job (on the pushes #103's filter still sends it) and release_gate
+//    as its own MUST step — and
 //    must not silently return to the default chain. Without this cell,
 //    deleting the release_gate qualification block or the CI line leaves every
 //    focused gate green while a cut quietly loses its discriminating-power
@@ -384,7 +386,11 @@ function runSubcommand(sub: string, env: Record<string, string | undefined>): { 
 		!qualGateBody.includes('results+=("FAIL  check-gate-qualification")')
 	)
 		holes.push("the release_gate qualification step does not wire PASS/FAIL into the MUST counters");
-	if (!verifyDoc.includes("in the CI `check` job on every branch push, and as a release-gate MUST step"))
+	if (
+		!verifyDoc.includes(
+			"in the CI `check` job on a branch push that touched the qualification surface, and as a release-gate MUST step",
+		)
+	)
 		holes.push("VERIFY.md no longer names the owners of the moved qualification step");
 	assert.ok(
 		holes.length === 0,
@@ -445,6 +451,176 @@ function runSubcommand(sub: string, env: Record<string, string | undefined>): { 
 			"with skipped named as its own failure. Three green job names do not prove the step inside one of them " +
 			`executed. Broken: ${axis.join("; ")}`,
 	);
+}
+
+// ===========================================================================
+// 8d. The qualification filter COVERS every mutant subject (#103 piece 2)
+//
+//     The body no longer runs on every branch push; a decision script reads the
+//     push range and answers. Its whole safety argument is that the path set is
+//     DERIVED from the committed manifests rather than copied into a list, so a
+//     new mutant subject cannot land outside the filter and quietly stop being
+//     re-proven in CI. This asserts that property behaviourally: every subject
+//     and signatureSource in scripts/mutants/*.json, fed to the script as a
+//     one-file change, must decide `run_body=true`. The oracle is the manifests
+//     themselves, read here independently of the script.
+// ===========================================================================
+{
+	const decider = join(REPO_DIR, "scripts/ci-qualify-decide.sh");
+	const paths = new Set<string>();
+	for (const file of globSync("scripts/mutants/*.json", { cwd: REPO_DIR })) {
+		const manifest = JSON.parse(readFileSync(join(REPO_DIR, file), "utf8")) as {
+			mutants?: { subject?: string; signatureSource?: string }[];
+		};
+		for (const mutant of manifest.mutants ?? []) {
+			if (mutant.subject) paths.add(mutant.subject);
+			if (mutant.signatureSource) paths.add(mutant.signatureSource);
+		}
+	}
+	assert.ok(paths.size > 50, `read only ${paths.size} mutant paths from the manifests`);
+	const uncovered = [...paths].filter((path) => {
+		const out = execFileSync("bash", [decider, "--files-from", "-"], {
+			cwd: REPO_DIR,
+			encoding: "utf8",
+			input: `${path}\n`,
+			stdio: ["pipe", "pipe", "ignore"],
+		});
+		return out.trim() !== "run_body=true";
+	});
+	assert.ok(
+		uncovered.length === 0,
+		"[QK:QUALIFY-FILTER-COVERS-SUBJECTS] the CI qualification filter must run the body for a change to ANY " +
+			"committed mutant subject or signature source — it derives that set from scripts/mutants/*.json for " +
+			"exactly this reason, so a path it cannot see is a claim that silently stops being re-proven in CI. " +
+			`Uncovered (${uncovered.length} of ${paths.size}): ${uncovered.slice(0, 8).join(", ")}`,
+	);
+}
+
+// ===========================================================================
+// 8e. The filter still runs the body for every RED the body has ever produced
+//
+//     Five reds in 549 runs (#99 stage-2). The first reading of them used the
+//     tip COMMIT and concluded the filter would have missed four; replaying the
+//     real two-dot push range — what GitHub actually compares — showed all five
+//     hit. That reversal is the whole evidentiary basis for this filter.
+//
+//     It is asserted from RECORDED file lists, not from live history, and that
+//     is a constraint rather than a convenience: check-gate-qualification runs
+//     every gate inside a snapshot with its own fresh git baseline, where these
+//     2026-07/08 commits do not exist. A cell that read history there would be
+//     CONTROL-RED for the whole lane — measured, not predicted (this cell did
+//     exactly that on 2026-09-06 and cost the release-gate lane its 17 kills).
+//     The fixture carries what history said, measured once, in a repo where the
+//     objects are present.
+//
+//     The two-dot READING itself is proven separately, below — and that is where
+//     this pair's kill-power lives: this cell carries no committed mutant,
+//     because all five ranges also touch a manifest subject, so any mutation
+//     that could redden it reddens 8d first and would die at the wrong claim.
+// ===========================================================================
+{
+	const decider = join(REPO_DIR, "scripts/ci-qualify-decide.sh");
+	const fixture = JSON.parse(readFileSync(join(REPO_DIR, "scripts/fixtures/qualify-replay.json"), "utf8")) as {
+		runs: { runId: string; before: string; head: string; files: string[]; tipOnlyFiles: string[] }[];
+	};
+	assert.equal(fixture.runs.length, 5, "the replay fixture holds all five historical qualification reds");
+	const wrong: string[] = [];
+	for (const run of fixture.runs) {
+		assert.ok(run.files.length > 0, `run ${run.runId} has no recorded push range`);
+		const out = execFileSync("bash", [decider, "--files-from", "-"], {
+			cwd: REPO_DIR,
+			encoding: "utf8",
+			input: `${run.files.join("\n")}\n`,
+			stdio: ["pipe", "pipe", "ignore"],
+		}).trim();
+		if (out !== "run_body=true") wrong.push(`run ${run.runId} (${run.files.length} files) decided ${out}`);
+	}
+	assert.ok(
+		wrong.length === 0,
+		"every qualification RED in this repo's CI history must still run the body under the filter, over the " +
+			"two-dot push range GitHub compares — the measurement that overturned the tip-commit reading and " +
+			"justified filtering at all. Directly asserted, with no committed replant: every one of the five ranges " +
+			"also carries a manifest subject, so any single-arm mutation that could turn this red is caught one cell " +
+			"earlier by QUALIFY-FILTER-COVERS-SUBJECTS — a replant here would die at the wrong claim (measured " +
+			"2026-09-06). The two-dot READING has its own kill-qualified claim below. " +
+			`Broken: ${wrong.join("; ")}`,
+	);
+}
+
+// ===========================================================================
+// 8f. The filter reads the two-dot PUSH RANGE, not the tip commit
+//
+//     The fixture above proves the matcher's verdict on recorded file lists; it
+//     cannot prove which git range produced them, because it calls no git. This
+//     does, hermetically: a throwaway repo shaped like the real defect — a push
+//     of two commits whose TIP is docs-only while the commit under it touched a
+//     mutant subject. The two-dot range sees the code; the tip alone does not.
+//     That is the exact misreading #99 corrected, and it is what four of the
+//     five recorded pushes look like when read the wrong way.
+//
+//     Hermetic on purpose: no repo history, so it runs identically inside the
+//     qualification snapshot.
+// ===========================================================================
+{
+	const decider = join(REPO_DIR, "scripts/ci-qualify-decide.sh");
+	const tmp = mkdtempSync(join(tmpdir(), "entwurf-qualify-range-"));
+	// core.hooksPath is set globally on this operator's machine; a fixture repo
+	// must not run their hooks.
+	const git = (...args: string[]) =>
+		execFileSync("git", ["-c", "core.hooksPath=/dev/null", "-c", "user.email=g@e", "-c", "user.name=g", ...args], {
+			cwd: tmp,
+			stdio: "ignore",
+		});
+	try {
+		git("init", "-q", "-b", "main");
+		// The decider reads the repo it SITS IN, so the fixture gets a real copy
+		// of it and its own one-entry manifest: no seam, no env override, and the
+		// manifest-reading path is exercised too.
+		mkdirSync(join(tmp, "scripts/mutants"), { recursive: true });
+		mkdirSync(join(tmp, "pi-extensions/lib"), { recursive: true });
+		copyFileSync(decider, join(tmp, "scripts/ci-qualify-decide.sh"));
+		writeFileSync(
+			join(tmp, "scripts/mutants/fixture.json"),
+			`${JSON.stringify(
+				{
+					schemaVersion: 1,
+					lane: "fixture",
+					mutants: [{ claim: "FIXTURE", subject: "pi-extensions/lib/fixture-subject.ts" }],
+				},
+				null,
+				"\t",
+			)}\n`,
+		);
+		writeFileSync(join(tmp, "seed.txt"), "seed\n");
+		git("add", "-A");
+		git("commit", "-qm", "seed");
+		const base = execFileSync("git", ["rev-parse", "HEAD"], { cwd: tmp, encoding: "utf8" }).trim();
+		writeFileSync(join(tmp, "pi-extensions/lib/fixture-subject.ts"), "// a mutant subject\n");
+		git("add", "-A");
+		git("commit", "-qm", "code commit (mid-push)");
+		writeFileSync(join(tmp, "README.md"), "docs only\n");
+		git("add", "-A");
+		git("commit", "-qm", "docs commit (tip)");
+		const head = execFileSync("git", ["rev-parse", "HEAD"], { cwd: tmp, encoding: "utf8" }).trim();
+		const decide = (from: string) =>
+			execFileSync("bash", [join(tmp, "scripts/ci-qualify-decide.sh"), from, head], {
+				cwd: tmp,
+				encoding: "utf8",
+				env: { ...process.env, CI_EVENT_NAME: "push", CI_FORCED: "false" },
+				stdio: ["ignore", "pipe", "ignore"],
+			}).trim();
+		const overRange = decide(base);
+		const overTip = decide(`${head}~1`);
+		assert.ok(
+			overRange === "run_body=true" && overTip === "run_body=false",
+			"[QK:QUALIFY-FILTER-READS-PUSH-RANGE] the filter must diff the whole two-dot push range, not the tip " +
+				"commit: a push whose tip is docs-only can still carry a mutant subject underneath it, which is how " +
+				"four of the five historical reds look like docs pushes when read tip-first. " +
+				`Broken: range=${overRange}, tip-only=${overTip} (tip-only must be false, or this fixture proves nothing).`,
+		);
+	} finally {
+		rmSync(tmp, { recursive: true, force: true });
+	}
 }
 
 // ===========================================================================
@@ -689,7 +865,9 @@ console.log(
 		"LIVE smoke is either wired into release_gate or excluded by a sentence the docs still carry; and the moved " +
 		"check-gate-qualification stays reachable on its owners (absent from the default chain, exactly once in CI, " +
 		"exactly once as a release-gate MUST step) and the CI step qualifies the FULL floor, which runs before it, " +
-		"while the exact-SHA release oracle requires that BODY step to have concluded success at the release SHA; and " +
+		"while the exact-SHA release oracle requires that BODY step to have concluded success at the release SHA, " +
+		"and the CI filter that decides when that body runs covers every mutant subject and still runs it for all " +
+		"five historical reds; and " +
 		"every gate a committed mutant names is itself inside check:full or states its exclusion in prose an operator " +
 		"reads; and the CI push trigger is filtered to branch refs, so a release tag creates no duplicate run; and " +
 		"the operator's CONFIGURED bridge invocation is booted exactly once through run_step, before the ACP LIVE tier",

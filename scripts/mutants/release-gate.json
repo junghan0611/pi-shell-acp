@@ -135,6 +135,28 @@
 			"signatureSource": "scripts/check-release-gate-outcomes.ts"
 		},
 		{
+			"claim": "QUALIFY-FILTER-COVERS-SUBJECTS",
+			"title": "the CI qualification filter stops collecting signatureSource paths, so a change to a gate that owns a claim's signature no longer re-proves it in CI",
+			"subject": "scripts/ci-qualify-decide.sh",
+			"find": ["\t\tsignature_source = mutant.get(\"signatureSource\")"],
+			"replace": ["\t\tsignature_source = None"],
+			"gate": ["bash", "run.sh", "check-release-gate-outcomes"],
+			"timeoutSeconds": 180,
+			"signature": "[QK:QUALIFY-FILTER-COVERS-SUBJECTS]",
+			"signatureSource": "scripts/check-release-gate-outcomes.ts"
+		},
+		{
+			"claim": "QUALIFY-FILTER-READS-PUSH-RANGE",
+			"title": "the filter reads the tip commit instead of the two-dot push range - the exact misreading that once concluded four of the five historical qualification reds would have been skipped",
+			"subject": "scripts/ci-qualify-decide.sh",
+			"find": ["CHANGED=\"$(git -C \"$REPO_DIR\" diff --name-only \"$BEFORE\"..\"$HEAD_SHA\" 2>/dev/null)\""],
+			"replace": ["CHANGED=\"$(git -C \"$REPO_DIR\" diff --name-only \"$HEAD_SHA~1\"..\"$HEAD_SHA\" 2>/dev/null)\""],
+			"gate": ["bash", "run.sh", "check-release-gate-outcomes"],
+			"timeoutSeconds": 180,
+			"signature": "[QK:QUALIFY-FILTER-READS-PUSH-RANGE]",
+			"signatureSource": "scripts/check-release-gate-outcomes.ts"
+		},
+		{
 			"claim": "MUX-LIFECYCLE-IS-RELEASE-MUST",
 			"title": "the integrated mux lifecycle stays listed but bypasses run_live_step, so a missing prerequisite returns SKIP into a branch that never classifies it and the cut reads green",
 			"subject": "run.sh",
