@@ -39,12 +39,43 @@ CHANGELOG `## Unreleased`가 구현 범위 `v0.15.1..19ad90c` **30커밋** 전�
       LIVE 게이트 `cut: OK`(MUST 23/0/0, qualification 364/364). 발행된 integrity가 수용 candidate의
       것과 동일해 리팩이 없었음이 레지스트리에서 확인된다. npm 토큰이 만료돼 있어 발행은 GLG가
       직접 했다(0.17.2와 같은 방식).
-- [ ] **13. 다음 레인 미정** ← CURRENT: GLG가 stem을 고른다 (후보는 NOW)
+- [x] **13. #102 1단계 main 랜딩** — `ci/99-stage1`이 fast-forward로 main에 담겼다:
+      `8649967` (ci(qualification): move the head into the floor and stop tag pushes rebuilding).
+      머리 게이트 `check-gate-manifests`가 `check:hermetic`으로 들어가고, semver 태그 push가
+      이미 빌드된 SHA를 재빌드하지 않는다. #99·#102 닫힘. **2단계는 #103** — P2(이벤트 좁히기) /
+      P5(잡 분리) / P6b(느린 그룹 재배치). 브랜치 NEXT(`NEXT--ci-99-stage1.md`)는 이 커밋에서 삭제됐다
+      (머지 전에 지웠어야 했다).
+- [ ] **14. 버전 범프 레인 — pi 0.85.1 + claude-agent-acp 0.75.1 (+ #91 OMP 채택 규칙 문서화)**
+      ← CURRENT: 정찰 먼저. 이 레인은 핀을 아직 바꾸지 않는다.
 
-현재 좌표: 1–12 완료 → 13 stem 선택 대기 · **0.16.1 make는 열린 채 PAUSED**. 푸시·태그는
+현재 좌표: 1–13 완료 → 14 정찰 중 · **0.16.1 make는 열린 채 PAUSED**. 푸시·태그는
 `entwurf-release` 4모드 몫이다 (CalVer `tag-release`가 아님).
 
-# NOW — 0.18.0 착지 후, 다음 stem 대기
+# NOW — 버전 범프 레인 정찰 (pi 0.85.1 · acp 0.75.1 · #91)
+
+- **Stem:** 세 개의 상류 이동을 **한 레인으로** 받는다 — pi 런타임 범위 `>=0.84.4 <0.85`,
+  `@agentclientprotocol/claude-agent-acp` `0.73.0`, 그리고 #91의 OMP "floor 없이 latest 추종"
+  채택 규칙. 한 원인이 아니라 **GLG 결정으로 묶인 셋**이다. acceptance는 축마다 따로 적는다.
+- **Current:** 정찰만 한다. 실측·원본 읽기 → 구현 이슈 하나 개설 → GLG grant 대기.
+  **이 레인에서 핀을 바꾸는 커밋은 없다.**
+- **Next:** GLG grant 뒤 조각 순서대로 구현. 착수 전에 이슈 본문의 acceptance를 다시 읽는다.
+- **Blocker:** 없음(정찰 단계). 구현 착수는 GLG grant 대기.
+- **측정 좌표 (코디네이터가 2026-09-06에 여기서 측정):** `package.json:85` claude-agent-acp
+  `0.73.0` · `:92-101` pi 3종 `>=0.84.4 <0.85` / devDep 정확히 `0.84.4`. npm latest는
+  `@earendil-works/pi-coding-agent` **0.85.1**, `@agentclientprotocol/claude-agent-acp` **0.75.1**.
+  `~/repos/3rd/pi/pi-mono`에 `v0.85.1` 태그 fetch 완료. 설치된 `omp/18.0.0`.
+- **규율 (AGENTS "Type and Runtime Boundaries"):** ceiling은 **측정으로만** 움직인다.
+  0.84.4→0.85.0의 논거를 0.85.0→0.85.1에 재사용하지 않는다 — 하중 파일 sha를 매 bump마다
+  다시 대조하고, 판단은 ROADMAP의 **Dep bump(별도 트랙)** ledger에 줄로 남긴다.
+- **Read:** #99 Opus 5 "pi 0.85.0 정찰" 댓글(하중 sha 표 · 계약 파손 후보 8 · A항 chord leak
+  matcher 구멍 · C항 핀 이동 목록) · #91 본문과 댓글 2 · ROADMAP "Dep bump(별도 트랙)".
+- **Do not touch:** 푸시 · 정찰 레인에서 핀을 바꾸는 커밋 · 워크트리 안에 로그(scratch 전용) ·
+  긴 명령을 하네스 백그라운드 도구로(저메모리 워치독이 죽인다 — tmux) ·
+  `.claude/skills/entwurf-release/SKILL.md`에 비-ASCII 한 글자.
+
+<details><summary>0.18.0 착지 직후의 NOW (레인 닫힘 — 이월 관측은 여기 남는다)</summary>
+
+## Archived NOW — 0.18.0 착지 후 (다음 stem 대기였던 자리)
 
 - **Stem: 없다. GLG가 고른다.** 0.18.0이 태그·GitHub 릴리즈·npm `latest`까지 전부 닫혔다
   (`v0.18.0` @ `2934807`, 2026-09-04). 이 리포에 지금 열려 있는 릴리즈 레인은 없다.
@@ -114,6 +145,8 @@ CHANGELOG `## Unreleased`가 구현 범위 `v0.15.1..19ad90c` **30커밋** 전�
   `mux-launch.ts`/`mux-placement.ts` import fence ·
   이 호스트의 `~/.pi/agent/meta-mailbox/20260904T093135-ac7a1a/` 편지·표식·기록(#101 재현 증거) ·
   `source` 값에 분기하는 로직(로그로만 남긴다 — 호스트 독립성이 이유다).
+
+</details>
 
 <details><summary>0.17.1의 원래 NOW (C1b 원인 닫힘 — 태그·GH 릴리즈 완료, npm 미발행)</summary>
 
